@@ -15,7 +15,7 @@ rots.
 | | |
 |---|---|
 | Upstream base of `main` | **v7.2.0** (rebased 2026-08-22, PR #19) |
-| Fork-only patches | **10** live (§1.1–§1.3, §1.5–§1.10) + infrastructure (§1.4) |
+| Fork-only patches | **11** live (§1.1–§1.3, §1.5–§1.11) + infrastructure (§1.4) |
 | Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (published 2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`. Also tagged `sha-e5377d0`, so its provenance is checkable without trusting the tag name |
 | Built from | `e5377d02` (2026-09-21) — the merge of [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10), on top of `db525564` with [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) and [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base re-checked before tagging: the merge-base with `upstream/main` is exactly the `v7.2.0` tag |
 | Deployed where | staging (`eudiplo-staging.espuni.com`) runs **`.7`**, verified 2026-09-21 at `GET /api/docs-json` → `info.version` (no token needed; `/api/version` wants one). Production (`eudiplo.espuni.com`) is behind, by design. The tag of each droplet lives in its `EUDIPLO_IMAGE_TAG`; `docs/architecture/environments.md` in cp-platform is the record, not this file |
@@ -255,6 +255,23 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > The spec signs a real proof with a real attested key and runs it through the
 > callback. The four cases fail on unpatched `main` with the wallet's own error
 > text, which is the point: it is the bug reproduced, not a mock of it.
+
+### 1.11 Issuance webhook on delivery, not only on notification
+
+| | |
+|---|---|
+| Commits | branch `fix/webhook-al-entregar` |
+| Files | `issuer/issuance/oid4vci/oid4vci.service.ts` · `issuance-webhook.spec.ts` (new) |
+| Upstream status | 🔴 **Not fixed upstream** — upstream sends this webhook only from `notifications()`, i.e. only when the Wallet calls `POST /vci/notification` |
+| What | The tenant's issuance webhook is sent twice per credential: once when the credential is **delivered**, with the notification still carrying no `event`, and again if the Wallet notifies, with it. Both go through one `sendIssuanceWebhook` helper, which also stops a webhook failure from failing the credential request |
+| Why we need it | **With the EUDI reference wallet the relying party never learns a credential was issued.** OpenID4VCI 1.0 §11.1 says the Wallet *SHOULD* send the notification, not that it must — and `wallet-core` 0.30.2 never does: nothing in its surface references `NotifyIssuer` or `NotificationEndPointClient`, although `openid4vci-kt` ships both (verified by decompiling the published aar). So the session sits in `fetched` until it expires, no webhook is sent, and from the RP's side a successful issuance is indistinguishable from an abandoned one. Seen on staging 2026-09-21: the PID reached the wallet and its session still read `EXPIRED` |
+| The absent `event` is the signal | At delivery the pending notification has `id` and `credentialConfigurationId` but no `event`; that absence is what distinguishes «delivered, unconfirmed» from «confirmed». A consumer that reads it as a failure is worse off than one that gets nothing, so espuni was changed alongside |
+| Why it never throws | At delivery the credential **has already been issued**; returning it is all the endpoint has left to do. Failing the request over a dead webhook would cost the Wallet a credential the issuer has already spent, and under `once_only` that one does not come back. The error goes to the audit log |
+| v7 impact | 🟢 One helper plus two call sites, on a file upstream changes often — re-apply by hand, the shape is small |
+
+> Covered by a unit spec on the helper: delivery (no `event`), confirmation
+> (with it), no webhook configured, endpoint deleted, and a dead webhook not
+> taking the issuance down with it.
 
 ### 1.4 Fork infrastructure (permanent)
 

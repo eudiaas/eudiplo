@@ -41,6 +41,7 @@ import { TokenPayload } from "../../../auth/token.decorator";
 import { CryptoService } from "../../../crypto/crypto.service";
 import { EncryptionService } from "../../../crypto/encryption/encryption.service";
 import {
+    Notification,
     Session,
     SessionStatus,
 } from "../../../session/entities/session.entity";
@@ -1629,6 +1630,48 @@ export class Oid4vciService {
         );
     }
 
+    /**
+     * espuni: manda el webhook de emision del tenant, si lo hay.
+     *
+     * Se llama dos veces por credencial: al ENTREGARLA —con la notificacion
+     * todavia sin `event`— y otra vez si el wallet notifica, ya con el. La
+     * ausencia de `event` es la señal de «entregada, sin confirmar», y el
+     * consumidor tiene que distinguirlas: tratarla como un fallo es peor que
+     * no mandar nada.
+     *
+     * No propaga el error. En la entrega la credencial YA se ha emitido y
+     * devolverla es lo unico que le queda por hacer al endpoint: tumbar la
+     * peticion por un webhook caido le quitaria al wallet una credencial que
+     * el emisor ya ha gastado, y que con `once_only` no vuelve. El fallo va al
+     * log de auditoria, que es donde se puede actuar sobre el.
+     */
+    private async sendIssuanceWebhook(
+        session: Session,
+        notification: Notification | undefined,
+        logContext: AuditLogContext,
+    ): Promise<void> {
+        if (!session.webhookEndpointId || !notification) return;
+        try {
+            const endpoint = await this.webhookEndpointRepo.findOneBy({
+                id: session.webhookEndpointId,
+                tenantId: session.tenantId,
+            });
+            if (!endpoint) return;
+            await this.webhookService.sendWebhookNotification(
+                { url: endpoint.url, auth: endpoint.auth },
+                session,
+                notification,
+            );
+        } catch (error) {
+            this.auditLogger.logError(
+                logContext,
+                error as Error,
+                "Failed to send issuance webhook",
+                { notificationId: notification.id },
+            );
+        }
+    }
+
     private async enforceProofTypePolicy(
         tenantId: string,
         credentialConfigurationId: string,
@@ -1956,6 +1999,28 @@ export class Oid4vciService {
                 notificationId,
             });
 
+            // espuni: avisar al RP de que la credencial SE ENTREGO, sin esperar
+            // a la notificacion del wallet (ver PATCHES.md §1.11).
+            //
+            // Upstream solo manda este webhook desde `notifications()`, o sea
+            // cuando el wallet hace POST /vci/notification. OpenID4VCI 1.0
+            // §11.1 dice que el wallet SHOULD mandarla, no que deba, y
+            // `wallet-core` 0.30.2 —la libreria de la wallet de referencia— no
+            // la manda nunca: no referencia `NotifyIssuer` ni
+            // `NotificationEndPointClient` en toda su superficie, aunque
+            // `openid4vci-kt` los traiga. El resultado es que con la wallet
+            // de la UE el RP no se entera NUNCA de que se emitio una
+            // credencial, y la sesion caduca como si no hubiera pasado nada.
+            //
+            // La notificacion pendiente aun no tiene `event`: esa ausencia es
+            // justo la señal de «entregada, sin confirmar». Cuando llegue la
+            // notificacion se manda otra vez, ya con `event`.
+            await this.sendIssuanceWebhook(
+                session,
+                session.notifications[session.notifications.length - 1],
+                logContext,
+            );
+
             return issuer.createCredentialResponse({
                 credentials,
                 credentialRequest: parsedCredentialRequest,
@@ -2056,21 +2121,12 @@ export class Oid4vciService {
                 notifications: session.notifications,
             });
 
-            //check for the webhook and send it.
             //TODO: in case multiple batches are included, check if each time the notification endpoint is triggered. Also when multiple credentials got offered in the request, try to bundle them maybe?
-            if (session.webhookEndpointId) {
-                const endpoint = await this.webhookEndpointRepo.findOneBy({
-                    id: session.webhookEndpointId,
-                    tenantId: session.tenantId,
-                });
-                if (endpoint) {
-                    await this.webhookService.sendWebhookNotification(
-                        { url: endpoint.url, auth: endpoint.auth },
-                        session,
-                        session.notifications[index],
-                    );
-                }
-            }
+            await this.sendIssuanceWebhook(
+                session,
+                session.notifications[index],
+                logContext,
+            );
             const state: SessionStatus =
                 body.event === "credential_accepted"
                     ? SessionStatus.Completed
