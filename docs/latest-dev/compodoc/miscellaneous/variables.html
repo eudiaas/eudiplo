@@ -315,6 +315,9 @@
                             <a href="#configuredLogLevel" title="src/verifier/presentations/mdoc-context.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>configuredLogLevel</b>&nbsp;&nbsp;&nbsp;(src/.../mdoc-context.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#CONTAINER" title="src/trust/wua-status.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>CONTAINER</b>&nbsp;&nbsp;&nbsp;(src/.../wua-status.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#ContentType" title="src/shared/utils/media-type/media-type.decorator.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>ContentType</b>&nbsp;&nbsp;&nbsp;(src/.../media-type.decorator.ts)</span></a>
                         </li>
                         <li>
@@ -636,10 +639,10 @@
                             <a href="#kemSuiteId" title="src/verifier/iso18013/hpke.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>kemSuiteId</b>&nbsp;&nbsp;&nbsp;(src/.../hpke.ts)</span></a>
                         </li>
                         <li>
-                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/credentials/schemas/credential-config.schema.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../credential-config.schema.ts)</span></a>
+                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/issuance/dto/key-attestations-required.dto.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../key-attestations-required.dto.ts)</span></a>
                         </li>
                         <li>
-                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/issuance/dto/key-attestations-required.dto.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../key-attestations-required.dto.ts)</span></a>
+                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/credentials/schemas/credential-config.schema.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../credential-config.schema.ts)</span></a>
                         </li>
                         <li>
                             <a href="#KeyChainCreateSchema" title="src/crypto/key/schemas/key-chain.schema.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyChainCreateSchema</b>&nbsp;&nbsp;&nbsp;(src/.../key-chain.schema.ts)</span></a>
@@ -1057,6 +1060,9 @@
                         </li>
                         <li>
                             <a href="#webhookEndpointEditorSchemaBundle" title="src/issuer/configuration/webhook-endpoint/schemas/webhook-endpoint-editor-schema.bundle.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>webhookEndpointEditorSchemaBundle</b>&nbsp;&nbsp;&nbsp;(src/.../webhook-endpoint-editor-schema.bundle.ts)</span></a>
+                        </li>
+                        <li>
+                            <a href="#WUA_LABEL" title="src/trust/wallet-attestation.service.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>WUA_LABEL</b>&nbsp;&nbsp;&nbsp;(src/.../wallet-attestation.service.ts)</span></a>
                         </li>
                         <li>
                             <a href="#X509_CHAIN_DEBUG" title="src/verifier/presentations/mdoc-context.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>X509_CHAIN_DEBUG</b>&nbsp;&nbsp;&nbsp;(src/.../mdoc-context.ts)</span></a>
@@ -8290,6 +8296,53 @@ an OAuth 2.0 error response (when wallet cannot fulfill the request).</p>
         </tbody>
     </table>
 </section>
+    <h3>src/trust/wua-status.ts</h3>
+    <section data-compodoc="block-properties">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="CONTAINER"></a>
+                    <span class="name">
+                        <span ><b>CONTAINER</b></span>
+                        <a href="#CONTAINER"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+                <tr>
+                    <td class="col-md-4">
+                        <i>Type : </i>        <code><a href="../miscellaneous/typealiases.html#WuaKind" target="_self" >Record&lt;WuaKind, string&gt;</a></code>
+
+                    </td>
+                </tr>
+                <tr>
+                    <td class="col-md-4">
+                        <i>Default value : </i><code>{
+    wia: &quot;client_status&quot;,
+    ka: &quot;key_storage_status&quot;,
+}</code>
+                    </td>
+                </tr>
+
+            <tr>
+                <td class="col-md-4">
+                    <div class="io-description"><p>Where each attestation carries its status list reference.</p>
+<p>EUDI TS3 v1.5 (2026-03-15) moved it out of the top-level <code>status</code> claim:
+the WIA carries <code>client_status.status</code> (the revocation state of the Wallet
+Instance) and the KA carries <code>key_storage_status.status</code> (that of the WSCD
+or keystore). Each object also has an <code>exp</code>: how long the Wallet Provider
+commits to maintaining that index, independent of the token&#39;s own <code>exp</code>.</p>
+<p>A top-level <code>status</code> is still read as a fallback, for attestations issued
+before v1.5. Reading only the top level — what <code>getStatusListFromJWT</code> does,
+correctly for a generic Token Status List JWT — makes a conformant WIA look
+like one without status, and the revocation check is silently skipped.</p>
+</div>
+                </td>
+            </tr>
+
+        </tbody>
+    </table>
+</section>
     <h3>src/shared/utils/media-type/media-type.decorator.ts</h3>
     <section data-compodoc="block-properties">
     <h3></h3>    <table class="table table-sm table-bordered">
@@ -13885,6 +13938,44 @@ use Uint8Array<ArrayBufferLike> which is not assignable to BufferSource.</p>
                     </td>
                 </tr>
 
+
+        </tbody>
+    </table>
+</section>
+    <h3>src/trust/wallet-attestation.service.ts</h3>
+    <section data-compodoc="block-properties">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="WUA_LABEL"></a>
+                    <span class="name">
+                        <span ><b>WUA_LABEL</b></span>
+                        <a href="#WUA_LABEL"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+                <tr>
+                    <td class="col-md-4">
+                        <i>Type : </i>        <code><a href="../miscellaneous/typealiases.html#WuaKind" target="_self" >Record&lt;WuaKind, string&gt;</a></code>
+
+                    </td>
+                </tr>
+                <tr>
+                    <td class="col-md-4">
+                        <i>Default value : </i><code>{
+    wia: &quot;Wallet attestation&quot;,
+    ka: &quot;Key attestation&quot;,
+}</code>
+                    </td>
+                </tr>
+
+            <tr>
+                <td class="col-md-4">
+                    <div class="io-description"><p>How each attestation is named in logs and errors.</p>
+</div>
+                </td>
+            </tr>
 
         </tbody>
     </table>

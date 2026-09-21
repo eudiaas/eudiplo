@@ -373,6 +373,45 @@ export async function validateAttestationProofTrust(
         );
     }
 }
+
+/** The part of WalletAttestationService used here, to keep this util testable. */
+export interface KeyAttestationStatusVerifier {
+    verifyKeyAttestationStatus(
+        keyAttestationJwt: string,
+        walletProviderTrustLists: TrustListRef[],
+    ): Promise&lt;void&gt;;
+}
+
+/**
+ * Refuse issuance when the Key Attestation is revoked or suspended (EUDI TS3
+ * v1.5.2, section 2.4.3). Takes the KA itself, or a &#x60;jwt&#x60; proof carrying one in
+ * its &#x60;key_attestation&#x60; header; a &#x60;jwt&#x60; proof without a KA has nothing to check.
+ */
+export async function verifyProofKeyAttestationStatus(
+    proofOrKeyAttestationJwt: string,
+    proofType: &quot;jwt&quot; | &quot;attestation&quot;,
+    trustListRefs: TrustListRef[],
+    verifier: KeyAttestationStatusVerifier,
+): Promise&lt;void&gt; {
+    const keyAttestation &#x3D;
+        proofType &#x3D;&#x3D;&#x3D; &quot;jwt&quot;
+            ? decodeProtectedHeader(proofOrKeyAttestationJwt).key_attestation
+            : proofOrKeyAttestationJwt;
+    if (typeof keyAttestation !&#x3D;&#x3D; &quot;string&quot; || !keyAttestation) return;
+    try {
+        await verifier.verifyKeyAttestationStatus(
+            keyAttestation,
+            trustListRefs,
+        );
+    } catch (error) {
+        throw new CredentialRequestException(
+            &quot;invalid_proof&quot;,
+            error instanceof Error
+                ? error.message
+                : &quot;Key attestation status could not be verified&quot;,
+        );
+    }
+}
 </code></pre>
     </div>
 </div>

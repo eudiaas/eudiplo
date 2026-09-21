@@ -225,7 +225,7 @@
 
                             <tr>
                                 <td class="col-md-4">
-                                    <div class="io-line">Defined in <a href="" data-line="25" class="link-to-prism">src/trust/wallet-attestation.service.ts:25</a></div>
+                                    <div class="io-line">Defined in <a href="" data-line="32" class="link-to-prism">src/trust/wallet-attestation.service.ts:32</a></div>
                                 </td>
                             </tr>
 
@@ -269,7 +269,7 @@
 
                             <tr>
                                 <td class="col-md-4">
-                                    <div class="io-line">Defined in <a href="" data-line="26" class="link-to-prism">src/trust/wallet-attestation.service.ts:26</a></div>
+                                    <div class="io-line">Defined in <a href="" data-line="33" class="link-to-prism">src/trust/wallet-attestation.service.ts:33</a></div>
                                 </td>
                             </tr>
 
@@ -302,6 +302,13 @@ import {
     X509ValidationService,
 } from &quot;./x509-validation.service&quot;;
 import { TrustListRef } from &quot;../verifier/presentations/entities/presentation-config.entity&quot;;
+import { WuaKind, wuaStatusEntry } from &quot;./wua-status&quot;;
+
+/** How each attestation is named in logs and errors. */
+const WUA_LABEL: Record&lt;WuaKind, string&gt; &#x3D; {
+    wia: &quot;Wallet attestation&quot;,
+    ka: &quot;Key attestation&quot;,
+};
 
 export interface ClientAttestation {
     clientAttestationJwt: string;
@@ -390,8 +397,9 @@ export class WalletAttestationService {
 
             // Check the status list if present in the attestation JWT
             // Pass the matched entity and trust store for signature verification
-            await this.validateWalletAttestationStatus(
+            await this.validateAttestationStatus(
                 clientAttestation.clientAttestationJwt,
+                &quot;wia&quot;,
                 matchedEntity,
                 trustStore,
             );
@@ -506,31 +514,63 @@ export class WalletAttestationService {
     }
 
     /**
-     * Validate the status of a wallet attestation JWT if it contains a status claim.
-     * The status claim is optional per the spec, so if not present, validation passes.
-     * Also verifies that the status list JWT is signed by the revocation certificate
-     * from the same trusted entity that issued the wallet attestation.
-     * @param clientAttestationJwt The wallet attestation JWT
+     * Verify the revocation status of a Key Attestation received in a
+     * credential request (EUDI TS3 v1.5.2, section 2.4.3: an Attestation
+     * Provider SHALL check it at issuance and SHALL NOT issue if it is revoked).
+     *
+     * The status list must be signed by the revocation certificate of the same
+     * trusted wallet provider that signed the KA, exactly as for the WIA.
+     * Without trust lists there is no provider to match, so nothing is checked
+     * here; the KA trust validation already rejects that case.
+     * @param keyAttestationJwt The key attestation JWT
+     * @param walletProviderTrustLists The tenant&#x27;s wallet provider trust lists
+     * @throws UnauthorizedException if the KA is revoked or suspended
+     */
+    @Span(&quot;walletAttestation.verifyKeyAttestationStatus&quot;)
+    async verifyKeyAttestationStatus(
+        keyAttestationJwt: string,
+        walletProviderTrustLists: TrustListRef[],
+    ): Promise&lt;void&gt; {
+        if (normalizeTrustListRefs(walletProviderTrustLists).length &#x3D;&#x3D;&#x3D; 0) {
+            return;
+        }
+        const { matchedEntity, trustStore } &#x3D;
+            await this.validateWalletSolutionCertificate(
+                keyAttestationJwt,
+                walletProviderTrustLists,
+            );
+        await this.validateAttestationStatus(
+            keyAttestationJwt,
+            &quot;ka&quot;,
+            matchedEntity,
+            trustStore,
+        );
+    }
+
+    /**
+     * Validate the status of a WIA or KA if it carries a status list reference
+     * (see &#x60;wuaStatusEntry&#x60; for where TS3 puts it). Without one, validation
+     * passes. Also verifies that the status list JWT is signed by the revocation
+     * certificate from the same trusted entity that issued the attestation.
+     * @param attestationJwt The WIA or KA JWT
+     * @param kind Which of the two it is
      * @param matchedEntity The matched trusted entity from certificate validation
      * @param trustStore The trust store used for validation
      * @throws UnauthorizedException if the attestation has been revoked or suspended
      */
-    private async validateWalletAttestationStatus(
-        clientAttestationJwt: string,
+    private async validateAttestationStatus(
+        attestationJwt: string,
+        kind: WuaKind,
         matchedEntity: MatchedTrustedEntity | null,
         trustStore: BuiltTrustStore | null,
     ): Promise&lt;void&gt; {
+        const label &#x3D; WUA_LABEL[kind];
         try {
-            // Get the status entry from the JWT
-            const statusEntry &#x3D;
-                this.statusListVerifierService.getStatusEntryFromJwt(
-                    clientAttestationJwt,
-                );
+            const statusEntry &#x3D; wuaStatusEntry(attestationJwt, kind);
 
-            // No status claim in JWT - this is allowed per spec
             if (!statusEntry) {
                 this.logger.debug(
-                    &quot;Wallet attestation does not contain status claim - skipping status check&quot;,
+                    &#x60;${label} does not contain a status list reference - skipping status check&#x60;,
                 );
                 return;
             }
@@ -550,7 +590,7 @@ export class WalletAttestationService {
 
             if (!signatureValid) {
                 throw new UnauthorizedException(
-                    &quot;Status list JWT signature verification failed - not signed by trusted revocation certificate&quot;,
+                    &#x60;${label} status list JWT signature verification failed - not signed by trusted revocation certificate&#x60;,
                 );
             }
 
@@ -564,15 +604,15 @@ export class WalletAttestationService {
             // Check if the status indicates the attestation is valid
             if (!statusResult.isValid) {
                 this.logger.warn(
-                    &#x60;Wallet attestation status check failed: ${statusResult.description}&#x60;,
+                    &#x60;${label} status check failed: ${statusResult.description}&#x60;,
                 );
                 throw new UnauthorizedException(
-                    &#x60;Wallet attestation is not valid: ${statusResult.description}&#x60;,
+                    &#x60;${label} is not valid: ${statusResult.description}&#x60;,
                 );
             }
 
             this.logger.debug(
-                &#x60;Wallet attestation status verified: ${statusResult.description}&#x60;,
+                &#x60;${label} status verified: ${statusResult.description}&#x60;,
             );
         } catch (err) {
             if (err instanceof UnauthorizedException) {
@@ -581,7 +621,7 @@ export class WalletAttestationService {
             // Log the error but don&#x27;t fail - status checking is optional
             // and network issues shouldn&#x27;t block valid attestations
             this.logger.warn(
-                &#x60;Failed to check wallet attestation status: ${err instanceof Error ? err.message : &quot;Unknown error&quot;}&#x60;,
+                &#x60;Failed to check ${label.toLowerCase()} status: ${err instanceof Error ? err.message : &quot;Unknown error&quot;}&#x60;,
             );
         }
     }

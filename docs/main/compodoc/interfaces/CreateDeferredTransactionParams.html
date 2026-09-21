@@ -252,7 +252,7 @@
 
                             <tr>
                                 <td class="col-md-4">
-                                    <div class="io-line">Defined in <a href="" data-line="57" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:57</a></div>
+                                    <div class="io-line">Defined in <a href="" data-line="61" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:61</a></div>
                                 </td>
                             </tr>
 
@@ -297,7 +297,7 @@
 
                             <tr>
                                 <td class="col-md-4">
-                                    <div class="io-line">Defined in <a href="" data-line="59" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:59</a></div>
+                                    <div class="io-line">Defined in <a href="" data-line="63" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:63</a></div>
                                 </td>
                             </tr>
 
@@ -363,7 +363,7 @@
 
                             <tr>
                                 <td class="col-md-4">
-                                    <div class="io-line">Defined in <a href="" data-line="47" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:47</a></div>
+                                    <div class="io-line">Defined in <a href="" data-line="51" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:51</a></div>
                                 </td>
                             </tr>
 
@@ -408,7 +408,7 @@
 
                             <tr>
                                 <td class="col-md-4">
-                                    <div class="io-line">Defined in <a href="" data-line="53" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:53</a></div>
+                                    <div class="io-line">Defined in <a href="" data-line="57" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:57</a></div>
                                 </td>
                             </tr>
 
@@ -453,7 +453,7 @@
 
                             <tr>
                                 <td class="col-md-4">
-                                    <div class="io-line">Defined in <a href="" data-line="55" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:55</a></div>
+                                    <div class="io-line">Defined in <a href="" data-line="59" class="link-to-prism">src/issuer/issuance/oid4vci/deferred-credential.service.ts:59</a></div>
                                 </td>
                             </tr>
 
@@ -498,7 +498,10 @@ import { TrustStoreService } from &quot;../../../trust/trust-store.service&quot;
 import { X509ValidationService } from &quot;../../../trust/x509-validation.service&quot;;
 import { CredentialsService } from &quot;../../configuration/credentials/credentials.service&quot;;
 import { IssuanceService } from &quot;../../configuration/issuance/issuance.service&quot;;
-import { validateAttestationProofTrust } from &quot;./attestation-proof-trust.util&quot;;
+import {
+    validateAttestationProofTrust,
+    verifyProofKeyAttestationStatus,
+} from &quot;./attestation-proof-trust.util&quot;;
 import { DeferredCredentialRequestDto } from &quot;./dto/deferred-credential-request.dto&quot;;
 import {
     DeferredTransactionEntity,
@@ -510,6 +513,7 @@ import {
     DeferredCredentialException,
 } from &quot;./exceptions&quot;;
 import { getHeadersFromRequest } from &quot;./util&quot;;
+import { WalletAttestationService } from &quot;../../../trust/wallet-attestation.service&quot;;
 
 /**
  * Parameters for creating a deferred credential transaction.
@@ -547,6 +551,7 @@ export class DeferredCredentialService {
         private readonly traceService: TraceService,
         private readonly trustStoreService: TrustStoreService,
         private readonly x509ValidationService: X509ValidationService,
+        private readonly walletAttestationService: WalletAttestationService,
         @InjectRepository(NonceEntity)
         private readonly nonceRepository: Repository&lt;NonceEntity&gt;,
         @InjectRepository(DeferredTransactionEntity)
@@ -688,6 +693,15 @@ export class DeferredCredentialService {
                 issuerMetadata,
                 jwt: proof,
             });
+            // espuni: TS3 v1.5.2 §2.4.3 (see PATCHES.md).
+            const issuanceConfig &#x3D;
+                await this.issuanceService.getIssuanceConfiguration(tenantId);
+            await verifyProofKeyAttestationStatus(
+                proof,
+                &quot;jwt&quot;,
+                issuanceConfig.walletProviderTrustLists ?? [],
+                this.walletAttestationService,
+            );
             holderCnf &#x3D; verifiedProof.signer.publicJwk as Jwk;
         } else {
             const verifiedAttestation &#x3D;
@@ -707,6 +721,14 @@ export class DeferredCredentialService {
                     trustStoreService: this.trustStoreService,
                     x509ValidationService: this.x509ValidationService,
                 },
+            );
+
+            // espuni: TS3 v1.5.2 §2.4.3 (see PATCHES.md).
+            await verifyProofKeyAttestationStatus(
+                proof,
+                &quot;attestation&quot;,
+                issuanceConfig.walletProviderTrustLists ?? [],
+                this.walletAttestationService,
             );
 
             const attestedKeys &#x3D; verifiedAttestation.payload

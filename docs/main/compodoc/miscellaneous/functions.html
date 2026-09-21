@@ -159,6 +159,9 @@
                             <a href="#arrayBufferToHex" title="src/trust/x509-validation.service.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>arrayBufferToHex</b>&nbsp;&nbsp;&nbsp;(src/.../x509-validation.service.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#asEntry" title="src/trust/wua-status.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>asEntry</b>&nbsp;&nbsp;&nbsp;(src/.../wua-status.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#assertTokenRequestSessionValid" title="src/issuer/issuance/oid4vci/authorization/shared/chained-as-token.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>assertTokenRequestSessionValid</b>&nbsp;&nbsp;&nbsp;(src/.../chained-as-token.util.ts)</span></a>
                         </li>
                         <li>
@@ -561,7 +564,16 @@
                             <a href="#verifyPkceCodeChallenge" title="src/issuer/issuance/oid4vci/authorization/shared/pkce.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>verifyPkceCodeChallenge</b>&nbsp;&nbsp;&nbsp;(src/.../pkce.util.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#verifyProofKeyAttestationStatus" title="src/issuer/issuance/oid4vci/attestation-proof-trust.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>verifyProofKeyAttestationStatus</b>&nbsp;&nbsp;&nbsp;(src/.../attestation-proof-trust.util.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#withMeta" title="src/shared/common/zod/zod-schema.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>withMeta</b>&nbsp;&nbsp;&nbsp;(src/.../zod-schema.util.ts)</span></a>
+                        </li>
+                        <li>
+                            <a href="#wuaStatusEntry" title="src/trust/wua-status.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>wuaStatusEntry</b>&nbsp;&nbsp;&nbsp;(src/.../wua-status.ts)</span></a>
+                        </li>
+                        <li>
+                            <a href="#wuaStatusEntryFromPayload" title="src/trust/wua-status.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>wuaStatusEntryFromPayload</b>&nbsp;&nbsp;&nbsp;(src/.../wua-status.ts)</span></a>
                         </li>
                         <li>
                             <a href="#zodErrorToValidationIssues" title="src/shared/common/zod/zod-schema.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>zodErrorToValidationIssues</b>&nbsp;&nbsp;&nbsp;(src/.../zod-schema.util.ts)</span></a>
@@ -3254,6 +3266,216 @@ Converts to PEM format which is more reliably parsed by</p>
                             </div>
                         <div class="io-description">
                             <b>Returns : </b>    <code>x509.X509Certificate</code>
+
+                        </div>
+                            <div class="io-description">
+                                
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+    <h3>src/trust/wua-status.ts</h3>
+    <section data-compodoc="block-methods">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="asEntry"></a>
+                    <span class="name">
+                        <span ><b>asEntry</b></span>
+                        <a href="#asEntry"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>asEntry(value)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>value</td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>        <code><a href="../interfaces/WuaStatusEntry.html" target="_self" >WuaStatusEntry | undefined</a></code>
+
+                        </div>
+                            <div class="io-description">
+                                
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="wuaStatusEntry"></a>
+                    <span class="name">
+                        <span ><b>wuaStatusEntry</b></span>
+                        <a href="#wuaStatusEntry"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>wuaStatusEntry(jwt: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, kind: <a href="../miscellaneous/typealiases.html#WuaKind" target="_self">WuaKind</a>)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>Same, from the compact JWT. A JWT that cannot be decoded has no status.</p>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>jwt</td>
+                                            <td>
+                                                            <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                        <tr>
+                                                <td>kind</td>
+                                            <td>
+                                                            <code><a href="../miscellaneous/typealiases.html#WuaKind" target="_self" >WuaKind</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>        <code><a href="../interfaces/WuaStatusEntry.html" target="_self" >WuaStatusEntry | undefined</a></code>
+
+                        </div>
+                            <div class="io-description">
+                                
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="wuaStatusEntryFromPayload"></a>
+                    <span class="name">
+                        <span ><b>wuaStatusEntryFromPayload</b></span>
+                        <a href="#wuaStatusEntryFromPayload"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>wuaStatusEntryFromPayload(payload: Record, kind: <a href="../miscellaneous/typealiases.html#WuaKind" target="_self">WuaKind</a>)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>The status list reference of a WIA or KA payload, or undefined if it has none.</p>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>payload</td>
+                                            <td>
+                                                        <code>Record</code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                        <tr>
+                                                <td>kind</td>
+                                            <td>
+                                                            <code><a href="../miscellaneous/typealiases.html#WuaKind" target="_self" >WuaKind</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>        <code><a href="../interfaces/WuaStatusEntry.html" target="_self" >WuaStatusEntry | undefined</a></code>
 
                         </div>
                             <div class="io-description">
@@ -10137,6 +10359,105 @@ If no trust list is configured, this check is skipped for backward compatibility
                                                 <td>deps</td>
                                             <td>
                                                             <code><a href="../interfaces/AttestationProofTrustValidationDeps.html" target="_self" >AttestationProofTrustValidationDeps</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>    <code>Promise&lt;void&gt;</code>
+
+                        </div>
+                            <div class="io-description">
+                                
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="verifyProofKeyAttestationStatus"></a>
+                    <span class="name">
+                        <span ><b>verifyProofKeyAttestationStatus</b></span>
+                        <a href="#verifyProofKeyAttestationStatus"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>verifyProofKeyAttestationStatus(proofOrKeyAttestationJwt: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, proofType, trustListRefs, verifier: <a href="../interfaces/KeyAttestationStatusVerifier.html" target="_self">KeyAttestationStatusVerifier</a>)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>Refuse issuance when the Key Attestation is revoked or suspended (EUDI TS3
+v1.5.2, section 2.4.3). Takes the KA itself, or a <code>jwt</code> proof carrying one in
+its <code>key_attestation</code> header; a <code>jwt</code> proof without a KA has nothing to check.</p>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>proofOrKeyAttestationJwt</td>
+                                            <td>
+                                                            <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                        <tr>
+                                                <td>proofType</td>
+                                            <td>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                        <tr>
+                                                <td>trustListRefs</td>
+                                            <td>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                        <tr>
+                                                <td>verifier</td>
+                                            <td>
+                                                            <code><a href="../interfaces/KeyAttestationStatusVerifier.html" target="_self" >KeyAttestationStatusVerifier</a></code>
                                             </td>
 
                                             <td>

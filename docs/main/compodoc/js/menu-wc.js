@@ -2121,6 +2121,9 @@ customElements.define('compodoc-menu', class extends HTMLElement {
                                 <a href="interfaces/JwkWithOptionalKid.html" data-type="entity-link" >JwkWithOptionalKid</a>
                             </li>
                             <li class="link">
+                                <a href="interfaces/KeyAttestationStatusVerifier.html" data-type="entity-link" >KeyAttestationStatusVerifier</a>
+                            </li>
+                            <li class="link">
                                 <a href="interfaces/KmsAdapter.html" data-type="entity-link" >KmsAdapter</a>
                             </li>
                             <li class="link">
@@ -2242,6 +2245,9 @@ customElements.define('compodoc-menu', class extends HTMLElement {
                             </li>
                             <li class="link">
                                 <a href="interfaces/WebhookResponse.html" data-type="entity-link" >WebhookResponse</a>
+                            </li>
+                            <li class="link">
+                                <a href="interfaces/WuaStatusEntry.html" data-type="entity-link" >WuaStatusEntry</a>
                             </li>
                         </ul>
                     </li>
