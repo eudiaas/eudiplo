@@ -24,13 +24,13 @@
 <title>cluster_WebhookModule</title>
 <polygon fill="none" stroke="black" stroke-dasharray="1,5" points="8,-70 8,-268 572,-268 572,-70 8,-70"/>
 </g>
-<g id="clust6" class="cluster">
-<title>cluster_WebhookModule_providers</title>
-<polygon fill="none" stroke="black" points="142,-78 142,-130 564,-130 564,-78 142,-78"/>
-</g>
 <g id="clust4" class="cluster">
 <title>cluster_WebhookModule_exports</title>
 <polygon fill="none" stroke="black" points="89,-208 89,-260 411,-260 411,-208 89,-208"/>
+</g>
+<g id="clust6" class="cluster">
+<title>cluster_WebhookModule_providers</title>
+<polygon fill="none" stroke="black" points="142,-78 142,-130 564,-130 564,-78 142,-78"/>
 </g>
 <g id="clust3" class="cluster">
 <title>cluster_WebhookModule_imports</title>

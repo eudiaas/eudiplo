@@ -8365,10 +8365,8 @@ like one without status, and the revocation check is silently skipped.</p>
                 <tr>
                     <td class="col-md-4">
                         <i>Default value : </i><code>createParamDecorator(
-    (data: unknown, ctx: ExecutionContext) &#x3D;&gt; {
-        const request &#x3D; ctx.switchToHttp().getRequest();
-        return request.headers[&quot;accept&quot;] as string | undefined;
-    },
+    (data: unknown, ctx: ExecutionContext) &#x3D;&gt;
+        resolveAcceptedMediaType(ctx.switchToHttp().getRequest&lt;Request&gt;()),
 )</code>
                     </td>
                 </tr>

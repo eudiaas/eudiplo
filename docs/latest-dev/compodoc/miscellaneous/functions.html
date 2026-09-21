@@ -459,6 +459,9 @@
                             <a href="#requireTenantContext" title="src/auth/tenant-context.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>requireTenantContext</b>&nbsp;&nbsp;&nbsp;(src/.../tenant-context.util.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#resolveAcceptedMediaType" title="src/shared/utils/media-type/media-type.decorator.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>resolveAcceptedMediaType</b>&nbsp;&nbsp;&nbsp;(src/.../media-type.decorator.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#resolveAuditActor" title="src/audit-log/audit-log-context.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>resolveAuditActor</b>&nbsp;&nbsp;&nbsp;(src/.../audit-log-context.util.ts)</span></a>
                         </li>
                         <li>
@@ -9988,6 +9991,90 @@ logs/audit only.</p>
                         </div>
                             <div class="io-description">
                                 
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+    <h3>src/shared/utils/media-type/media-type.decorator.ts</h3>
+    <section data-compodoc="block-methods">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="resolveAcceptedMediaType"></a>
+                    <span class="name">
+                        <span ><b>resolveAcceptedMediaType</b></span>
+                        <a href="#resolveAcceptedMediaType"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>resolveAcceptedMediaType(request: Request)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>Resolves which of the media types this service can produce the client asked
+for.</p>
+<p><code>Accept</code> is a comma-separated list of media ranges with optional <code>q</code> weights
+(RFC 9110 §12.5.1), so it can not be compared as a string: a wallet that
+supports both signed and unsigned metadata sends <code>application/jwt, application/json</code>, which is exactly what OpenID4VCI 1.0 §12.2.2 recommends
+(&quot;the Content Type(s) it supports&quot;) and what the issuer is meant to answer
+with a matching <code>Content-Type</code> &quot;when the requested content type is
+supported&quot;.</p>
+<p>Two rules, in this order:</p>
+<ol>
+<li>The signed variant is only served when the client names
+<code>application/jwt</code> itself. Content negotiation matches wildcards too, so a
+client sending a wildcard <code>Accept</code> — a browser, a plain <code>curl</code> — or no
+<code>Accept</code> at all would otherwise be handed a JWT where it has always
+received JSON.</li>
+<li>Once it is named, Express resolves the list and the <code>q</code> weights for us,
+so JSON still wins when the client ranks it higher.</li>
+</ol>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>request</td>
+                                            <td>
+                                                        <code>Request</code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>        <code><a href="../miscellaneous/enumerations.html#MediaType" target="_self" >MediaType</a></code>
+
+                        </div>
+                            <div class="io-description">
+                                <p>the negotiated media type, defaulting to <code>application/json</code></p>
+
                             </div>
                 </td>
             </tr>
