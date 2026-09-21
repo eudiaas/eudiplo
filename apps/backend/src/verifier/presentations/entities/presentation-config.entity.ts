@@ -462,6 +462,25 @@ export class PresentationConfig {
     @Column("varchar", { nullable: true })
     clientIdScheme?: "x509_hash" | "redirect_uri" | null;
 
+    /**
+     * Additional members merged into `client_metadata` of the authorization
+     * request.
+     *
+     * `client_metadata` is an extensible JSON object in OpenID4VP, but the
+     * request builder emits a fixed literal — so a deployment that has to send
+     * an ecosystem-specific member (or one from a newer spec revision) has no
+     * way to do it without patching core code.
+     *
+     * Reserved keys are rejected at validation time rather than silently
+     * overwritten: `jwks` in particular is generated per request and the
+     * response encryption depends on it, so letting a config replace it would
+     * surface as an undecryptable response much later.
+     *
+     * Null (the default) means: emit exactly what is emitted today.
+     */
+    @Column("json", { nullable: true })
+    clientMetadataExtra?: Record<string, unknown> | null;
+
     @ApiHideProperty()
     @ManyToOne(() => WebhookEndpointEntity, {
         createForeignKeyConstraints: false,

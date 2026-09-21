@@ -45,5 +45,6 @@ export { AddNotificationEndpointEnabledToIssuanceConfig1775000000000 } from "./1
 // --- espuni fork (numbered above upstream to avoid collisions) ---
 export { AddClientIdSchemeToPresentationConfig1790000000000 } from "./1790000000000-AddClientIdSchemeToPresentationConfig";
 export { AddMissingSessionColumns1791000000000 } from "./1791000000000-AddMissingSessionColumns";
+export { AddClientMetadataExtraToPresentationConfig1792000000000 } from "./1792000000000-AddClientMetadataExtraToPresentationConfig";
 
 export { AddOutcomeToSession1776000000000 } from "./1776000000000-AddOutcomeToSession";

@@ -300,6 +300,11 @@ export class Oid4vpService {
                         : undefined,
                     dcql_query,
                     client_metadata: {
+                        // Deployment-specific members first, so the generated
+                        // ones below always win. The schema already rejects
+                        // `jwks`; this ordering makes that guarantee structural
+                        // instead of relying on validation alone.
+                        ...(presentationConfig.clientMetadataExtra ?? {}),
                         jwks: {
                             keys: [responseEncryptionPublicJwk],
                         },

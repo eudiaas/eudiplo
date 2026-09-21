@@ -44,7 +44,9 @@ const TrustListRefSchema = z
         serviceTypeMap: z
             .record(z.string(), z.string())
             .optional()
-            .describe("etsi-xml only: map source service-type URIs to internal ones."),
+            .describe(
+                "etsi-xml only: map source service-type URIs to internal ones.",
+            ),
         acceptedServiceStatus: z
             .array(z.string())
             .optional()
@@ -327,6 +329,21 @@ export const PresentationConfigCreateSchema = z
             .optional()
             .describe(
                 "OID4VP client identifier scheme used to build the authorization request.",
+            ),
+        // Extra members merged into `client_metadata`. Reserved keys are
+        // rejected here rather than overwritten downstream: `jwks` is minted
+        // per request and the response encryption depends on it, so replacing
+        // it would fail as an undecryptable response, far from the cause.
+        clientMetadataExtra: z
+            .record(z.string(), z.unknown())
+            .refine((v) => !Object.keys(v).includes("jwks"), {
+                message:
+                    "client_metadata.jwks is generated per request and cannot be overridden",
+            })
+            .nullable()
+            .optional()
+            .describe(
+                "Additional members merged into client_metadata of the authorization request.",
             ),
         dcql_query: DCQLSchema.describe(
             "DCQL query defining requested credentials and claims.",
