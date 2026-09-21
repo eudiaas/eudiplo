@@ -253,7 +253,7 @@
                 </tr>
                         <tr>
                             <td class="col-md-4">
-                                <div class="io-line">Defined in <a href="" data-line="37" class="link-to-prism">src/crypto/crypto.service.ts:37</a></div>
+                                <div class="io-line">Defined in <a href="" data-line="38" class="link-to-prism">src/crypto/crypto.service.ts:38</a></div>
                             </td>
                         </tr>
 
@@ -342,8 +342,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="60"
-                                    class="link-to-prism">src/crypto/crypto.service.ts:60</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="61"
+                                    class="link-to-prism">src/crypto/crypto.service.ts:61</a></div>
                         </td>
                     </tr>
 
@@ -430,8 +430,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="143"
-                                    class="link-to-prism">src/crypto/crypto.service.ts:143</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="172"
+                                    class="link-to-prism">src/crypto/crypto.service.ts:172</a></div>
                         </td>
                     </tr>
 
@@ -505,7 +505,7 @@
                 </tr>
                     <tr>
                         <td class="col-md-4">
-                                <div class="io-line">Defined in <a href="" data-line="37" class="link-to-prism">src/crypto/crypto.service.ts:37</a></div>
+                                <div class="io-line">Defined in <a href="" data-line="38" class="link-to-prism">src/crypto/crypto.service.ts:38</a></div>
                         </td>
                     </tr>
 
@@ -538,7 +538,7 @@ Configured via CRYPTO_TOLERANCE env var, defaults to 5s.</p>
                 </tr>
                     <tr>
                         <td class="col-md-4">
-                                <div class="io-line">Defined in <a href="" data-line="31" class="link-to-prism">src/crypto/crypto.service.ts:31</a></div>
+                                <div class="io-line">Defined in <a href="" data-line="32" class="link-to-prism">src/crypto/crypto.service.ts:32</a></div>
                         </td>
                     </tr>
 
@@ -572,7 +572,7 @@ Configured via CRYPTO_TOLERANCE env var, defaults to 5s.</p>
                 </tr>
                     <tr>
                         <td class="col-md-4">
-                                <div class="io-line">Defined in <a href="" data-line="45" class="link-to-prism">src/crypto/crypto.service.ts:45</a></div>
+                                <div class="io-line">Defined in <a href="" data-line="46" class="link-to-prism">src/crypto/crypto.service.ts:46</a></div>
                         </td>
                     </tr>
 
@@ -605,6 +605,7 @@ import {
     jwtVerify,
 } from &quot;jose&quot;;
 import { PinoLogger } from &quot;nestjs-pino&quot;;
+import { attestedProofKeys } from &quot;./attested-proof-key&quot;;
 import { KeyChainService } from &quot;./key/key-chain.service&quot;;
 
 /**
@@ -718,6 +719,34 @@ export class CryptoService {
                         );
                         return { verified: false };
                     }
+                } else if (signer.method &#x3D;&#x3D;&#x3D; &quot;custom&quot;) {
+                    // A &#x60;jwt&#x60; credential request proof that carries a key
+                    // attestation: its key is not in the header, it is one of
+                    // the attested keys, and resolving it is ours to do. See
+                    // &#x60;attestedProofKeys&#x60; for why taking a key out of an
+                    // as-yet unverified attestation is safe here.
+                    const candidates &#x3D; attestedProofKeys(compact, signer.kid);
+                    for (const publicJwk of candidates) {
+                        try {
+                            const josePublicKey &#x3D; await importJWK(
+                                publicJwk as JWK,
+                                signer.alg,
+                            );
+                            await jwtVerify(compact, josePublicKey, {
+                                clockTolerance: this.clockTolerance,
+                            });
+                            return { verified: true, signerJwk: publicJwk };
+                        } catch {
+                            // Not this one; &#x60;kid&#x60; is a hint, not a promise.
+                        }
+                    }
+                    this.logger.warn(
+                        { ...logContext, attestedKeys: candidates.length },
+                        candidates.length
+                            ? &quot;JWT verification failed (key attestation)&quot;
+                            : &quot;JWT signer could not be resolved: no key attestation in the proof header&quot;,
+                    );
+                    return { verified: false };
                 }
                 throw new Error(
                     &#x60;Signer method &#x27;${signer.method}&#x27; not supported&#x60;,

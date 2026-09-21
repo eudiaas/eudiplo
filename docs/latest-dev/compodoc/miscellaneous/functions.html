@@ -168,6 +168,9 @@
                             <a href="#attachResponseBodyCapture" title="src/platform/observability/logger.factory.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>attachResponseBodyCapture</b>&nbsp;&nbsp;&nbsp;(src/.../logger.factory.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#attestedProofKeys" title="src/crypto/attested-proof-key.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>attestedProofKeys</b>&nbsp;&nbsp;&nbsp;(src/.../attested-proof-key.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#base64url" title="src/crypto/key/key-chain-signing.service.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>base64url</b>&nbsp;&nbsp;&nbsp;(src/.../key-chain-signing.service.ts)</span></a>
                         </li>
                         <li>
@@ -4118,6 +4121,114 @@ Converts to PEM format which is more reliably parsed by</p>
                         </div>
                             <div class="io-description">
                                 
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+    <h3>src/crypto/attested-proof-key.ts</h3>
+    <section data-compodoc="block-methods">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="attestedProofKeys"></a>
+                    <span class="name">
+                        <span ><b>attestedProofKeys</b></span>
+                        <a href="#attestedProofKeys"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>attestedProofKeys(compactProof: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, kid?: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>The public keys a <code>jwt</code> credential request proof may have been signed with,
+read from the key attestation in the proof&#39;s own JOSE header.</p>
+<p>OpenID4VCI 1.0 Appendix D: a proof that carries a key attestation does not
+carry its key. The header has no <code>jwk</code>, no <code>x5c</code> and no DID — only
+<code>key_attestation</code>, whose payload lists the <code>attested_keys</code>, plus a <code>kid</code> that
+is the <strong>index</strong> of the signing key in that list. <code>@openid4vc/oauth2</code> cannot
+resolve a key from that, so it yields a <code>custom</code> signer and leaves the lookup
+to the host, which hands the key back in <code>verifyJwt</code>&#39;s <code>signerJwk</code>.</p>
+<p>The attestation is <strong>not</strong> verified here, and does not need to be. The caller
+verifies the proof signature against the key returned, and
+<code>@openid4vc/openid4vci</code> then verifies the attestation itself and refuses the
+proof unless that key belongs to the attested set of the <em>verified</em>
+attestation (<code>isJwkInSet</code>). Whether the attestation comes from a trusted
+wallet provider, and whether it is still valid, is settled after that by
+<code>verifyProofKeyAttestationStatus</code>. So a forged attestation buys nothing: it
+only chooses which key the signature is checked against, and every later step
+still has to pass.</p>
+<p><code>kid</code> decides the order, not the outcome. TS3 v1.5 dropped the requirement to
+send one, and the library checks membership rather than position, so a proof
+signed with another attested key still verifies — one signature check later.</p>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                                <td>Description</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>compactProof</td>
+                                            <td>
+                                                            <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                            <td>
+                                                    <p>The compact <code>jwt</code> proof.</p>
+
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                                <td>kid</td>
+                                            <td>
+                                                            <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
+                                            </td>
+
+                                            <td>
+                                                    Yes
+                                            </td>
+
+
+                                            <td>
+                                                    <p>The <code>kid</code> of its header, if any.</p>
+
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>    <code>Jwk[]</code>
+
+                        </div>
+                            <div class="io-description">
+                                <p>The candidate keys, likeliest first. Empty when the header carries
+no usable key attestation.</p>
+
                             </div>
                 </td>
             </tr>
