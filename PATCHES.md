@@ -16,10 +16,10 @@ rots.
 |---|---|
 | Upstream base of `main` | **v7.2.0** (rebased 2026-08-22, PR #19) |
 | Fork-only patches | **10** live (§1.1–§1.3, §1.5–§1.10) + infrastructure (§1.4) |
-| Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.6` (published 2026-09-21, [run 7](https://github.com/eudiaas/eudiplo/actions/runs/35569553349)) |
-| Built from | `db525564` (2026-09-21) — fork `main` incl. PRs [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) and [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base re-checked before tagging: the merge-base with `upstream/main` is exactly the `v7.2.0` tag |
-| Deployed where | staging (`eudiplo-staging.espuni.com`) runs at least `.6` — the EUDI wallet resolved **signed** metadata against it on 2026-09-21, which §1.9 makes possible and `.5` cannot serve. Production (`eudiplo.espuni.com`) is behind, by design. The exact tag of each droplet is `EUDIPLO_IMAGE_TAG` in its `.env`; `docs/architecture/environments.md` in cp-platform is the record, not this file |
-| Next publish | `v7.2.0-espuni.7` — tag after the **real** base, never from memory. Carries §1.10, the last thing between staging and a PID in the EUDI wallet. Publishing is **manual**: the `Publicar imagen espuni (GHCR)` workflow runs on `workflow_dispatch` or an `espuni-v*` tag push, never on a merge to `main` |
+| Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (published 2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`. Also tagged `sha-e5377d0`, so its provenance is checkable without trusting the tag name |
+| Built from | `e5377d02` (2026-09-21) — the merge of [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10), on top of `db525564` with [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) and [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base re-checked before tagging: the merge-base with `upstream/main` is exactly the `v7.2.0` tag |
+| Deployed where | staging (`eudiplo-staging.espuni.com`) runs **`.7`**, verified 2026-09-21 at `GET /api/docs-json` → `info.version` (no token needed; `/api/version` wants one). Production (`eudiplo.espuni.com`) is behind, by design. The tag of each droplet lives in its `EUDIPLO_IMAGE_TAG`; `docs/architecture/environments.md` in cp-platform is the record, not this file |
+| Next publish | `v7.2.0-espuni.8` — tag after the **real** base, never from memory. Publishing is **manual**: the `Publicar imagen espuni (GHCR)` workflow runs on `workflow_dispatch` or an `espuni-v*` tag push, never on a merge to `main` |
 
 > ✅ **The image tag no longer lies (2026-08-28).** The `v5.1.0-espuni.1` tag
 > was named after the base at the first publish and never renamed, so it
