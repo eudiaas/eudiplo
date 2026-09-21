@@ -15,11 +15,11 @@ rots.
 | | |
 |---|---|
 | Upstream base of `main` | **v7.2.0** (rebased 2026-08-22, PR #19) |
-| Fork-only patches | **9** live (§1.1–§1.3, §1.5–§1.9) + infrastructure (§1.4) |
+| Fork-only patches | **10** live (§1.1–§1.3, §1.5–§1.10) + infrastructure (§1.4) |
 | Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.5` |
 | Built from | `4abfc02d` (2026-08-23) — fork `main` incl. PRs #11 and #12 |
 | Deployed where | staging (`eudiplo-staging.espuni.com`) runs `.5`; production (`eudiplo.espuni.com`) is still on `.4`. Per-environment by design — see `docs/architecture/environments.md` in cp-platform |
-| Next publish | `v7.2.0-espuni.6` — tag after the **real** base, never from memory. Carries §1.9, which staging needs before the EUDI wallet E2E can run |
+| Next publish | The next `v7.2.0-espuni.N` after whatever staging runs today — `/api/version` needs a token, and `docs/architecture/environments.md` in cp-platform is the record; tag after the **real** base, never from memory. Carries §1.10, the last thing between staging and a PID in the EUDI wallet |
 
 > ✅ **The image tag no longer lies (2026-08-28).** The `v5.1.0-espuni.1` tag
 > was named after the base at the first publish and never renamed, so it
@@ -235,6 +235,23 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > Express stack in `issuance-metadata.e2e-spec.ts`. The two list cases fail on
 > the unpatched decorator and pass with it; the wildcard and no-header cases
 > pass either way, which is the point — they guard the default.
+
+### 1.10 `jwt` proofs carrying a key attestation (`custom` signer)
+
+| | |
+|---|---|
+| Commits | branch `fix/key-attestation-jwt-proof` |
+| Files | `crypto/attested-proof-key.ts` (new, + `.spec.ts`) · `crypto/crypto.service.ts` (+ `.spec.ts`, new) |
+| Upstream status | 🔴 **Not fixed upstream** — verified on `upstream/main` at v8.0.2 (2026-09-21): `crypto.service.ts` has the same two branches at the same lines (`jwk` at 91, `x5c` at 108) and the same throw at 136, and nothing in `apps/backend/src` mentions `attested_keys` or a `custom` signer. No issue and no open PR on it |
+| What | `getCallbackContext().verifyJwt` gains a `custom` branch that resolves the key from the `attested_keys` of the `key_attestation` in the proof's own header, verifies the proof under it and returns it in `signerJwk` |
+| Why we need it | Without it, **an issuer that requires key attestations cannot issue at all**. OpenID4VCI 1.0 Appendix D: a `jwt` proof carrying a key attestation puts no key in its header — no `jwk`, no `x5c`, no DID, only `key_attestation` and a `kid` that indexes `attested_keys`. `@openid4vc/oauth2` 0.5.4 `jwtSignerFromJwt` therefore falls through to `{ method: "custom" }` and leaves the lookup to the host, which is what `signerJwk` in the callback's result is for. EUDIPLO handled only `jwk` and `x5c` and threw, so every credential request from a wallet that had been told key attestations are required came back `400 invalid_proof: Error verifying credential request proof jwt. Signer method 'custom' not supported`. Measured against `wallet-core` 0.30.2 / `openid4vci-kt` 0.13.1, whose `JwtProofSignersKt.keyAttestationHeader` writes exactly `{typ: openid4vci-proof+jwt, kid: "<index>", key_attestation: <jwt>}` |
+| Why it is safe to read an unverified attestation | The branch only chooses which key the signature is checked against. `@openid4vc/openid4vci` verifies the attestation immediately after and refuses the proof unless that key is in the attested set of the *verified* attestation (`isJwkInSet`), and §1.8's `verifyProofKeyAttestationStatus` then validates the attestation's x5c chain against `walletProviderTrustLists` and its revocation status. A forged attestation passes none of those |
+| `kid` is a hint | It is tried first and the rest of the attested keys after, because TS3 v1.5 dropped the requirement to send a `kid` and the library checks membership, not position. Making index 0 mandatory is the stricter reading in §1.8's note 4, and is not done here |
+| v7 impact | 🟢 Self-contained: one branch plus a pure helper, on a file upstream has not changed. Replays through any rebase, unless the library starts resolving attested keys itself |
+
+> The spec signs a real proof with a real attested key and runs it through the
+> callback. The four cases fail on unpatched `main` with the wallet's own error
+> text, which is the point: it is the bug reproduced, not a mock of it.
 
 ### 1.4 Fork infrastructure (permanent)
 

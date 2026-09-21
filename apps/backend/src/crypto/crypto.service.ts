@@ -18,6 +18,7 @@ import {
     jwtVerify,
 } from "jose";
 import { PinoLogger } from "nestjs-pino";
+import { attestedProofKeys } from "./attested-proof-key";
 import { KeyChainService } from "./key/key-chain.service";
 
 /**
@@ -131,6 +132,34 @@ export class CryptoService {
                         );
                         return { verified: false };
                     }
+                } else if (signer.method === "custom") {
+                    // A `jwt` credential request proof that carries a key
+                    // attestation: its key is not in the header, it is one of
+                    // the attested keys, and resolving it is ours to do. See
+                    // `attestedProofKeys` for why taking a key out of an
+                    // as-yet unverified attestation is safe here.
+                    const candidates = attestedProofKeys(compact, signer.kid);
+                    for (const publicJwk of candidates) {
+                        try {
+                            const josePublicKey = await importJWK(
+                                publicJwk as JWK,
+                                signer.alg,
+                            );
+                            await jwtVerify(compact, josePublicKey, {
+                                clockTolerance: this.clockTolerance,
+                            });
+                            return { verified: true, signerJwk: publicJwk };
+                        } catch {
+                            // Not this one; `kid` is a hint, not a promise.
+                        }
+                    }
+                    this.logger.warn(
+                        { ...logContext, attestedKeys: candidates.length },
+                        candidates.length
+                            ? "JWT verification failed (key attestation)"
+                            : "JWT signer could not be resolved: no key attestation in the proof header",
+                    );
+                    return { verified: false };
                 }
                 throw new Error(
                     `Signer method '${signer.method}' not supported`,
