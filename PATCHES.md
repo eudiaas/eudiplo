@@ -175,6 +175,48 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > and fires no webhook. The outcome should carry spec codes verbatim and record
 > whether the failure came from the protocol channel or from our validation.
 
+### 1.8 WUA status per EUDI TS3 v1.5 (`client_status`, `key_storage_status`)
+
+| | |
+|---|---|
+| Commits | branch `fix/ts3-wua-status` |
+| Files | `trust/wua-status.ts` (new) · `trust/wallet-attestation.service.ts` · `issuer/issuance/oid4vci/attestation-proof-trust.util.ts` · `oid4vci.service.ts` · `deferred-credential.service.ts` |
+| Upstream status | 🔴 **Not fixed upstream** — verified on `upstream/main` at v8.0.1 (2026-09-19): no reference to `client_status` or `key_storage_status` anywhere in `apps/backend/src`, and `@owf/token-status-list` 0.3.2 and 0.4.0 both read only the top-level `status`. No issue or PR mentions it. Draft issue ready to file: [`upstream-issue-ts3-wua-status.md`](./upstream-issue-ts3-wua-status.md) |
+| What | The status list reference of a WIA is read from `client_status.status` and that of a KA from `key_storage_status.status` (TS3 v1.5, 2026-03-15), with the top-level `status` as a fallback for attestations issued before. The revocation status of the **KA** is now checked at issuance, for `attestation` proofs and for the `key_attestation` of `jwt` proofs, against a status list signed by the revocation certificate of the same trusted wallet provider — the WIA logic, generalised. A revoked KA is `invalid_proof` |
+| Why we need it | A conformant WIA (e.g. from `eu-digital-identity-wallet/eudi-srv-wallet-provider`) looked like one without status, so its revocation check was **silently skipped**. The KA was never checked at all, while TS3 v1.5.2 §2.4.3 says an Attestation Provider SHALL NOT issue on a revoked KA |
+| Side effect | A `jwt` proof carrying a `key_attestation` now also has its KA signer validated against `walletProviderTrustLists` (the status check matches the provider first). Upstream does this since `validateJwtProofAttestationTrust`; v7.2.0 did not |
+| v7 impact | 🟢 No schema, no migration. On rebase onto v8, `oid4vci.service.ts` already calls `validateJwtProofAttestationTrust` in the `jwt` branch: keep both calls |
+
+> **Other TS3 (v1.4–v1.5.2) gaps found in the same review, not patched here**
+> (all verified on `upstream/main` v8.0.1):
+>
+> 1. **KA not required.** With `jwt` proofs the `key_attestation` is optional
+>    even when `keyAttestationsRequired` is configured; TS3 §2.2.2.1 requires a
+>    KA for every device-bound issuance.
+> 2. **`key_attestations_required` is published, never enforced.** `key_storage`
+>    and `user_authentication` of the received KA are not compared with the
+>    configuration, so nothing guarantees §2.3.2: a PID bound to a key from a KA
+>    whose key storage is a WSCD.
+> 3. **Batch with `attestation` proofs rejected.** More than one attested key is
+>    refused; TS3 §2.2.2.1 allows several keys for batch issuance.
+> 4. **`jwt` proof signer.** TS3 v1.5 dropped the `kid` requirement: the proof
+>    is signed with `attested_keys[0]` and verified under it. The library
+>    (`@openid4vc/openid4vci` 0.5.x) still resolves the signer from the proof
+>    header (`x5c`/`kid`/`jwk`) and accepts any attested key, not index 0.
+> 5. **PID validity not bounded.** §2.4.3: the PID validity SHALL end before
+>    `client_status.exp` and `key_storage_status.exp`. Validity comes only from
+>    `lifeTime`.
+> 6. **No periodic re-check.** §2.4.3: a PID Provider SHALL re-check the WIA and
+>    KA status at least every 24 h and revoke the PID if either is revoked. Only
+>    the issuance-time check exists, and it needs the `client_status` passed from
+>    the AS to the Credential Issuer (e.g. in the access token), which nothing does.
+> 7. **Metadata.** Neither `preferred_client_status_period` (top level) nor
+>    `preferred_key_storage_status_period` (in `key_attestations_required`) can
+>    be published.
+> 8. **Fail-open status fetch.** When the status list cannot be fetched the
+>    check logs and passes (`validateAttestationStatus`), for WIA and now KA.
+>    TS3 uses SHALL for the check; this patch keeps upstream's behaviour.
+
 ### 1.4 Fork infrastructure (permanent)
 
 | Commits | What |

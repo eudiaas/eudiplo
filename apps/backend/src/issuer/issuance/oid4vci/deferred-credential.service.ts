@@ -26,7 +26,10 @@ import { TrustStoreService } from "../../../trust/trust-store.service";
 import { X509ValidationService } from "../../../trust/x509-validation.service";
 import { CredentialsService } from "../../configuration/credentials/credentials.service";
 import { IssuanceService } from "../../configuration/issuance/issuance.service";
-import { validateAttestationProofTrust } from "./attestation-proof-trust.util";
+import {
+    validateAttestationProofTrust,
+    verifyProofKeyAttestationStatus,
+} from "./attestation-proof-trust.util";
 import { DeferredCredentialRequestDto } from "./dto/deferred-credential-request.dto";
 import {
     DeferredTransactionEntity,
@@ -38,6 +41,7 @@ import {
     DeferredCredentialException,
 } from "./exceptions";
 import { getHeadersFromRequest } from "./util";
+import { WalletAttestationService } from "../../../trust/wallet-attestation.service";
 
 /**
  * Parameters for creating a deferred credential transaction.
@@ -75,6 +79,7 @@ export class DeferredCredentialService {
         private readonly traceService: TraceService,
         private readonly trustStoreService: TrustStoreService,
         private readonly x509ValidationService: X509ValidationService,
+        private readonly walletAttestationService: WalletAttestationService,
         @InjectRepository(NonceEntity)
         private readonly nonceRepository: Repository<NonceEntity>,
         @InjectRepository(DeferredTransactionEntity)
@@ -216,6 +221,15 @@ export class DeferredCredentialService {
                 issuerMetadata,
                 jwt: proof,
             });
+            // espuni: TS3 v1.5.2 §2.4.3 (see PATCHES.md).
+            const issuanceConfig =
+                await this.issuanceService.getIssuanceConfiguration(tenantId);
+            await verifyProofKeyAttestationStatus(
+                proof,
+                "jwt",
+                issuanceConfig.walletProviderTrustLists ?? [],
+                this.walletAttestationService,
+            );
             holderCnf = verifiedProof.signer.publicJwk as Jwk;
         } else {
             const verifiedAttestation =
@@ -235,6 +249,14 @@ export class DeferredCredentialService {
                     trustStoreService: this.trustStoreService,
                     x509ValidationService: this.x509ValidationService,
                 },
+            );
+
+            // espuni: TS3 v1.5.2 §2.4.3 (see PATCHES.md).
+            await verifyProofKeyAttestationStatus(
+                proof,
+                "attestation",
+                issuanceConfig.walletProviderTrustLists ?? [],
+                this.walletAttestationService,
             );
 
             const attestedKeys = verifiedAttestation.payload
