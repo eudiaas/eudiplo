@@ -15,11 +15,11 @@ rots.
 | | |
 |---|---|
 | Upstream base of `main` | **v7.2.0** (rebased 2026-08-22, PR #19) |
-| Fork-only patches | **7** live (§1.1–§1.3, §1.5–§1.7) + infrastructure (§1.4) |
+| Fork-only patches | **9** live (§1.1–§1.3, §1.5–§1.9) + infrastructure (§1.4) |
 | Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.5` |
 | Built from | `4abfc02d` (2026-08-23) — fork `main` incl. PRs #11 and #12 |
 | Deployed where | staging (`eudiplo-staging.espuni.com`) runs `.5`; production (`eudiplo.espuni.com`) is still on `.4`. Per-environment by design — see `docs/architecture/environments.md` in cp-platform |
-| Next publish | `v7.2.0-espuni.6` — tag after the **real** base, never from memory |
+| Next publish | `v7.2.0-espuni.6` — tag after the **real** base, never from memory. Carries §1.9, which staging needs before the EUDI wallet E2E can run |
 
 > ✅ **The image tag no longer lies (2026-08-28).** The `v5.1.0-espuni.1` tag
 > was named after the base at the first publish and never renamed, so it
@@ -217,6 +217,25 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 >    check logs and passes (`validateAttestationStatus`), for WIA and now KA.
 >    TS3 uses SHALL for the check; this patch keeps upstream's behaviour.
 
+### 1.9 `Accept` content negotiation for the signed issuer metadata
+
+| | |
+|---|---|
+| Commits | `2706cc61` |
+| Files | `shared/utils/media-type/media-type.decorator.ts` (+ `.spec.ts`) · `test/issuance/issuance-metadata.e2e-spec.ts` |
+| Upstream status | 🔴 **Not fixed upstream** — the decorator is byte-identical on `upstream/main` at v8.0.2 (verified 2026-09-21: `git diff origin/main upstream/main -- apps/backend/src/shared/utils/media-type/` is empty), and `well-known.service.ts` differs only in the `.js` import extensions. Reported as [eudiaas/eudiplo#29](https://github.com/eudiaas/eudiplo/issues/29) §1; upstream PR to open from a branch cut off `upstream/main` |
+| What | `Accept` is negotiated instead of string-compared. The decorator used to hand `well-known.service.ts` the raw header, which then tested it for equality against `application/jwt`, so the metadata was only signed when the client asked for exactly one type and nothing else. `application/jwt, application/json` — a list, as RFC 9110 §12.5.1 defines it — fell through to unsigned JSON |
+| Why we need it | That list is what a real wallet sends: `openid4vci-kt` 0.13.1 resolves the metadata with `getAcceptingContentTypes(url, application/jwt, application/json)` under its default `PreferSigned` policy, and the EUDI wallet (`wallet-core` 0.30.2) needs the certificate that **signs** the metadata to bind the registration certificate it publishes in `issuer_info` — `getMetadataSigningCertificate()` → `isBoundTo()`, which matches the access certificate's `organizationIdentifier` (OID 2.5.4.97) against the registration certificate's `sub`. No signed metadata, no access certificate, so the binding fails with `NOT_BOUND_TO_REQUESTER` and the issuance stops dead. It cannot be worked around from the wallet. OpenID4VCI 1.0 §12.2.2 tells Wallets to announce "the Content Type(s) it supports" and Issuers to answer with a matching `Content-Type`; HAIP 1.0 §4.1 makes signed metadata mandatory where the ecosystem needs issuer authentication beyond TLS |
+| The default is deliberate | Signed metadata is only served when the client **names** `application/jwt`. A wildcard `Accept` — a browser, a plain `curl` — or no header at all still gets JSON, which a bare `request.accepts([jwt, json])` would not have done: wildcards match, so those clients would have started receiving a JWT. Once the type is named, Express resolves the `q` weights, so JSON still wins when the client ranks it higher |
+| Not fixed here | Issue #29 §3 — which access key chain signs the metadata is undetermined when a tenant has more than one (`findByUsageType` does an unordered `findOne`, and there is no `signingKeyId` equivalent for issuer metadata). Worked around by giving the entity a single access certificate. §2 of that issue is not a bug, it is why this one matters |
+| v7 impact | 🟢 Self-contained: one decorator plus tests, on files upstream has not touched since v7.2.0. Replays through any rebase |
+
+> Covered by a unit spec on the negotiation itself (single type, both types, `q`
+> weights in either order, wildcard, no header) and by e2e cases on the real
+> Express stack in `issuance-metadata.e2e-spec.ts`. The two list cases fail on
+> the unpatched decorator and pass with it; the wildcard and no-header cases
+> pass either way, which is the point — they guard the default.
+
 ### 1.4 Fork infrastructure (permanent)
 
 | Commits | What |
@@ -367,7 +386,7 @@ them; dropping the column would be a destructive migration for no gain.
 - `@owf/eudi-tl` adoption (retires §1.2's library commits and the two vendored
   copies in cp-platform): gap **REL-011**. Blocked on the npm release, not on
   the merge — see §1.2.
-- Upstream contributions in flight: **#970** (§1.6). Merged from this fork:
+- Upstream contributions in flight: **#970** (§1.6), §1.9 (to open). Merged from this fork:
   #836, #862, #884, #890, #954, #955, #957 — see §2.
 - Not queued for upstream and deliberately so: §1.1 (EU AV profile — needs the
   Blueprint-support conversation with `cre8` first), §1.3 (fork-only test
