@@ -20,19 +20,27 @@ rots.
 | Built from | `4abfc02d` (2026-08-23) — fork `main` incl. PRs #11 and #12 |
 | Deployed where | staging (`eudiplo-staging.espuni.com`) runs `.5`; production (`eudiplo.espuni.com`) is still on `.4`. Per-environment by design — see `docs/architecture/environments.md` in cp-platform |
 | Next publish | The next `v7.2.0-espuni.N` after whatever staging runs today — `/api/version` needs a token, and `docs/architecture/environments.md` in cp-platform is the record; tag after the **real** base, never from memory. Carries §1.10, the last thing between staging and a PID in the EUDI wallet |
+| Fork-only patches | **9** live (§1.1–§1.3, §1.5–§1.9) + infrastructure (§1.4) |
+| Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.6` (published 2026-09-21, [run 7](https://github.com/eudiaas/eudiplo/actions/runs/35569553349)) |
+| Built from | `db525564` (2026-09-21) — fork `main` incl. PRs [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) and [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base re-checked before tagging: the merge-base with `upstream/main` is exactly the `v7.2.0` tag |
+| Deployed where | 🔴 **`.6` is published, not deployed.** staging (`eudiplo-staging.espuni.com`) still runs `.5` and production (`eudiplo.espuni.com`) `.4` until each droplet's `EUDIPLO_IMAGE_TAG` is bumped. Per-environment by design — see `docs/architecture/environments.md` in cp-platform |
+| Next publish | `v7.2.0-espuni.7` — tag after the **real** base, never from memory |
 
 > ✅ **The image tag no longer lies (2026-08-28).** The `v5.1.0-espuni.1` tag
 > was named after the base at the first publish and never renamed, so it
-> advertised v5.1.0 while containing v6.1.0. That is resolved: staging runs
-> `v7.2.0-espuni.5`, built from `4abfc02d`, which really is v7.2.0 + these
-> patches. Verified live — the OpenAPI at `eudiplo-staging.espuni.com`
-> reports `v7.2.0-espuni.5` and exposes `notifyOnFailure` and `failureCode`.
-> Keep verifying with `git describe --tags --abbrev=0 <commit>` before
-> tagging, never from memory.
+> advertised v5.1.0 while containing v6.1.0. That is resolved, and stays
+> resolved: `.6` was tagged only after re-checking that
+> `git merge-base main upstream/main` is the `v7.2.0` tag itself. Keep doing
+> that before every publish, never from memory.
 >
-> ℹ️ **Production is on `.4`, staging on `.5` — by design, not by drift.**
-> Staging runs ahead while something is being validated; that is what it is for.
-> Only staging carries §1.6 and §1.7 today.
+> ⚠️ **`.6` is published but nothing runs it yet.** Until the droplets move,
+> the record is: production `.4`, staging `.5`, registry `.6`. §1.9 — the one
+> that unblocks the EUDI wallet E2E — ships in `.6`, so that E2E cannot pass
+> until staging is bumped.
+>
+> ℹ️ **Production behind staging is by design, not drift.** Staging runs ahead
+> while something is being validated; that is what it is for. Only staging
+> carries §1.6 and §1.7 today.
 >
 > cp-platform's `docker-compose.override.yml` used to pin a single tag for both
 > droplets, so it necessarily misstated one of them whenever staging was ahead.
