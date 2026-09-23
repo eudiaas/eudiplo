@@ -428,6 +428,10 @@ export class Iso18013Service {
                 acceptedServiceTypes: [
                     ServiceTypeIdentifier.EaaIssuance,
                     ServiceTypeIdentifier.PIDIssuance,
+                    // espuni fork: same set as the SD-JWT path in
+                    // presentations.service.ts — a Pub-EAA issuer must be
+                    // accepted whichever format its attestation uses.
+                    ServiceTypeIdentifier.PubEAAIssuance,
                 ],
             },
             federationTrustSource: federationAuthorities?.values.length

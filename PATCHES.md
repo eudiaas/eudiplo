@@ -15,7 +15,7 @@ rots.
 | | |
 |---|---|
 | Upstream base of `main` | **v7.2.0** (rebased 2026-08-22, PR #19) |
-| Fork-only patches | **10** live (§1.1–§1.3, §1.5–§1.10) + infrastructure (§1.4) |
+| Fork-only patches | **11** live (§1.1–§1.3, §1.5–§1.11) + infrastructure (§1.4) |
 | Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (published 2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`. Also tagged `sha-e5377d0`, so its provenance is checkable without trusting the tag name |
 | Built from | `e5377d02` (2026-09-21) — the merge of [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10), on top of `db525564` with [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) and [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base re-checked before tagging: the merge-base with `upstream/main` is exactly the `v7.2.0` tag |
 | Deployed where | staging (`eudiplo-staging.espuni.com`) runs **`.7`**, verified 2026-09-21 at `GET /api/docs-json` → `info.version` (no token needed; `/api/version` wants one). Production (`eudiplo.espuni.com`) is behind, by design. The tag of each droplet lives in its `EUDIPLO_IMAGE_TAG`; `docs/architecture/environments.md` in cp-platform is the record, not this file |
@@ -255,6 +255,26 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > The spec signs a real proof with a real attested key and runs it through the
 > callback. The four cases fail on unpatched `main` with the wallet's own error
 > text, which is the point: it is the bug reproduced, not a mock of it.
+
+### 1.11 Pub-EAA issuers are accepted from their own trust list
+
+| | |
+|---|---|
+| Commits | branch `fix/pubeaa-service-type` |
+| Files | `issuer/trust-list/trustlist.service.ts` (enum) · `verifier/presentations/presentations.service.ts` · `verifier/iso18013/iso18013.service.ts` · `trust/lote-parser.service.spec.ts` (new) |
+| Upstream status | 🔴 **Not fixed upstream** — verified on `upstream/main` (2026-09-23): the enum there is the same five members (`WalletIssuance`, `WalletRevocation`, `PIDIssuance`, `EaaIssuance`, `EaaRevocation`), nothing under `apps/backend/src` mentions `PubEAA`, and both verification paths pass the same `[EaaIssuance, PIDIssuance]`. No issue and no open PR on it |
+| What | `ServiceTypeIdentifier` gains `PubEAAIssuance`, and both verification paths — SD-JWT VC (`presentations.service.ts`) and mdoc (`iso18013.service.ts`) — add it to the `acceptedServiceTypes` they hand the trust store |
+| Why we need it | Without it **a credential whose issuer is published in a Pub-EAA providers list can never verify**. `TrustStoreService` filters the parsed LoTE with `filterByServiceTypes`, which drops the *whole* trusted entity when none of its services matches, and `serviceTypeMatches` demands strict equality once the accepted type ends in `/Issuance`. A conformant Pub-EAA list declares `SvcType/PubEAA/Issuance`, so it matched nothing: zero entities, and the presentation failed with `trust_chain_not_trusted` — *"The credential issuer is not in the trusted list"* — while the correct Document Signer sat in the list all along. Reproduced end to end on staging on 2026-09-22 with the EUDI reference wallet (`wallet-core` 0.30.2), session `0731f5ec`, presenting `urn:eudi:fnmt:representante-persona-juridica:1` against a list whose only entry was the very DS that had signed it |
+| Which side is the odd one | ETSI TS 119 602 V1.1.1 registers exactly six service types — PID, PubEAA, WRPAC, WRPRC, WalletSolution and Register. **`SvcType/EAA` is not among them, and the standard defines no "EAA providers list" profile at all**: it comes from `@owf/eudi-lote`. Annex H (Table H.3) admits `SvcType/PubEAA/Issuance` and its `/Revocation` sibling *"to the exclusion of any other"*, so a conformant Pub-EAA list **cannot** relabel its services as `EAA/Issuance` to get past the filter. The standard-compliant list was the one being rejected |
+| Issuance only | `PubEAA/Revocation` is deliberately **not** added. It would be dead weight today: `getRevocationCert()` looks up `ServiceTypeIdentifiers.EaaRevocation` from `trust/types.ts`, a separate declaration this patch does not touch, and the flows that reach here take their status from the credential's own status list. A Pub-EAA provider whose revocation service must be honoured through the trust list is a second, separate gap — the spec above asserts the sibling URI does *not* let an entity in |
+| Not fixed here | The accepted set is spelled out twice, once per verification path, with no shared constant (upstream already has that pattern for `walletSolutionServiceTypes`). Left alone to keep the diff to what the bug needs; the new spec pins both copies |
+| v7 impact | 🟢 Self-contained: one enum member and two array entries, on files upstream has not touched since v7.2.0. Replays through any rebase |
+
+> `lote-parser.service.spec.ts` drives the real parser and the real filter with
+> the accepted set copied verbatim from both call sites: a Pub-EAA entity
+> survives, PID and EAA still do, and a revocation-only entity still does not.
+> The first case fails on unpatched `main` (`expected [] to have a length of 1`),
+> which is the bug itself, not a mock of it.
 
 ### 1.4 Fork infrastructure (permanent)
 
