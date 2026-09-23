@@ -297,6 +297,11 @@
                                     <span class="modifier">Async</span>
                                 <a href="#hasEnabledChainedAuthorizationServer" >hasEnabledChainedAuthorizationServer</a>
                             </li>
+                            <li>
+                                <span class="reference-badge reference-badge--method" aria-hidden="true">M</span>
+                                    <span class="modifier">Private</span>
+                                <a href="#presentedClaims" >presentedClaims</a>
+                            </li>
                         </ul>
                     </td>
                 </tr>
@@ -567,15 +572,15 @@
             <tr>
                 <td class="col-md-4">
                         <span class="modifier-icon icon ion-ios-reset"></span>
-                    <code>buildTokenPayload(tenantId: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, authorizationServerId: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, session: <a href="../entitys/ChainedAsSessionEntity.html" target="_self">ChainedAsSessionEntity</a>, tokenLifetime: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/number" target="_blank">number</a>, jti: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, dpopJkt?: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>)</code>
+                    <code>buildTokenPayload(tenantId: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, authorizationServerId: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, session: <a href="../entitys/ChainedAsSessionEntity.html" target="_self">ChainedAsSessionEntity</a>, tokenLifetime: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/number" target="_blank">number</a>, jti: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, dpopJkt?: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>, presented?: Record<string, unknown>)</code>
                 </td>
             </tr>
 
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="463"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:463</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="519"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:519</a></div>
                         </td>
                     </tr>
 
@@ -659,6 +664,18 @@
                                                 <td>dpopJkt</td>
                                             <td>
                                                             <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
+                                            </td>
+
+                                            <td>
+                                                    Yes
+                                            </td>
+
+
+                                        </tr>
+                                        <tr>
+                                                <td>presented</td>
+                                            <td>
+                                                        <code>Record&lt;string, unknown&gt;</code>
                                             </td>
 
                                             <td>
@@ -1151,8 +1168,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="621"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:621</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="700"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:700</a></div>
                         </td>
                     </tr>
 
@@ -1232,8 +1249,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="587"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:587</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="666"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:666</a></div>
                         </td>
                     </tr>
 
@@ -1547,8 +1564,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="500"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:500</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="561"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:561</a></div>
                         </td>
                     </tr>
 
@@ -1819,6 +1836,102 @@
                             </div>
                         <div class="io-description">
                             <b>Returns : </b>    <code>Promise&lt;boolean&gt;</code>
+
+                        </div>
+                            <div class="io-description">
+                                
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="presentedClaims"></a>
+                    <span class="name">
+                            <span class="modifier">Private</span>
+                        <span ><b>presentedClaims</b></span>
+                        <a href="#presentedClaims"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+                        <span class="modifier-icon icon ion-ios-reset"></span>
+                    <code>presentedClaims(credentials: unknown)</code>
+                </td>
+            </tr>
+
+
+                    <tr>
+                        <td class="col-md-4">
+                            <div class="io-line">Defined in <a href="" data-line="496"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts:496</a></div>
+                        </td>
+                    </tr>
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>espuni fork: what the holder presented, carried in the access token.</p>
+<p>This authorization server authenticates the holder by asking for a
+credential, and then says nothing about them: <code>sub</code> is the <em>wallet&#39;s</em>
+<code>client_id</code>, and nothing else in the token refers to who was
+authenticated. The result of the authentication reaches the issuer only
+as shared state — <code>handleVerifierCallback</code> copies the verified
+presentation onto the issuance session — so anything that wants those
+attributes has to go and read that session.</p>
+<p>That indirection is what this removes. An access token minted after a
+successful presentation carries the disclosed claims, and EUDIPLO already
+forwards the whole token payload to the attribute provider as
+<code>identity.token_claims</code>. Nothing else has to change: the issuer does not
+transform them, it relays them.</p>
+<p><strong>All the requested claims, not a subset.</strong> Which attributes travel is
+decided where it belongs — in the presentation configuration the issuer
+pins on this AS. Minimising by asking for less is a decision with a
+place to be made; minimising by silently dropping what was already
+disclosed only moves the problem and hides it.</p>
+<p>Nothing here is PID-specific. An issuer may require any credential
+before issuing — a diploma to issue a professional card, a mandate to
+issue a delegation. The claims are whatever that presentation disclosed.</p>
+<p>⚠ The token grows with what is asked for, and it is a bearer artifact:
+it passes through the wallet, and through any log that records
+Authorization headers. A presentation configuration that asks for a full
+PID puts a full PID in it. That is the cost of asking for it, and the
+reason to ask for less.</p>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>credentials</td>
+                                            <td>
+                                                        <code>unknown</code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>    <code>Record | undefined</code>
 
                         </div>
                             <div class="io-description">
@@ -2435,6 +2548,62 @@ export class AuthorizationServersService {
         return redirectUrl.toString();
     }
 
+    /**
+     * espuni fork: what the holder presented, carried in the access token.
+     *
+     * This authorization server authenticates the holder by asking for a
+     * credential, and then says nothing about them: &#x60;sub&#x60; is the *wallet&#x27;s*
+     * &#x60;client_id&#x60;, and nothing else in the token refers to who was
+     * authenticated. The result of the authentication reaches the issuer only
+     * as shared state — &#x60;handleVerifierCallback&#x60; copies the verified
+     * presentation onto the issuance session — so anything that wants those
+     * attributes has to go and read that session.
+     *
+     * That indirection is what this removes. An access token minted after a
+     * successful presentation carries the disclosed claims, and EUDIPLO already
+     * forwards the whole token payload to the attribute provider as
+     * &#x60;identity.token_claims&#x60;. Nothing else has to change: the issuer does not
+     * transform them, it relays them.
+     *
+     * **All the requested claims, not a subset.** Which attributes travel is
+     * decided where it belongs — in the presentation configuration the issuer
+     * pins on this AS. Minimising by asking for less is a decision with a
+     * place to be made; minimising by silently dropping what was already
+     * disclosed only moves the problem and hides it.
+     *
+     * Nothing here is PID-specific. An issuer may require any credential
+     * before issuing — a diploma to issue a professional card, a mandate to
+     * issue a delegation. The claims are whatever that presentation disclosed.
+     *
+     * ⚠ The token grows with what is asked for, and it is a bearer artifact:
+     * it passes through the wallet, and through any log that records
+     * Authorization headers. A presentation configuration that asks for a full
+     * PID puts a full PID in it. That is the cost of asking for it, and the
+     * reason to ask for less.
+     */
+    private presentedClaims(
+        credentials: unknown,
+    ): Record&lt;string, unknown&gt; | undefined {
+        if (!Array.isArray(credentials) || credentials.length &#x3D;&#x3D;&#x3D; 0) {
+            return undefined;
+        }
+        const out: Record&lt;string, unknown&gt; &#x3D; {};
+        for (const c of credentials as {
+            claims?: Record&lt;string, unknown&gt;;
+            values?: Record&lt;string, unknown&gt;[] | Record&lt;string, unknown&gt;;
+        }[]) {
+            // Both shapes EUDIPLO uses for a verified credential.
+            const claims &#x3D;
+                c.claims ??
+                (Array.isArray(c.values) ? c.values[0] : c.values) ??
+                undefined;
+            if (claims &amp;&amp; typeof claims &#x3D;&#x3D;&#x3D; &quot;object&quot;) {
+                Object.assign(out, claims);
+            }
+        }
+        return Object.keys(out).length &gt; 0 ? out : undefined;
+    }
+
     private buildTokenPayload(
         tenantId: string,
         authorizationServerId: string,
@@ -2442,6 +2611,7 @@ export class AuthorizationServersService {
         tokenLifetime: number,
         jti: string,
         dpopJkt?: string,
+        presented?: Record&lt;string, unknown&gt;,
     ): Record&lt;string, unknown&gt; {
         const now &#x3D; Math.floor(Date.now() / 1000);
         const payload: Record&lt;string, unknown&gt; &#x3D; {
@@ -2467,6 +2637,10 @@ export class AuthorizationServersService {
             session.authorizationDetails.length &gt; 0
         ) {
             payload.authorization_details &#x3D; session.authorizationDetails;
+        }
+
+        if (presented) {
+            payload.presented_claims &#x3D; presented;
         }
 
         return payload;
@@ -2511,6 +2685,23 @@ export class AuthorizationServersService {
 
         const tokenLifetime &#x3D; config.token?.lifetimeSeconds || 3600;
         const jti &#x3D; v4();
+        // Lo presentado vive en la sesion de EMISION: es donde
+        // &#x60;handleVerifierCallback&#x60; lo dejo. Se lee aqui, al acunar el token, en
+        // vez de guardarlo tambien en la sesion del AS: una copia mas seria una
+        // copia mas que mantener en sincronia.
+        let presented: Record&lt;string, unknown&gt; | undefined;
+        if (session.issuerState) {
+            try {
+                const issuanceSession &#x3D; await this.sessionService.get(
+                    session.issuerState,
+                );
+                presented &#x3D; this.presentedClaims(issuanceSession?.credentials);
+            } catch {
+                // Sin sesion de emision no hay nada que llevar. No es motivo
+                // para negar el token: el flujo puede no tener presentacion.
+            }
+        }
+
         const tokenPayload &#x3D; this.buildTokenPayload(
             tenantId,
             authorizationServerId,
@@ -2518,6 +2709,7 @@ export class AuthorizationServersService {
             tokenLifetime,
             jti,
             dpopJkt,
+            presented,
         );
 
         const signingKeyId &#x3D;
