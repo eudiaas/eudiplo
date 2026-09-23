@@ -15,7 +15,7 @@ rots.
 | | |
 |---|---|
 | Upstream base of `main` | **v7.2.0** (rebased 2026-08-22, PR #19) |
-| Fork-only patches | **11** live (§1.1–§1.3, §1.5–§1.11) + infrastructure (§1.4) |
+| Fork-only patches | **12** live (§1.1–§1.3, §1.5–§1.12) + infrastructure (§1.4) |
 | Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (published 2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`. Also tagged `sha-e5377d0`, so its provenance is checkable without trusting the tag name |
 | Built from | `e5377d02` (2026-09-21) — the merge of [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10), on top of `db525564` with [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) and [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base re-checked before tagging: the merge-base with `upstream/main` is exactly the `v7.2.0` tag |
 | Deployed where | staging (`eudiplo-staging.espuni.com`) runs **`.7`**, verified 2026-09-21 at `GET /api/docs-json` → `info.version` (no token needed; `/api/version` wants one). Production (`eudiplo.espuni.com`) is behind, by design. The tag of each droplet lives in its `EUDIPLO_IMAGE_TAG`; `docs/architecture/environments.md` in cp-platform is the record, not this file |
@@ -275,6 +275,27 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > survives, PID and EAA still do, and a revocation-only entity still does not.
 > The first case fails on unpatched `main` (`expected [] to have a length of 1`),
 > which is the bug itself, not a mock of it.
+
+### 1.12 The OID4VP authorization server says who it authenticated
+
+| | |
+|---|---|
+| Commits | branch `feat/as-devuelve-los-claims-presentados` |
+| Files | `issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.service.ts` · `presented-claims.spec.ts` (new) |
+| Upstream status | 🔴 **Not fixed upstream** — verified on `upstream/main` at v8.0.2-4 (2026-09-23). The token builder was refactored into a shared `buildAccessTokenPayload` helper, and it produces the same payload: `iss`, `sub: session.clientId`, `aud`, `iat`, `exp`, `jti`, `issuer_state`, `client_id`, and optionally `cnf` / `authorization_details`. Six versions on from our base, nothing in it refers to the holder. No issue and no open PR |
+| What | An access token minted after a successful presentation carries `presented_claims`: every claim the holder disclosed |
+| Why we need it | **This authorization server authenticates the holder by asking for a credential, and then says nothing about them.** `sub` is the *wallet's* `client_id`. The result of the authentication reaches the issuer only as shared state — `handleVerifierCallback` copies the verified presentation onto the issuance session — so an attribute provider that needs those attributes has to fetch that session, which needs a tenant token, which only the control plane holds. The indirection pulls the control plane into the data path of every issuance, to move data that the authorization already had in its hands |
+| Why the token | EUDIPLO **already** forwards the whole token payload to the attribute provider as `identity.token_claims` (`resolveSessionAndClaims`, the `isChainedAsToken` branch — which is the one a managed AS token takes). So this needs no new plumbing anywhere: the issuer does not transform the claims, it relays them |
+| All of them, not a subset | Which attributes travel is decided where it belongs: in the presentation configuration the issuer pins on this AS. Minimising by asking for less is a decision with a place to be made and someone to make it; minimising by silently dropping what was already disclosed only moves the problem somewhere nobody looks |
+| Not PID-specific | An issuer may require any credential before issuing — a diploma to issue a professional card, a mandate to issue a delegation. `presented_claims` is whatever that presentation disclosed |
+| The cost, stated | The token grows with what is asked for, and it is a bearer artifact: it passes through the wallet and through any log that records `Authorization` headers. A presentation configuration that asks for a full PID puts a full PID in it. That is the cost of asking for it, and the reason to ask for less |
+| v7 impact | 🟢 Self-contained: one private helper, one optional field, one read of a session that is already being tracked. On a file upstream has rewritten since v7.2.0, so the rebase will need a hand — the logic is small enough to reapply by reading |
+
+> The spec pins `presentedClaims`, which is where the decisions are: every
+> disclosed claim travels, both shapes EUDIPLO uses for a verified credential
+> are read, several presented credentials merge, and **no presentation emits no
+> field at all** — a `presented_claims: {}` would say "something was presented
+> and it was empty", which is not the same as "there was no presentation".
 
 ### 1.4 Fork infrastructure (permanent)
 
