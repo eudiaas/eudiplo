@@ -36,6 +36,18 @@ export enum ServiceTypeIdentifier {
     PIDIssuance = "http://uri.etsi.org/19602/SvcType/PID/Issuance",
     EaaIssuance = "http://uri.etsi.org/19602/SvcType/EAA/Issuance",
     EaaRevocation = "http://uri.etsi.org/19602/SvcType/EAA/Revocation",
+    // espuni fork: the service type a Pub-EAA providers list declares for its
+    // issuance services (ETSI TS 119 602 V1.1.1, Annex H, Table H.3), i.e. the
+    // attestations issued by or on behalf of a public sector body responsible
+    // for an authentic source. Annex H admits this URI and its /Revocation
+    // sibling "to the exclusion of any other", so a conformant Pub-EAA list
+    // can never present its services as EAA/Issuance.
+    //
+    // Worth noting which of the two is the odd one: TS 119 602 registers
+    // exactly six service types — PID, PubEAA, WRPAC, WRPRC, WalletSolution
+    // and Register. `SvcType/EAA` is not among them and the standard defines
+    // no "EAA providers list" profile at all; it comes from @owf/eudi-lote.
+    PubEAAIssuance = "http://uri.etsi.org/19602/SvcType/PubEAA/Issuance",
 }
 
 /** Default language for trust list entries */
