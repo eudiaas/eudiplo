@@ -460,6 +460,62 @@ export class AuthorizationServersService {
         return redirectUrl.toString();
     }
 
+    /**
+     * espuni fork: what the holder presented, carried in the access token.
+     *
+     * This authorization server authenticates the holder by asking for a
+     * credential, and then says nothing about them: `sub` is the *wallet's*
+     * `client_id`, and nothing else in the token refers to who was
+     * authenticated. The result of the authentication reaches the issuer only
+     * as shared state — `handleVerifierCallback` copies the verified
+     * presentation onto the issuance session — so anything that wants those
+     * attributes has to go and read that session.
+     *
+     * That indirection is what this removes. An access token minted after a
+     * successful presentation carries the disclosed claims, and EUDIPLO already
+     * forwards the whole token payload to the attribute provider as
+     * `identity.token_claims`. Nothing else has to change: the issuer does not
+     * transform them, it relays them.
+     *
+     * **All the requested claims, not a subset.** Which attributes travel is
+     * decided where it belongs — in the presentation configuration the issuer
+     * pins on this AS. Minimising by asking for less is a decision with a
+     * place to be made; minimising by silently dropping what was already
+     * disclosed only moves the problem and hides it.
+     *
+     * Nothing here is PID-specific. An issuer may require any credential
+     * before issuing — a diploma to issue a professional card, a mandate to
+     * issue a delegation. The claims are whatever that presentation disclosed.
+     *
+     * ⚠ The token grows with what is asked for, and it is a bearer artifact:
+     * it passes through the wallet, and through any log that records
+     * Authorization headers. A presentation configuration that asks for a full
+     * PID puts a full PID in it. That is the cost of asking for it, and the
+     * reason to ask for less.
+     */
+    private presentedClaims(
+        credentials: unknown,
+    ): Record<string, unknown> | undefined {
+        if (!Array.isArray(credentials) || credentials.length === 0) {
+            return undefined;
+        }
+        const out: Record<string, unknown> = {};
+        for (const c of credentials as {
+            claims?: Record<string, unknown>;
+            values?: Record<string, unknown>[] | Record<string, unknown>;
+        }[]) {
+            // Both shapes EUDIPLO uses for a verified credential.
+            const claims =
+                c.claims ??
+                (Array.isArray(c.values) ? c.values[0] : c.values) ??
+                undefined;
+            if (claims && typeof claims === "object") {
+                Object.assign(out, claims);
+            }
+        }
+        return Object.keys(out).length > 0 ? out : undefined;
+    }
+
     private buildTokenPayload(
         tenantId: string,
         authorizationServerId: string,
@@ -467,6 +523,7 @@ export class AuthorizationServersService {
         tokenLifetime: number,
         jti: string,
         dpopJkt?: string,
+        presented?: Record<string, unknown>,
     ): Record<string, unknown> {
         const now = Math.floor(Date.now() / 1000);
         const payload: Record<string, unknown> = {
@@ -492,6 +549,10 @@ export class AuthorizationServersService {
             session.authorizationDetails.length > 0
         ) {
             payload.authorization_details = session.authorizationDetails;
+        }
+
+        if (presented) {
+            payload.presented_claims = presented;
         }
 
         return payload;
@@ -536,6 +597,23 @@ export class AuthorizationServersService {
 
         const tokenLifetime = config.token?.lifetimeSeconds || 3600;
         const jti = v4();
+        // Lo presentado vive en la sesion de EMISION: es donde
+        // `handleVerifierCallback` lo dejo. Se lee aqui, al acunar el token, en
+        // vez de guardarlo tambien en la sesion del AS: una copia mas seria una
+        // copia mas que mantener en sincronia.
+        let presented: Record<string, unknown> | undefined;
+        if (session.issuerState) {
+            try {
+                const issuanceSession = await this.sessionService.get(
+                    session.issuerState,
+                );
+                presented = this.presentedClaims(issuanceSession?.credentials);
+            } catch {
+                // Sin sesion de emision no hay nada que llevar. No es motivo
+                // para negar el token: el flujo puede no tener presentacion.
+            }
+        }
+
         const tokenPayload = this.buildTokenPayload(
             tenantId,
             authorizationServerId,
@@ -543,6 +621,7 @@ export class AuthorizationServersService {
             tokenLifetime,
             jti,
             dpopJkt,
+            presented,
         );
 
         const signingKeyId =
