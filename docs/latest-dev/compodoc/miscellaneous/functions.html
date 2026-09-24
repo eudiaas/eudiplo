@@ -573,6 +573,9 @@
                             <a href="#verifyProofKeyAttestationStatus" title="src/issuer/issuance/oid4vci/attestation-proof-trust.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>verifyProofKeyAttestationStatus</b>&nbsp;&nbsp;&nbsp;(src/.../attestation-proof-trust.util.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#walletInvocationUri" title="src/issuer/issuance/oid4vci/authorization/wallet-link.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>walletInvocationUri</b>&nbsp;&nbsp;&nbsp;(src/.../wallet-link.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#withMeta" title="src/shared/common/zod/zod-schema.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>withMeta</b>&nbsp;&nbsp;&nbsp;(src/.../zod-schema.util.ts)</span></a>
                         </li>
                         <li>
@@ -10819,6 +10822,105 @@ its <code>key_attestation</code> header; a <code>jwt</code> proof without a KA h
                             </div>
                         <div class="io-description">
                             <b>Returns : </b>        <code><a href="https://www.typescriptlang.org/docs/handbook/basic-types.html" target="_blank" >void</a></code>
+
+                        </div>
+                            <div class="io-description">
+                                
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+    <h3>src/issuer/issuance/oid4vci/authorization/wallet-link.ts</h3>
+    <section data-compodoc="block-methods">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="walletInvocationUri"></a>
+                    <span class="name">
+                        <span ><b>walletInvocationUri</b></span>
+                        <a href="#walletInvocationUri"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>walletInvocationUri(configService: ConfigService, queryString: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>How the browser is sent to the wallet to start a presentation.</p>
+<p>In the authorization code flow the wallet opens <code>/authorize</code> in a browser and
+we answer with a redirect to a custom scheme, so that the wallet comes back
+to the foreground and performs the OID4VP presentation. Whether that redirect
+arrives at all is decided by the operating system, not by us.</p>
+<p>On Android the wallet claims the link with an intent filter, and the one in
+the reference wallet reads:</p>
+<b>Example :</b><div><pre class="line-numbers"><code class="language-none">&lt;data android:host=&quot;*&quot; android:scheme=&quot;openid4vp&quot; /&gt;</code></pre></div><p>A filter that declares a host only matches URIs that CARRY an authority: <code>*</code>
+means &quot;any host&quot;, not &quot;with or without one&quot;. <code>openid4vp://?client_id=...</code> has
+an empty authority, so nothing claims it, the tab sits there and the wallet
+eventually reports the authorization as cancelled — with no error anywhere,
+because nothing failed. Giving the URI any authority at all, for example
+<code>openid4vp://authorize?client_id=...</code>, makes it match; the parameters stay in
+the query, which is where the wallet reads them.</p>
+<p>It stays configurable, and keeps the authority-less form as the default,
+because that form is not wrong: OpenID4VP does not require an authority and
+wallets exist that expect exactly <code>openid4vp://?...</code>. Hardcoding an authority
+would fix one wallet by breaking another.</p>
+<p>Only the two redirects use this. The cross-device URIs that end up in a QR
+code are left alone: there the wallet&#39;s own scanner parses the string and the
+operating system never resolves anything, so the authority makes no
+difference — and code that works is not worth the risk.</p>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>configService</td>
+                                            <td>
+                                                        <code>ConfigService</code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                        <tr>
+                                                <td>queryString</td>
+                                            <td>
+                                                            <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>        <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
 
                         </div>
                             <div class="io-description">

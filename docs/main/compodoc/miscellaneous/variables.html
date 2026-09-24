@@ -639,10 +639,10 @@
                             <a href="#kemSuiteId" title="src/verifier/iso18013/hpke.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>kemSuiteId</b>&nbsp;&nbsp;&nbsp;(src/.../hpke.ts)</span></a>
                         </li>
                         <li>
-                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/credentials/schemas/credential-config.schema.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../credential-config.schema.ts)</span></a>
+                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/issuance/dto/key-attestations-required.dto.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../key-attestations-required.dto.ts)</span></a>
                         </li>
                         <li>
-                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/issuance/dto/key-attestations-required.dto.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../key-attestations-required.dto.ts)</span></a>
+                            <a href="#KeyAttestationsRequiredSchema" title="src/issuer/configuration/credentials/schemas/credential-config.schema.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyAttestationsRequiredSchema</b>&nbsp;&nbsp;&nbsp;(src/.../credential-config.schema.ts)</span></a>
                         </li>
                         <li>
                             <a href="#KeyChainCreateSchema" title="src/crypto/key/schemas/key-chain.schema.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>KeyChainCreateSchema</b>&nbsp;&nbsp;&nbsp;(src/.../key-chain.schema.ts)</span></a>
@@ -13795,6 +13795,12 @@ use Uint8Array<ArrayBufferLike> which is not assignable to BufferSource.</p>
             &quot;If true, strip trusted_authorities from the DCQL query sent to wallets in OID4VP authorization requests. Use this as an escape hatch for wallets that do not yet handle trusted_authorities correctly.&quot;,
         )
         .meta({ group: &quot;verifier&quot;, order: 10 }),
+    VP_WALLET_LINK: Joi.string()
+        .default(&quot;openid4vp://&quot;)
+        .description(
+            &quot;Base URI used to hand the browser over to the wallet when a presentation is needed during issuance. The request parameters are appended as a query string. The default carries no authority, which is what OpenID4VP shows; set it to something like &#x27;openid4vp://authorize&#x27; for wallets whose Android intent filter declares a host, since such a filter never matches a URI with an empty authority.&quot;,
+        )
+        .meta({ group: &quot;verifier&quot;, order: 20 }),
 })</code>
                     </td>
                 </tr>
