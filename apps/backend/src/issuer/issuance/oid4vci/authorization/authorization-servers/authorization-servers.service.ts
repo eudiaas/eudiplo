@@ -34,6 +34,7 @@ import {
     resolveTokenBinding,
     DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
 } from "../shared";
+import { walletInvocationUri } from "../wallet-link";
 
 type Oid4VpManagedAuthorizationServerConfig =
     ManagedAuthorizationServerConfig & {
@@ -358,7 +359,7 @@ export class AuthorizationServersService {
             `Redirecting session ${session.id} to OID4VP wallet invocation for ${authorizationServerId}`,
         );
 
-        return `openid4vp://?${offer.uri}`;
+        return walletInvocationUri(this.configService, offer.uri);
     }
 
     private buildErrorRedirect(

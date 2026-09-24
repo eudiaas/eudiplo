@@ -33,6 +33,7 @@ import {
     resolveTokenBinding,
     DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
 } from "../shared";
+import { walletInvocationUri } from "../wallet-link";
 
 @Injectable()
 export class ChainedAsVpService {
@@ -232,7 +233,7 @@ export class ChainedAsVpService {
             `Redirecting session ${session.id} to OID4VP wallet invocation`,
         );
 
-        return `openid4vp://?${offer.uri}`;
+        return walletInvocationUri(this.configService, offer.uri);
     }
 
     private buildErrorRedirect(
