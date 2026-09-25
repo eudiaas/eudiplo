@@ -295,8 +295,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="99"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:99</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="100"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:100</a></div>
                         </td>
                     </tr>
 
@@ -431,8 +431,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="63"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:63</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="64"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:64</a></div>
                         </td>
                     </tr>
 
@@ -576,8 +576,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="162"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:162</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="170"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:170</a></div>
                         </td>
                     </tr>
 
@@ -694,8 +694,8 @@
 
                     <tr>
                         <td class="col-md-4">
-                            <div class="io-line">Defined in <a href="" data-line="129"
-                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:129</a></div>
+                            <div class="io-line">Defined in <a href="" data-line="137"
+                                    class="link-to-prism">src/issuer/issuance/oid4vci/authorization/authorization-servers/authorization-servers.controller.ts:137</a></div>
                         </td>
                     </tr>
 
@@ -849,6 +849,7 @@ import {
     extractDpopJkt,
 } from &quot;../shared&quot;;
 import { AuthorizationServersService } from &quot;./authorization-servers.service&quot;;
+import { walletInvocationPage } from &quot;../wallet-invocation&quot;;
 
 @ApiTags(&quot;Authorization Servers&quot;)
 @Controller(&quot;issuers/:tenantId/authorization-servers/:authorizationServerId&quot;)
@@ -923,7 +924,7 @@ export class AuthorizationServersController {
         @Headers(&quot;origin&quot;) origin: string | undefined,
         @Res() res: Response,
     ): Promise&lt;void&gt; {
-        const redirectUrl &#x3D;
+        const invocation &#x3D;
             await this.authorizationServersService.handleAuthorize(
                 tenantId,
                 authorizationServerId,
@@ -931,7 +932,14 @@ export class AuthorizationServersController {
                 query.request_uri,
                 origin,
             );
-        res.redirect(redirectUrl);
+        // A redirect straight into the wallet is refused by Android browsers
+        // when they were opened by another app -- which is always, here. See
+        // walletInvocationPage.
+        if (invocation.immediate) {
+            res.redirect(invocation.uri);
+            return;
+        }
+        res.type(&quot;html&quot;).send(walletInvocationPage(invocation.uri));
     }
 
     @Public()

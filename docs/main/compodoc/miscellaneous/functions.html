@@ -573,6 +573,9 @@
                             <a href="#verifyProofKeyAttestationStatus" title="src/issuer/issuance/oid4vci/attestation-proof-trust.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>verifyProofKeyAttestationStatus</b>&nbsp;&nbsp;&nbsp;(src/.../attestation-proof-trust.util.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#walletInvocationPage" title="src/issuer/issuance/oid4vci/authorization/wallet-invocation.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>walletInvocationPage</b>&nbsp;&nbsp;&nbsp;(src/.../wallet-invocation.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#withMeta" title="src/shared/common/zod/zod-schema.util.ts" class="reference-link "><span class="reference-badge reference-badge--function" aria-hidden="true">F</span><span class="reference-link-label"><b>withMeta</b>&nbsp;&nbsp;&nbsp;(src/.../zod-schema.util.ts)</span></a>
                         </li>
                         <li>
@@ -10819,6 +10822,99 @@ its <code>key_attestation</code> header; a <code>jwt</code> proof without a KA h
                             </div>
                         <div class="io-description">
                             <b>Returns : </b>        <code><a href="https://www.typescriptlang.org/docs/handbook/basic-types.html" target="_blank" >void</a></code>
+
+                        </div>
+                            <div class="io-description">
+                                
+                            </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+    <h3>src/issuer/issuance/oid4vci/authorization/wallet-invocation.ts</h3>
+    <section data-compodoc="block-methods">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="walletInvocationPage"></a>
+                    <span class="name">
+                        <span ><b>walletInvocationPage</b></span>
+                        <a href="#walletInvocationPage"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="col-md-4">
+<code>walletInvocationPage(uri: <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank">string</a>)</code>
+                </td>
+            </tr>
+
+
+
+
+            <tr>
+                <td class="col-md-4">
+                        <div class="io-description"><p>The page that takes the browser into the wallet.</p>
+<p>Redirecting straight into the wallet does not work on Android when the
+browser was opened by another app, which is exactly what happens here: the
+wallet opens the authorization endpoint with ACTION_VIEW and we answer with
+a redirect to <code>openid4vp://</code>. Chrome drops it without a word, the tab sits on
+a blank page, and minutes later the wallet reports the authorization as
+cancelled. Nothing fails anywhere, on either side, which is what makes it so
+hard to find.</p>
+<p>The reason is a rule of its own for credential schemes. Chrome classes
+<code>openid4vp</code>, <code>mdoc</code>, <code>openid4vci</code>, <code>haip-vp</code> and <code>haip-vci</code> as Digital
+Credentials intents, and in <code>ExternalNavigationHandler</code> it asks who started
+the navigation before handing one to an app:</p>
+<b>Example :</b><div><pre class="line-numbers"><code class="language-none">Origin origin = params.getInitiatorOrigin();
+if (origin != null &amp;&amp; origin.isOpaque()) {
+    Log.i(TAG, &quot;Blocking Digital Credentials intent due to opaque origin&quot;);
+    return OverrideUrlLoadingResult.forNoOverride();
+}</code></pre></div><p>A navigation chain that starts with another app&#39;s intent has an opaque
+initiator, so a redirect at the end of it is refused. A page has an origin of
+its own, so when the PAGE is what navigates to the wallet the initiator is
+this deployment and the request goes through.</p>
+<p>So this is not a screen added to get a tap out of the user: the tap is not
+what was missing, the origin was. The page moves on its own. What the person
+does have to confirm is Chrome&#39;s own credentials warning, which appears
+either way and is not ours to remove — nor would we want to.</p>
+<p>Deliberately one self-contained file: no scripts, fonts or stylesheets from
+anywhere else. A page whose only job is to hand over to a wallet on this very
+device cannot depend on the network being there, and the link is kept visible
+so that a browser which refuses the automatic hop still leaves a way forward.</p>
+</div>
+
+                            <div class="io-description">
+                                <b>Parameters :</b>
+                                
+                                <table class="params">
+                                    <thead>
+                                        <tr>
+                                            <td>Name</td>
+                                                <td>Type</td>
+                                            <td>Optional</td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                                <td>uri</td>
+                                            <td>
+                                                            <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
+                                            </td>
+
+                                            <td>
+                                                    No
+                                            </td>
+
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <div class="io-description">
+                            <b>Returns : </b>        <code><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/string" target="_blank" >string</a></code>
 
                         </div>
                             <div class="io-description">

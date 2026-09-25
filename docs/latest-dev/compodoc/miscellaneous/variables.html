@@ -501,6 +501,9 @@
                             <a href="#ENV_PLACEHOLDER_REGEX" title="src/shared/common/zod/zod-schema.util.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>ENV_PLACEHOLDER_REGEX</b>&nbsp;&nbsp;&nbsp;(src/.../zod-schema.util.ts)</span></a>
                         </li>
                         <li>
+                            <a href="#escapeHtml" title="src/issuer/issuance/oid4vci/authorization/wallet-invocation.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>escapeHtml</b>&nbsp;&nbsp;&nbsp;(src/.../wallet-invocation.ts)</span></a>
+                        </li>
+                        <li>
                             <a href="#ExternalAuthorizationServerConfigSchema" title="src/issuer/configuration/issuance/dto/authorization-server-config.dto.ts" class="reference-link "><span class="reference-badge reference-badge--variable" aria-hidden="true">V</span><span class="reference-link-label"><b>ExternalAuthorizationServerConfigSchema</b>&nbsp;&nbsp;&nbsp;(src/.../authorization-server-config.dto.ts)</span></a>
                         </li>
                         <li>
@@ -10947,6 +10950,46 @@ This is necessary because TypeORM transformers don&#39;t support dependency inje
                 <tr>
                     <td class="col-md-4">
                         <i>Default value : </i><code>/^\$\{([A-Z0-9_]+)\}$/</code>
+                    </td>
+                </tr>
+
+
+        </tbody>
+    </table>
+</section>
+    <h3>src/issuer/issuance/oid4vci/authorization/wallet-invocation.ts</h3>
+    <section data-compodoc="block-properties">
+    <h3></h3>    <table class="table table-sm table-bordered">
+        <tbody>
+            <tr>
+                <td class="col-md-4">
+                    <a name="escapeHtml"></a>
+                    <span class="name">
+                        <span ><b>escapeHtml</b></span>
+                        <a href="#escapeHtml"><span class="icon ion-ios-link"></span></a>
+                    </span>
+                </td>
+            </tr>
+                <tr>
+                    <td class="col-md-4">
+                        <i>Type : </i>    <code>unknown</code>
+
+                    </td>
+                </tr>
+                <tr>
+                    <td class="col-md-4">
+                        <i>Default value : </i><code>(s: string): string &#x3D;&gt;
+    s.replace(
+        /[&amp;&lt;&gt;&quot;&#x27;]/g,
+        (c) &#x3D;&gt;
+            ({
+                &quot;&amp;&quot;: &quot;&amp;amp;&quot;,
+                &quot;&lt;&quot;: &quot;&amp;lt;&quot;,
+                &quot;&gt;&quot;: &quot;&amp;gt;&quot;,
+                &#x27;&quot;&#x27;: &quot;&amp;quot;&quot;,
+                &quot;&#x27;&quot;: &quot;&amp;#39;&quot;,
+            })[c] as string,
+    )</code>
                     </td>
                 </tr>
 
