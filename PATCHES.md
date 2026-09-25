@@ -297,6 +297,35 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > field at all** — a `presented_claims: {}` would say "something was presented
 > and it was empty", which is not the same as "there was no presentation".
 
+### 1.13 A trust list signed as JAdES is accepted
+
+| | |
+|---|---|
+| Commits | `6a090c87` — branch `fix/jades-crit` |
+| Files | `trust/trustlist-jwt.service.ts` |
+| Upstream status | 🔴 **Not fixed upstream** — the verification calls `jwtVerify` without declaring any critical header parameter |
+| What | `jwtVerify` is given `crit: { sigT: true }`, so a list whose header declares `sigT` as critical verifies instead of being rejected |
+| Why we need it | ETSI TS 119 182-1 (JAdES) Table 1 makes `sigT` mandatory for a Baseline-B signature, and clause 5.1.9 requires every clause-5 parameter present to be listed in `crit`. A conformant list therefore always arrives with `crit: ["sigT"]` — and RFC 7515 §4.1.11 says a verifier **must reject** a signature whose `crit` names something it does not understand. `jose` implements that faithfully, so EUDIPLO rejected every list we signed to the standard |
+| The shape of the failure | `JWSInvalid: Extension Header Parameter "sigT" is not recognized`, raised before any trust decision. It reads like a malformed list, not like a verifier that has not been told about a parameter it is supposed to know |
+| Why not drop `sigT` instead | It is not optional. A list without it is not Baseline B, and the wallets that read these lists are entitled to require it |
+| v7 impact | 🟢 One option object on one call |
+
+### 1.14 `immediateWalletRedirect`, which existed and did nothing
+
+| | |
+|---|---|
+| Commits | `7ad6eda2` — branch `feat/la-pagina-que-lleva-a-la-wallet` |
+| Files | `issuer/issuance/oid4vci/authorization/wallet-invocation.ts` (new) · `wallet-invocation.spec.ts` (new) · `authorization-servers/authorization-servers.{service,controller}.ts` |
+| Upstream status | 🔴 **Declared but unread upstream**, verified on `upstream/main` (2026-09-25). The option is in the Zod schema, in the DTO with `@ApiPropertyOptional({ default: true })`, in the documentation, and in the admin UI with `?? true` — and the backend never reads it. The service's own narrowed type (`Oid4VpManagedAuthorizationServerConfig`) leaves the field out, so it was not readable |
+| What | With `immediateWalletRedirect: false` the authorization endpoint serves a page that navigates itself to the wallet, instead of a 302 straight to `openid4vp://`. Default unchanged: the redirect |
+| Why we need it | **A 302 to `openid4vp://` never arrives on Android when the browser was opened by another app — which is always, here.** Chrome classes `openid4vp`, `mdoc`, `openid4vci`, `haip-vp` and `haip-vci` as Digital Credentials intents and refuses one whose initiator origin is opaque, which is what a chain started by another app's intent has. Nothing fails: the tab sits blank, no log on either side records anything, and the wallet reports the authorization as cancelled minutes later |
+| The rule, verbatim | `ExternalNavigationHandler.handleDigitalCredentialsIntent`: `if (origin != null && origin.isOpaque()) { Log.i(TAG, "Blocking Digital Credentials intent due to opaque origin"); return OverrideUrlLoadingResult.forNoOverride(); }` |
+| Why a page fixes it | The page has an origin of its own, so when the **page** is what navigates, the initiator is the deployment. It is not a screen added to extract a tap: the tap was never what was missing, the origin was. The page moves on its own |
+| How it was found | Six hypotheses failed against the device — user gesture, authority in the URI, the app chooser, returning to the calling app, Chrome version, the scheme. `adb logcat` with `--enable-features=ExternalNavigationDebugLogs` printed the reason in one line |
+| Verified | On a device: the same chain that leaves the tab blank opens the wallet when a page sits in the middle |
+| Scope | Only the `oid4vp` AS, where the option is declared. `chained-as-vp` has the same defect and declares no option — open follow-up |
+| v7 impact | 🟢 One new file, one field on a return type, one branch in a controller |
+
 ### 1.4 Fork infrastructure (permanent)
 
 | Commits | What |
