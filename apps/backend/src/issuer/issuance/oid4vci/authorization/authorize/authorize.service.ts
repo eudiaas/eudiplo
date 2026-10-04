@@ -786,8 +786,19 @@ export class AuthorizeService {
         // authorized to request, per OID4VCI Section 6. Both the JWT payload
         // (for resource-server enforcement) and the token response body (for
         // the Wallet) receive the same authorization_details.
+        //
+        // espuni fork — not upstream. Pre-authorized_code flow: omit
+        // authorization_details so wallets use credential_configuration_id
+        // (not credential_identifier) in the credential request. When
+        // authorization_details with credential_identifiers is present, the
+        // spec requires wallets to use credential_identifier, which breaks
+        // wallets that only support credential_configuration_id (e.g. the AV
+        // reference wallet).
         const authorizationDetails =
-            this.buildAuthorizationDetailsForToken(session);
+            parsedAccessTokenRequest.grant.grantType !==
+            preAuthorizedCodeGrantIdentifier
+                ? this.buildAuthorizationDetailsForToken(session)
+                : undefined;
 
         const tokenResponse = await this.getAuthorizationServer(
             tenantId,
