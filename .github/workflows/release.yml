@@ -1,3 +1,10 @@
+# espuni fork note: publishing is gated on
+# `github.repository == 'openwallet-foundation/eudiplo'`. The @eudiplo/* npm
+# scope belongs to upstream, so from this fork every push to main ends in
+# `npm error 404 ... PUT /@eudiplo%2fsdk-core` (no permission) and leaves the
+# CI permanently red — which trains everyone to ignore red. Same reasoning as
+# the image push gate in ci-and-release.yml.
+
 name: Versioned Release
 
 on:
@@ -26,6 +33,7 @@ jobs:
   npm-prerelease:
     name: Publish npm Pre-release
     if: >-
+      github.repository == 'openwallet-foundation/eudiplo' &&
       github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -121,7 +129,9 @@ jobs:
 
   prepare-release:
     name: Prepare versioned release
-    if: github.event_name == 'workflow_dispatch'
+    if: >-
+      github.repository == 'openwallet-foundation/eudiplo' &&
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       actions: read
