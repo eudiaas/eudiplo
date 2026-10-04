@@ -1,3 +1,22 @@
+# espuni fork note: every push to ghcr.io/eudiplo/* (upstream's image
+# namespace since v9) is gated on
+# `github.repository == 'openwallet-foundation/eudiplo'`. Without it those jobs
+# fail on every merge to this fork's main with
+# `denied: permission_denied` — we cannot push to the upstream namespace — and
+# a permanently red CI trains everyone to ignore red. The image this fork
+# actually ships is published by publish-espuni-image.yml.
+#
+# The negated "Build to validate" conditions carry the same repository check on
+# purpose, so the fork keeps building (and testing) the image; it just never
+# pushes it. The same gate also covers `deploy-docs` (reusable deploy-site.yml,
+# Cloudflare Pages preview of upstream's website), which needs secrets only
+# upstream holds.
+#
+# The `pnpm schemas:check-contract` step is tolerated (continue-on-error), and
+# only that step: the fork's presentation-config fields (`clientIdScheme`,
+# §1.1; XML trust-list fields, §1.2) are deliberately kept out of upstream's
+# immutable portable schemas. See PATCHES.md, "Portable config contract".
+
 name: CI / Docker
 
 on:
@@ -42,6 +61,11 @@ jobs:
       - name: Install dependencies for contract generation
         run: pnpm install --frozen-lockfile
       - name: Check current DTOs against published config contracts
+        # espuni fork: tolerated on purpose, see the note at the top of this
+        # file and PATCHES.md ("Portable config contract"). Fork-only
+        # presentation-config fields are REST-only and never enter the
+        # published v1/v2/v3 schemas.
+        continue-on-error: ${{ github.repository != 'openwallet-foundation/eudiplo' }}
         run: pnpm schemas:check-contract
       - name: Check shared config implementation and bundled snapshots
         run: node scripts/sync-config-format.mjs --check
@@ -322,7 +346,7 @@ jobs:
 
   deploy-docs:
     name: Deploy Preview Website & Documentation
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'openwallet-foundation/eudiplo' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
     uses: ./.github/workflows/deploy-site.yml
@@ -790,7 +814,7 @@ jobs:
 
       # --- Build and push by digest (main push only) ---
       - name: Build and push by digest
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -804,14 +828,14 @@ jobs:
           outputs: type=image,name=ghcr.io/eudiplo/eudiplo,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           mkdir -p ${{ runner.temp }}/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-digest-${{ matrix.arch }}
@@ -821,7 +845,7 @@ jobs:
 
   docker-backend-manifest:
     name: Create Backend Docker Manifest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [docker-backend]
     runs-on: ubuntu-latest
     permissions:
@@ -912,7 +936,7 @@ jobs:
 
       # --- Build and push by digest (main push only) ---
       - name: Build and push by digest
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -927,7 +951,7 @@ jobs:
 
       # --- Build to validate (PRs/workflow_dispatch only) ---
       - name: Build to validate
-        if: ${{ !(github.ref == 'refs/heads/main' && github.event_name == 'push') }}
+        if: ${{ !(github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push') }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -938,14 +962,14 @@ jobs:
             REVISION=${{ needs.build-info.outputs.revision }}
 
       - name: Export digest
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           mkdir -p ${{ runner.temp }}/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: client-digest-${{ matrix.arch }}
@@ -955,7 +979,7 @@ jobs:
 
   docker-client-manifest:
     name: Create Client Docker Manifest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [docker-client]
     runs-on: ubuntu-latest
     permissions:
