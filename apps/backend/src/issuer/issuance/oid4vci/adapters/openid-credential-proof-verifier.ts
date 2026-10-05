@@ -5,8 +5,10 @@ import type { TrustListRef } from "../../../../trust/types.js";
 import type { X509ValidationService } from "../../../../trust/x509-validation.service.js";
 import type { BuildIssuerMetadata } from "../application/build-issuer-metadata.js";
 import {
+    type KeyAttestationStatusVerifier,
     validateAttestationProofTrust,
     validateJwtProofAttestationTrust,
+    verifyProofKeyAttestationStatus,
 } from "../attestation-proof-trust.util.js";
 import type {
     VerifiedCredentialProof,
@@ -24,6 +26,8 @@ export class OpenIdCredentialProofVerifier implements CredentialProofVerifier {
         private readonly buildIssuerMetadata: BuildIssuerMetadata,
         private readonly trustStoreService: TrustStoreService,
         private readonly x509ValidationService: X509ValidationService,
+        // espuni fork (PATCHES.md §1.8)
+        private readonly keyAttestationStatus: KeyAttestationStatusVerifier,
     ) {}
     async prepare(tenantId: string, trustLists: TrustListRef[]) {
         const issuer = this.sdk.issuer(tenantId);
@@ -56,6 +60,15 @@ export class OpenIdCredentialProofVerifier implements CredentialProofVerifier {
                         trustLists,
                         trust,
                     );
+                    // espuni fork (PATCHES.md §1.8): TS3 v1.5.2 §2.4.3 — the
+                    // KA carried in the proof must not be revoked either.
+                    await verifyProofKeyAttestationStatus(
+                        proof,
+                        "jwt",
+                        trustLists,
+                        this.keyAttestationStatus,
+                        tenantId,
+                    );
                     return {
                         holderKeys: [verified.signer.publicJwk],
                         keyAttestation: verified.keyAttestation
@@ -72,6 +85,14 @@ export class OpenIdCredentialProofVerifier implements CredentialProofVerifier {
                         keyAttestationJwt: proof,
                     });
                 await validateAttestationProofTrust(proof, trustLists, trust);
+                // espuni fork (PATCHES.md §1.8): TS3 v1.5.2 §2.4.3.
+                await verifyProofKeyAttestationStatus(
+                    proof,
+                    "attestation",
+                    trustLists,
+                    this.keyAttestationStatus,
+                    tenantId,
+                );
                 const keyAttestation = toVerifiedKeyAttestation(
                     verified.payload,
                 );

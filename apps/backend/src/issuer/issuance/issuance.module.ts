@@ -16,6 +16,7 @@ import { SessionModule } from "../../session/session.module.js";
 import { FederationTrustService } from "../../trust/federation-trust.service.js";
 import { TrustModule } from "../../trust/trust.module.js";
 import { TrustStoreService } from "../../trust/trust-store.service.js";
+import { WalletAttestationService } from "../../trust/wallet-attestation.service.js";
 import { X509ValidationService } from "../../trust/x509-validation.service.js";
 import { Oid4vpModule } from "../../verifier/oid4vp/oid4vp.module.js";
 import { PresentationsModule } from "../../verifier/presentations/presentations.module.js";
@@ -384,13 +385,23 @@ import { WellKnownService } from "./oid4vci/well-known/well-known.service.js";
                 BuildIssuerMetadata,
                 TrustStoreService,
                 X509ValidationService,
+                // espuni fork (PATCHES.md §1.8): KA revocation status.
+                WalletAttestationService,
             ],
             useFactory: (
                 sdk: Oid4vciSdkFactory,
                 metadata: BuildIssuerMetadata,
                 trust: TrustStoreService,
                 x509: X509ValidationService,
-            ) => new OpenIdCredentialProofVerifier(sdk, metadata, trust, x509),
+                walletAttestation: WalletAttestationService,
+            ) =>
+                new OpenIdCredentialProofVerifier(
+                    sdk,
+                    metadata,
+                    trust,
+                    x509,
+                    walletAttestation,
+                ),
         },
         {
             provide: IssueCredentialsFromProofs,
