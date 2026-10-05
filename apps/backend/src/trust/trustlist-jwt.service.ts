@@ -82,6 +82,28 @@ export class TrustListJwtService {
             await jwtVerify(jwt, publicKey, {
                 // Allow some clock skew (5 minutes)
                 clockTolerance: 300,
+                // espuni fork: accept the JAdES claimed signing time.
+                //
+                // ETSI TS 119 602 requires every LoTE profile (Annexes D to I,
+                // clause X.4) to be signed as a *compact JAdES Baseline B*
+                // signature per ETSI TS 119 182-1. In that profile `sigT` is
+                // mandatory (TS 119 182-1 Table 1, B-B column, cardinality 1),
+                // and clause 5.1.9 then requires `crit` to name every clause 5.2
+                // parameter present — so a conformant trust list always arrives
+                // with `crit: ["sigT"]`.
+                //
+                // `jose` applies RFC 7515 §4.1.11 strictly: an extension header
+                // it was not told about makes it refuse the signature outright
+                // with «Extension Header Parameter "sigT" is not recognized».
+                // Without this line EUDIPLO rejects every standards-compliant
+                // trust list, and does it at verification time — the expensive
+                // place to find out.
+                //
+                // Declaring it here means "understood, and deliberately not
+                // acted upon": `sigT` is a *claimed* time, so it carries no
+                // security weight of its own. Trust comes from the signature
+                // and from `NextUpdate`, which is checked separately.
+                crit: { sigT: true },
             });
 
             this.logger.debug(
