@@ -30,6 +30,7 @@ import {
     ChainedAsTokenResponseDto,
     renderWalletInvocationPage,
 } from "../shared/index.js";
+import { walletInvocationPage } from "../wallet-invocation.js";
 import { AuthorizationServersService } from "./authorization-servers.service.js";
 
 @ApiTags("Authorization Servers")
@@ -107,7 +108,7 @@ export class AuthorizationServersController {
         @Headers("origin") origin: string | undefined,
         @Res() res: Response,
     ): Promise<void> {
-        const walletUrl =
+        const invocation =
             await this.authorizationServersService.handleAuthorize(
                 tenantId,
                 authorizationServerId,
@@ -115,9 +116,18 @@ export class AuthorizationServersController {
                 query.request_uri,
                 origin,
             );
+        // espuni fork (PATCHES.md §1.14): upstream #1098 always serves a page
+        // with a link the user taps. With `immediateWalletRedirect: false`
+        // the page navigates to the wallet by itself instead; both carry this
+        // deployment's origin, which is what Android needs (see
+        // walletInvocationPage).
         res.set("Cache-Control", "no-store")
             .type("html")
-            .send(renderWalletInvocationPage(walletUrl));
+            .send(
+                invocation.immediate
+                    ? renderWalletInvocationPage(invocation.uri)
+                    : walletInvocationPage(invocation.uri),
+            );
     }
 
     @Public()

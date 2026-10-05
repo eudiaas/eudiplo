@@ -118,7 +118,7 @@ The wallet authorizes by presenting a credential, for example a PID, that matche
 2. After a successful presentation, EUDIPLO stores the verified claims on the issuance session, redirects with an authorization code, and issues tokens at `…/token`.
 3. Attribute providers receive the presented claims in `credentials`, see the [Attribute provider API](../reference/attribute-provider-api.md).
 
-Metadata is at `/.well-known/oauth-authorization-server/issuers/{tenant}/authorization-servers/{id}`. Like chained flows, OID4VP flows start from an authorization code offer. `immediateWalletRedirect` is accepted but has no effect.
+Metadata is at `/.well-known/oauth-authorization-server/issuers/{tenant}/authorization-servers/{id}`. Like chained flows, OID4VP flows start from an authorization code offer. `immediateWalletRedirect: false` (espuni fork) replaces the **Open wallet** page with one that opens the wallet by itself, keeping the link as a fallback; unset or `true` keeps the link page.
 
 The VP-backed chained server (`chained-as-vp`) was removed in 9.0; use the `oid4vp` type. See the [upgrade guide](../upgrade/8.x-to-9.0.md).
 
