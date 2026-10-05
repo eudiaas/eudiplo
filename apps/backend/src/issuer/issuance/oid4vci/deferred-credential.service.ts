@@ -29,6 +29,7 @@ import { IssuanceService } from "../../configuration/issuance/issuance.service.j
 import {
     validateAttestationProofTrust,
     validateJwtProofAttestationTrust,
+    verifyProofKeyAttestationStatus,
 } from "./attestation-proof-trust.util.js";
 import { DeferredCredentialRequestDto } from "./dto/deferred-credential-request.dto.js";
 import {
@@ -41,6 +42,7 @@ import {
     DeferredCredentialException,
 } from "./exceptions/index.js";
 import { getHeadersFromRequest } from "./util.js";
+import { WalletAttestationService } from "../../../trust/wallet-attestation.service.js";
 
 /**
  * Parameters for creating a deferred credential transaction.
@@ -80,6 +82,7 @@ export class DeferredCredentialService {
         private readonly traceService: TraceService,
         private readonly trustStoreService: TrustStoreService,
         private readonly x509ValidationService: X509ValidationService,
+        private readonly walletAttestationService: WalletAttestationService,
         @InjectRepository(NonceEntity)
         private readonly nonceRepository: Repository<NonceEntity>,
         @InjectRepository(DeferredTransactionEntity)
@@ -234,6 +237,14 @@ export class DeferredCredentialService {
                     x509ValidationService: this.x509ValidationService,
                 },
             );
+            // espuni: TS3 v1.5.2 §2.4.3 (see PATCHES.md).
+            await verifyProofKeyAttestationStatus(
+                proof,
+                "jwt",
+                issuanceConfig.walletProviderTrustLists ?? [],
+                this.walletAttestationService,
+                tenantId,
+            );
             holderCnf = verifiedProof.signer.publicJwk as Jwk;
         } else {
             const verifiedAttestation =
@@ -251,6 +262,15 @@ export class DeferredCredentialService {
                     trustStoreService: this.trustStoreService,
                     x509ValidationService: this.x509ValidationService,
                 },
+            );
+
+            // espuni: TS3 v1.5.2 §2.4.3 (see PATCHES.md).
+            await verifyProofKeyAttestationStatus(
+                proof,
+                "attestation",
+                issuanceConfig.walletProviderTrustLists ?? [],
+                this.walletAttestationService,
+                tenantId,
             );
 
             const attestedKeys = verifiedAttestation.payload

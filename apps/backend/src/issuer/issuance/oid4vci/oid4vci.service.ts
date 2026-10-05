@@ -72,6 +72,7 @@ import { SubjectKeyService } from "../../status-list/subject-key.service.js";
 import {
     validateAttestationProofTrust,
     validateJwtProofAttestationTrust,
+    verifyProofKeyAttestationStatus,
 } from "./attestation-proof-trust.util.js";
 import { AuthorizationServersService } from "./authorization/authorization-servers/authorization-servers.service.js";
 import { AuthorizeService } from "./authorization/authorize/authorize.service.js";
@@ -89,6 +90,7 @@ import { DeferredTransactionEntity } from "./entities/deferred-transaction.entit
 import { CredentialRequestException } from "./exceptions/index.js";
 import { NonceService } from "./nonce.service.js";
 import { getHeadersFromRequest } from "./util.js";
+import { WalletAttestationService } from "../../../trust/wallet-attestation.service.js";
 
 /**
  * Type alias for the OAuth2 access token payload returned by resource server verification.
@@ -186,6 +188,7 @@ export class Oid4vciService {
         private readonly federationTrustService: FederationTrustService,
         private readonly trustStoreService: TrustStoreService,
         private readonly x509ValidationService: X509ValidationService,
+        private readonly walletAttestationService: WalletAttestationService,
         private readonly webhookService: WebhookService,
         private readonly httpService: HttpService,
         private readonly authorizationServersService: AuthorizationServersService,
@@ -1612,6 +1615,15 @@ export class Oid4vciService {
                         x509ValidationService: this.x509ValidationService,
                     },
                 );
+                // espuni: TS3 v1.5.2 §2.4.3 — a KA carried in the proof must
+                // be trusted and not revoked (see PATCHES.md).
+                await verifyProofKeyAttestationStatus(
+                    proofValue,
+                    "jwt",
+                    issuanceConfig.walletProviderTrustLists ?? [],
+                    this.walletAttestationService,
+                    session.tenantId,
+                );
 
                 const cnf = verifiedProof.signer.publicJwk;
                 const cred = await this.credentialsService.getCredential(
@@ -1650,6 +1662,15 @@ export class Oid4vciService {
                     trustStoreService: this.trustStoreService,
                     x509ValidationService: this.x509ValidationService,
                 },
+            );
+
+            // espuni: TS3 v1.5.2 §2.4.3 (see PATCHES.md).
+            await verifyProofKeyAttestationStatus(
+                proofValue,
+                "attestation",
+                issuanceConfig.walletProviderTrustLists ?? [],
+                this.walletAttestationService,
+                session.tenantId,
             );
 
             const attestedKeys = verifiedAttestation.payload
