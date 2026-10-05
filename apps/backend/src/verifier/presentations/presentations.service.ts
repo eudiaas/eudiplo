@@ -1594,6 +1594,13 @@ export class PresentationsService {
                         acceptedServiceTypes: [
                             ServiceTypeIdentifier.EaaIssuance,
                             ServiceTypeIdentifier.PIDIssuance,
+                            // espuni fork: without this, a credential whose
+                            // issuer is published in a Pub-EAA providers list
+                            // is rejected with trust_chain_not_trusted even
+                            // though its Document Signer is listed — the whole
+                            // entity is dropped by filterByServiceTypes before
+                            // the chain is ever built. See the enum.
+                            ServiceTypeIdentifier.PubEAAIssuance,
                         ],
                         tenantId: session.tenantId,
                     },
