@@ -1,5 +1,4 @@
 import "reflect-metadata";
-import { createHash } from "node:crypto";
 import { INestApplication } from "@nestjs/common";
 import {
     Openid4vpAuthorizationRequest,
@@ -18,6 +17,7 @@ import {
 import { AuthConfig } from "../../src/webhook/webhook.dto.js";
 import {
     callbacks,
+    computeJwkThumbprint,
     createPresentationRequest,
     createTestFetch,
     encryptVpToken,
@@ -35,44 +35,6 @@ describe("Presentation - mDOC Credential", () => {
     let ctx: PresentationTestContext;
     let client: Openid4vpClient;
     let statusListService: StatusListService;
-
-    function computeJwkThumbprint(jwks?: {
-        keys?: Array<Record<string, any>>;
-    }): Uint8Array | undefined {
-        const keys = jwks?.keys;
-        if (!keys || keys.length === 0) return undefined;
-
-        const encJwk = keys.find((k) => k.use === "enc") ?? keys[0];
-        let canonical: string | undefined;
-
-        if (encJwk?.kty === "EC") {
-            canonical = JSON.stringify({
-                crv: encJwk.crv,
-                kty: encJwk.kty,
-                x: encJwk.x,
-                y: encJwk.y,
-            });
-        } else if (encJwk?.kty === "OKP") {
-            canonical = JSON.stringify({
-                crv: encJwk.crv,
-                kty: encJwk.kty,
-                x: encJwk.x,
-            });
-        } else if (encJwk?.kty === "RSA") {
-            canonical = JSON.stringify({
-                e: encJwk.e,
-                kty: encJwk.kty,
-                n: encJwk.n,
-            });
-        }
-
-        if (!canonical) return undefined;
-        return new Uint8Array(
-            createHash("sha256")
-                .update(Buffer.from(canonical, "utf8"))
-                .digest(),
-        );
-    }
 
     /**
      * Helper function to submit a mDOC presentation

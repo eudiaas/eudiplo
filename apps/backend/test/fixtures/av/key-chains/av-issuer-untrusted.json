@@ -1,0 +1,13 @@
+{
+    "id": "b2e5a8c1-6f34-4a09-9d7e-1c3f5a8b2d6e",
+    "description": "AV negative-vector test issuer — deliberately NOT referenced by any trust list",
+    "usageType": "attestation",
+    "key": {
+        "kty": "EC",
+        "d": "NsW_UZnK0FskdBoCNvuqNO3Pv8uWJc4gAQ7RY29MX3s",
+        "crv": "P-256",
+        "x": "ti-apf34rCE3fvY5W2BRz8jNQ_xhWbMmKGd9-i3P1fg",
+        "y": "aoGcKzziuNsU4EZg9bnu6Ns2HqPbWRgTCBE1eFPMclI",
+        "alg": "ES256"
+    }
+}

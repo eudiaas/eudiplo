@@ -1,0 +1,33 @@
+{
+    "id": "av-negative-vectors",
+    "description": "AV mDOC presentation config for negative-vector tests (espuni)",
+    "dcql_query": {
+        "credentials": [
+            {
+                "id": "av-credential",
+                "format": "mso_mdoc",
+                "meta": {
+                    "doctype_value": "eu.europa.ec.av.1"
+                },
+                "claims": [
+                    {
+                        "path": [
+                            "eu.europa.ec.av.1",
+                            "age_over_18"
+                        ]
+                    }
+                ],
+                "trusted_authorities": [
+                    {
+                        "type": "etsi_tl",
+                        "values": [
+                            {
+                                "trustListId": "9f1e3a2b-4c5d-6e7f-8091-a2b3c4d5e6f7"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
