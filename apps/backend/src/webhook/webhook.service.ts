@@ -149,6 +149,53 @@ export class WebhookService {
     }
 
     /**
+     * Notify the webhook of a verification failure with the structured outcome.
+     *
+     * Opt-in via {@link WebhookConfig.notifyOnFailure}: existing integrations
+     * that only expect success callbacks are unaffected. The payload carries the
+     * machine-readable code and short, safe message — never verbose diagnostics.
+     * Best-effort: failures to deliver are logged, not thrown.
+     */
+    async sendFailureWebhook(values: {
+        webhook: WebhookConfig;
+        session: Session;
+    }): Promise<void> {
+        const { webhook, session } = values;
+        if (!webhook.notifyOnFailure) {
+            return;
+        }
+
+        try {
+            await this.outboundUrlPolicyService.assertSafeUrl(webhook.url);
+
+            const headers: Record<string, string> = {};
+            if (webhook.auth && webhook.auth.type === "apiKey") {
+                headers[webhook.auth.config.headerName] =
+                    webhook.auth.config.value;
+            }
+
+            await firstValueFrom(
+                this.httpService.post(
+                    webhook.url,
+                    {
+                        session: session.id,
+                        status: session.status,
+                        error: session.failureCode,
+                        message: session.errorReason,
+                        outcome: session.outcome,
+                    },
+                    { headers },
+                ),
+            );
+        } catch (err: any) {
+            this.logger.error(
+                { webhookUrl: webhook.url, error: err?.message ?? err },
+                "Error sending failure webhook",
+            );
+        }
+    }
+
+    /**
      * Sends a webhook notification for a session.
      * @param webhook The webhook configuration
      * @param session The session

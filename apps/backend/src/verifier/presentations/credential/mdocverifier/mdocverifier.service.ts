@@ -11,7 +11,10 @@ import {
 import * as x509 from "@peculiar/x509";
 import { Span } from "nestjs-otel";
 import { PinoLogger } from "nestjs-pino";
-import { VerificationProvenance } from "../../../../session/entities/session-outcome.js";
+import {
+    SessionOutcomeWarning,
+    VerificationProvenance,
+} from "../../../../session/entities/session-outcome.js";
 import {
     isStatusListUnavailableError,
     resolveRevocationPolicy,
@@ -78,6 +81,8 @@ export type MdocVerificationResult = {
     failureReason?: string;
     /** Trust provenance for a successful verification. */
     provenance?: VerificationProvenance;
+    /** Non-fatal conditions observed during a successful verification. */
+    warnings?: SessionOutcomeWarning[];
 };
 
 /**
@@ -351,6 +356,9 @@ export class MdocverifierService {
                 payload: vp,
                 docType,
                 provenance: toProvenance(chainResult.matchedEntity),
+                ...(chainResult.warnings?.length
+                    ? { warnings: chainResult.warnings }
+                    : {}),
             };
         } catch (error: any) {
             return this.handleVerificationError(vp, error, options);

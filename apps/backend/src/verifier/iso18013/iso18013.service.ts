@@ -480,31 +480,54 @@ export class Iso18013Service {
             const verboseReason =
                 verifyResult.failureReason ?? "mDOC verification failed";
 
+            const failureOutcome = {
+                result: "failed" as const,
+                error: errorCode,
+                message: shortMessage,
+                credentials: [
+                    {
+                        id: mdocCred.id,
+                        format: "mso_mdoc",
+                        docType: verifyResult.docType,
+                        verified: false,
+                        error: errorCode,
+                        message: shortMessage,
+                    },
+                ],
+            };
+
             await this.sessionService.add(session.id, {
                 status: SessionStatus.Failed,
                 errorReason: shortMessage,
                 failureCode: errorCode,
-                outcome: {
-                    result: "failed",
-                    error: errorCode,
-                    message: shortMessage,
-                    credentials: [
-                        {
-                            id: mdocCred.id,
-                            format: "mso_mdoc",
-                            docType: verifyResult.docType,
-                            verified: false,
-                            error: errorCode,
-                            message: shortMessage,
-                        },
-                    ],
-                },
+                outcome: failureOutcome,
             });
             this.auditLogService.logFlowError(
                 logContext,
                 new Error(verboseReason),
                 { stage: "mdoc_verification", errorCode },
             );
+
+            // espuni fork — opt-in failure webhook (WebhookConfig.notifyOnFailure),
+            // so the relying party learns why (structured code + short
+            // message), not only that it failed. Same webhook resolution as
+            // the success path below.
+            const failureWebhook =
+                session.parsedWebhook ??
+                (await this.resolveWebhookFromEndpoint(
+                    session.webhookEndpointId,
+                    session.tenantId,
+                ));
+            if (failureWebhook) {
+                session.status = SessionStatus.Failed;
+                session.errorReason = shortMessage;
+                session.failureCode = errorCode;
+                session.outcome = failureOutcome;
+                await this.webhookService.sendFailureWebhook({
+                    webhook: failureWebhook,
+                    session,
+                });
+            }
             throw new BadRequestException({
                 error: errorCode,
                 message: shortMessage,
@@ -537,6 +560,11 @@ export class Iso18013Service {
                         docType: verifyResult.docType,
                         verified: true,
                         trust: verifyResult.provenance,
+                        // espuni fork — non-fatal warnings (trust list near
+                        // expiry, federation fallback) from chain validation.
+                        ...(verifyResult.warnings?.length
+                            ? { warnings: verifyResult.warnings }
+                            : {}),
                     },
                 ],
             },

@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import * as x509 from "@peculiar/x509";
 import { PinoLogger } from "nestjs-pino";
+import { SessionOutcomeWarning } from "../../../session/entities/session-outcome.js";
 import { FederationTrustService } from "../../../trust/federation-trust.service.js";
 import { StatusListVerifierService } from "../../../trust/status-list-verifier.service.js";
 import {
@@ -62,7 +63,27 @@ export interface ChainValidationResult {
     error?: string;
     /** Detailed error information for debugging */
     errorDetails?: string;
+    /** Non-fatal conditions observed during a successful validation. */
+    warnings?: SessionOutcomeWarning[];
 }
+
+/**
+ * A configured trust list within this many milliseconds of its `nextUpdate` is
+ * flagged (non-fatally) as near expiry, so operators can refresh before it goes
+ * stale and starts failing closed.
+ */
+const TRUST_LIST_NEAR_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Non-fatal warning emitted when an enforced federation policy accepted a chain
+ * that LoTE trust validation would have rejected — the credential was trusted on
+ * the federation path, not the trust list.
+ */
+const FEDERATION_FALLBACK_WARNING: SessionOutcomeWarning = {
+    code: "federation_fallback_used",
+    message:
+        "Trust was established via federation policy, not the configured trusted list.",
+};
 
 /**
  * Shared service for certificate chain validation.
@@ -257,7 +278,11 @@ export class CredentialChainValidationService {
                 this.logger.warn(
                     `LoTE chain failed but federation policy accepted chain: ${errorDetails}`,
                 );
-                return { verified: true, matchedEntity: null };
+                return {
+                    verified: true,
+                    matchedEntity: null,
+                    warnings: [FEDERATION_FALLBACK_WARNING],
+                };
             }
 
             return {
@@ -303,7 +328,11 @@ export class CredentialChainValidationService {
                 this.logger.warn(
                     `No LoTE entity match but federation policy accepted chain: ${errorDetails}`,
                 );
-                return { verified: true, matchedEntity: null };
+                return {
+                    verified: true,
+                    matchedEntity: null,
+                    warnings: [FEDERATION_FALLBACK_WARNING],
+                };
             }
 
             return {
@@ -329,7 +358,39 @@ export class CredentialChainValidationService {
             `Certificate chain validated successfully. Matched entity: ${matchedEntity.entity.entityId ?? "unknown"}, mode: ${matchedEntity.matchMode}`,
         );
 
-        return { verified: true, matchedEntity };
+        const warnings = this.nearExpiryWarnings(store);
+        return {
+            verified: true,
+            matchedEntity,
+            ...(warnings.length ? { warnings } : {}),
+        };
+    }
+
+    /**
+     * Non-fatal warning when the configured trust list is within
+     * {@link TRUST_LIST_NEAR_EXPIRY_MS} of its `nextUpdate` — a heads-up to
+     * refresh before it goes stale and starts failing closed.
+     */
+    private nearExpiryWarnings(
+        store: BuiltTrustStore,
+    ): SessionOutcomeWarning[] {
+        if (!store.nextUpdate) {
+            return [];
+        }
+        const nextUpdate = new Date(store.nextUpdate);
+        if (Number.isNaN(nextUpdate.getTime())) {
+            return [];
+        }
+        const msUntil = nextUpdate.getTime() - Date.now();
+        if (msUntil > 0 && msUntil <= TRUST_LIST_NEAR_EXPIRY_MS) {
+            return [
+                {
+                    code: "trust_list_near_expiry",
+                    message: `The trusted list is near expiry (next update ${nextUpdate.toISOString()}).`,
+                },
+            ];
+        }
+        return [];
     }
 
     /**

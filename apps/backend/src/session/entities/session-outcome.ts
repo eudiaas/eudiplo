@@ -22,7 +22,7 @@ export interface VerificationProvenance {
 }
 
 /** A non-fatal condition observed during verification. */
-interface SessionOutcomeWarning {
+export interface SessionOutcomeWarning {
     code: string;
     message: string;
 }

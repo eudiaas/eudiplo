@@ -91,3 +91,41 @@ describe("CredentialChainValidationService — trust list availability", () => {
         ).resolves.toEqual([]);
     });
 });
+
+describe("CredentialChainValidationService — near-expiry warning", () => {
+    const makeService = () =>
+        new CredentialChainValidationService(
+            {} as any,
+            {} as any,
+            {} as any,
+            {} as any,
+            { setContext: vi.fn() } as any,
+        );
+
+    const near = (svc: any, nextUpdate?: string) =>
+        svc.nearExpiryWarnings({ entities: [], nextUpdate });
+
+    it("warns when the trust list is within the near-expiry window", () => {
+        const svc = makeService();
+        const soon = new Date(
+            Date.now() + 2 * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        const warnings = near(svc, soon);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0].code).toBe("trust_list_near_expiry");
+    });
+
+    it("does not warn when nextUpdate is comfortably in the future", () => {
+        const svc = makeService();
+        const later = new Date(
+            Date.now() + 30 * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        expect(near(svc, later)).toHaveLength(0);
+    });
+
+    it("does not warn when there is no (or an invalid) nextUpdate", () => {
+        const svc = makeService();
+        expect(near(svc, undefined)).toHaveLength(0);
+        expect(near(svc, "not-a-date")).toHaveLength(0);
+    });
+});

@@ -17,6 +17,7 @@ import {
 } from "@nestjs/swagger";
 import { Observable, startWith } from "rxjs";
 import { JwtService } from "../auth/jwt.service.js";
+import { SessionStatus } from "./entities/session.entity.js";
 import { SessionService } from "./session.service.js";
 import { SessionEventsService } from "./session-events.service.js";
 
@@ -149,6 +150,14 @@ export class SessionEventsController {
                             id: session.id,
                             status: session.status,
                             updatedAt: session.updatedAt.toISOString(),
+                            // Surface the failure reason on (re)connect so a
+                            // client that missed the live event still learns why.
+                            ...(session.status === SessionStatus.Failed
+                                ? {
+                                      error: session.failureCode,
+                                      message: session.errorReason,
+                                  }
+                                : {}),
                         }),
                     }),
                 ),

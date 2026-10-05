@@ -20,6 +20,10 @@ interface SessionEventMessage {
     id: string;
     status: SessionStatus;
     updatedAt: string;
+    /** Machine-readable failure code, present when the session failed. */
+    error?: string;
+    /** Short, safe failure message, present when the session failed. */
+    message?: string;
 }
 
 export const SESSION_STATUS_CHANGED = "session.status.changed";
@@ -52,6 +56,10 @@ export class SessionEventsService {
                     status: event.status,
                     updatedAt: event.updatedAt.toISOString(),
                 };
+                if (event.status === SessionStatus.Failed) {
+                    data.error = event.session?.failureCode;
+                    data.message = event.session?.errorReason;
+                }
 
                 return new MessageEvent("message", {
                     data: JSON.stringify(data),
