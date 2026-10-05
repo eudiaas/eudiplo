@@ -49,3 +49,6 @@ export { AddOutcomeToSession1779000000000 } from "./1779000000000-AddOutcomeToSe
 export { AddIssuanceSetIdToDeferredTransaction1780000000000 } from "./1780000000000-AddIssuanceSetIdToDeferredTransaction.js";
 
 export { AddConfigImportRun1781000000000 } from "./1781000000000-AddConfigImportRun.js";
+
+// espuni fork migrations — numbered above upstream's highest (PATCHES.md §3b).
+export { AddClientIdSchemeToPresentationConfig1790000000000 } from "./1790000000000-AddClientIdSchemeToPresentationConfig.js";

@@ -17,6 +17,7 @@ import {
 import { TenantEntity } from "../../../auth/tenant/entities/tenant.entity.js";
 import { WebhookEndpointEntity } from "../../../issuer/configuration/webhook-endpoint/entities/webhook-endpoint.entity.js";
 import { RevocationCheckMode } from "../../../trust/types.js";
+import type { ClientIdSchemeValue } from "../../oid4vp/dto/presentation-request.dto.js";
 import { RegistrationCertificateRequest } from "../dto/vp-request.dto.js";
 
 export enum TrustedAuthorityType {
@@ -413,6 +414,26 @@ export class PresentationConfig {
      */
     @Column("varchar", { nullable: true })
     webhookEndpointId?: string | null;
+
+    /**
+     * Default OID4VP client identifier scheme for requests built from this
+     * configuration. A per-request `clientIdScheme` overrides it.
+     *
+     * - `x509_hash` (default): the request is a signed JAR served by reference
+     *   (`request_uri`), with `client_id` = `x509_hash:<cert hash>` and an
+     *   encrypted response (`direct_post.jwt`). This is the EUDI/HAIP behaviour.
+     * - `x509_san_dns`: as above, with `client_id` = `x509_san_dns:<DNS SAN>`.
+     * - `redirect_uri`: the request is unsigned and passed by value in the
+     *   authorization URL, with `client_id` = `redirect_uri:<response_uri>` and
+     *   an unencrypted response (`direct_post`). Used by profiles that rely on
+     *   TLS/Web PKI instead of a relying-party trust list — e.g. the EU Age
+     *   Verification QR/deeplink fallback (AV profile Annex A §A.6).
+     *
+     * espuni fork — not upstream. Validation lives in the Zod presentation
+     * config schema (v7 moved it out of the entity).
+     */
+    @Column("varchar", { nullable: true })
+    clientIdScheme?: ClientIdSchemeValue | null;
 
     @ApiHideProperty()
     @ManyToOne(() => WebhookEndpointEntity, {

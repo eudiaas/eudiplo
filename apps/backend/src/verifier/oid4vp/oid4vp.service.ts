@@ -28,10 +28,11 @@ import {
     AuthResponse,
     AuthResponseSchema,
 } from "../presentations/dto/auth-response.dto.js";
+import { PresentationConfig } from "../presentations/entities/presentation-config.entity.js";
 import { IncompletePresentationException } from "../presentations/exceptions/incomplete-presentation.exception.js";
 import { PresentationsService } from "../presentations/presentations.service.js";
 import { applyTrustedAuthoritiesPolicy } from "./dcql-trusted-authorities.util.js";
-import { createClientId } from "./client-id.util.js";
+import { createClientId, resolveClientIdScheme } from "./client-id.util.js";
 import { AuthorizationResponse } from "./dto/authorization-response.dto.js";
 import {
     ClientIdScheme,
@@ -413,6 +414,37 @@ export class Oid4vpService {
         const fresh = values.session === undefined;
         values.session = values.session || v4();
 
+        // espuni fork — the redirect_uri client identifier scheme builds an
+        // unsigned request-by-value with an unencrypted direct_post response
+        // (AV QR/deeplink fallback, AV profile Annex A §A.6). It is a plain
+        // QR/deeplink flow, never DC API.
+        //
+        // Precedence: the per-request `clientIdScheme` (upstream, #1057) wins
+        // over the presentation config's `clientIdScheme` (fork), which wins
+        // over the x509_hash default. The config value is what makes a config
+        // like `age-verification-fallback` work without its callers knowing.
+        const clientIdScheme = resolveClientIdScheme(
+            values.clientIdScheme,
+            presentationConfig.clientIdScheme,
+        );
+        if (clientIdScheme === ClientIdScheme.REDIRECT_URI) {
+            if (useDcApi) {
+                // An unsigned DC API request carries no client_id at all
+                // (OID4VP Appendix A), so redirect_uri has no meaning there.
+                // Failing beats silently answering a DC API caller with a QR.
+                throw new BadRequestException(
+                    "The redirect_uri client identifier scheme cannot be used with the Digital Credentials API",
+                );
+            }
+            return this.createRedirectUriRequest(
+                presentationConfig,
+                values,
+                tenantId,
+                requestId,
+                fresh,
+            );
+        }
+
         // Per OID4VP spec Section 13.3: generate a separate walletNonce for
         // wallet-facing URLs so the QR code / request_uri does not reveal the
         // session ID (transaction-id) used by the frontend for polling.
@@ -426,11 +458,7 @@ export class Oid4vpService {
             keyId: presentationConfig.accessKeyChainId ?? undefined,
         });
 
-        const clientId = createClientId(
-            cert,
-            this.certService,
-            values.clientIdScheme,
-        );
+        const clientId = createClientId(cert, this.certService, clientIdScheme);
 
         const params = {
             client_id: clientId,
@@ -525,6 +553,140 @@ export class Oid4vpService {
     }
 
     /**
+     * Resolve the DCQL query of a presentation config for a by-value request:
+     * substitute `<TENANT_URL>`, turn internal `etsi_tl` trusted authorities
+     * into the `aki` strings wallets expect, and apply the VP_REMOVE_TA policy.
+     * The same three steps `createAuthorizationRequest` applies to a JAR.
+     */
+    private async buildDcqlQuery(
+        presentationConfig: PresentationConfig,
+        tenantId: string,
+    ): Promise<unknown> {
+        const host = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const tenantHost = `${host}/issuers/${tenantId}`;
+        let dcql_query = JSON.parse(
+            JSON.stringify(presentationConfig.dcql_query).replaceAll(
+                "<TENANT_URL>",
+                tenantHost,
+            ),
+        );
+        dcql_query =
+            await this.presentationsService.transformDcqlTrustedAuthoritiesToAki(
+                dcql_query,
+                tenantId,
+            );
+        return applyTrustedAuthoritiesPolicy(
+            dcql_query,
+            !!this.configService.get<boolean>("VP_REMOVE_TA"),
+        );
+    }
+
+    /**
+     * Build an OID4VP request using the `redirect_uri` client identifier
+     * scheme: unsigned, passed by value in the authorization URL, with an
+     * unencrypted `direct_post` response. This is the AV QR/deeplink fallback
+     * (AV profile Annex A §A.6):
+     *
+     *   response_type=vp_token
+     *   response_mode=direct_post
+     *   client_id=redirect_uri:<response_uri>
+     *   response_uri=<response_uri>
+     *   nonce=<nonce>  state=<walletNonce>  dcql_query=<json>
+     *
+     * No JAR, no request_uri, no client_metadata (no response encryption).
+     *
+     * espuni fork — not upstream.
+     */
+    private async createRedirectUriRequest(
+        presentationConfig: PresentationConfig,
+        values: PresentationRequestOptions,
+        tenantId: string,
+        requestId: string,
+        fresh: boolean,
+    ): Promise<OfferResponse> {
+        const host = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const walletNonce = randomUUID();
+        const nonce = randomUUID();
+        const responseUri = `${host}/presentations/${walletNonce}/oid4vp`;
+        const clientId = `${ClientIdScheme.REDIRECT_URI}:${responseUri}`;
+        const dcql_query = await this.buildDcqlQuery(
+            presentationConfig,
+            tenantId,
+        );
+
+        // Authorization request parameters, passed by value in the URL.
+        const authParams: Record<string, string> = {
+            response_type: "vp_token",
+            response_mode: "direct_post",
+            client_id: clientId,
+            response_uri: responseUri,
+            nonce,
+            state: walletNonce,
+            dcql_query: JSON.stringify(dcql_query),
+        };
+        const queryString = Object.entries(authParams)
+            .map(
+                ([key, value]) =>
+                    `${encodeURIComponent(key)}=${encodeURIComponent(value)}`,
+            )
+            .join("&");
+
+        const expiresAt = new Date(
+            Date.now() + (presentationConfig.lifeTime ?? 300) * 1000,
+        );
+
+        if (fresh) {
+            const transaction_data =
+                values.transaction_data ?? presentationConfig.transaction_data;
+            const endpointWebhook = await this.resolveWebhookFromEndpoint(
+                presentationConfig.webhookEndpointId,
+                tenantId,
+            );
+            await this.sessionService.create({
+                id: values.session,
+                walletNonce,
+                webhookEndpointId:
+                    presentationConfig.webhookEndpointId ?? undefined,
+                parsedWebhook: values.webhook ?? endpointWebhook,
+                redirectUri:
+                    values.redirectUri ??
+                    presentationConfig.redirectUri ??
+                    undefined,
+                tenantId,
+                requestId,
+                requestUrl: `openid4vp://?${queryString}`,
+                expiresAt,
+                useDcApi: false,
+                clientId,
+                responseUri,
+                vp_nonce: nonce,
+                transaction_data,
+                skewSeconds:
+                    values.skewSeconds ??
+                    presentationConfig.skewSeconds ??
+                    DEFAULT_VERIFIER_SKEW_SECONDS,
+            });
+        } else {
+            await this.sessionService.add(values.session!, {
+                walletNonce,
+                requestUrl: `openid4vp://?${queryString}`,
+                expiresAt,
+                useDcApi: false,
+                clientId,
+                responseUri,
+                vp_nonce: nonce,
+            });
+        }
+
+        // Same by-value URL for same-device and cross-device (QR).
+        return {
+            uri: queryString,
+            crossDeviceUri: queryString,
+            session: values.session!,
+        };
+    }
+
+    /**
      * Processes the response from the wallet.
      * Per OID4VP spec Section 13.3, the nonce parameter is the walletNonce
      * from the URL path (not the session ID).
@@ -606,36 +768,79 @@ export class Oid4vpService {
             throw new BadRequestException({});
         }
 
-        // Ensure response field is present for success path
-        if (!body.response) {
-            throw new BadRequestException(
-                "Missing response field in authorization response",
+        // espuni fork — the `redirect_uri` client identifier scheme uses an
+        // unencrypted `direct_post` response: the wallet posts `vp_token`
+        // (+ `state`) directly with no JWE. Every other scheme uses
+        // `direct_post.jwt`/`dc_api.jwt` and the response arrives as a JWE in
+        // `body.response`. The scheme is read back from the stored client_id.
+        const isRedirectUriScheme =
+            session.clientId?.startsWith(`${ClientIdScheme.REDIRECT_URI}:`) ??
+            false;
+
+        // What the wallet actually sent, handed to the webhook as-is.
+        let rawPresentationPayload: unknown;
+        let res: AuthResponse;
+        if (isRedirectUriScheme) {
+            if (!body.vp_token) {
+                throw new BadRequestException(
+                    "Missing vp_token in authorization response",
+                );
+            }
+            // In a form-urlencoded direct_post, vp_token is a JSON object
+            // (DCQL credential id -> presentation[]). Some clients send it
+            // already parsed; accept both.
+            let vpToken: unknown;
+            try {
+                vpToken =
+                    typeof body.vp_token === "string"
+                        ? JSON.parse(body.vp_token)
+                        : body.vp_token;
+            } catch {
+                throw new BadRequestException(
+                    "Invalid vp_token in authorization response: not valid JSON",
+                );
+            }
+            rawPresentationPayload = { vp_token: vpToken, state: body.state };
+            const parsed = AuthResponseSchema.safeParse(rawPresentationPayload);
+            if (!parsed.success) {
+                throw new BadRequestException(
+                    `Invalid authorization response: ${JSON.stringify(parsed.error.issues)}`,
+                );
+            }
+            res = parsed.data;
+        } else {
+            // Ensure response field is present for success path
+            if (!body.response) {
+                throw new BadRequestException(
+                    "Missing response field in authorization response",
+                );
+            }
+
+            const decrypted =
+                await this.encryptionService.decryptJweWithPrivateJwk<AuthResponse>(
+                    body.response,
+                    session.tenantId,
+                    session.responseEncryptionPrivateJwk as
+                        | Record<string, unknown>
+                        | undefined,
+                );
+
+            // Validate decrypted response against the Zod schema
+
+            const parsed = AuthResponseSchema.safeParse(decrypted);
+            if (!parsed.success) {
+                throw new BadRequestException(
+                    `Invalid authorization response: ${JSON.stringify(parsed.error.issues)}`,
+                );
+            }
+
+            res = parsed.data;
+            rawPresentationPayload = decrypted;
+            this.logger.trace(
+                { decryptedResponse: decrypted },
+                "[TRACE] Decrypted OID4VP authorization response",
             );
         }
-
-        const decrypted =
-            await this.encryptionService.decryptJweWithPrivateJwk<AuthResponse>(
-                body.response,
-                session.tenantId,
-                session.responseEncryptionPrivateJwk as
-                    | Record<string, unknown>
-                    | undefined,
-            );
-
-        // Validate decrypted response against the Zod schema
-
-        const parsed = AuthResponseSchema.safeParse(decrypted);
-        if (!parsed.success) {
-            throw new BadRequestException(
-                `Invalid authorization response: ${JSON.stringify(parsed.error.issues)}`,
-            );
-        }
-
-        const res: AuthResponse = parsed.data;
-        this.logger.trace(
-            { decryptedResponse: decrypted },
-            "[TRACE] Decrypted OID4VP authorization response",
-        );
 
         //for dc api the state is no longer included in the res, see: https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#name-request
 
@@ -731,7 +936,7 @@ export class Oid4vpService {
                         // Since webhooks currently do not support retries, keeping
                         // the raw PII/tokens only in memory for this call is sufficient.
                         // ==========================================================
-                        rawPresentationPayload: decrypted,
+                        rawPresentationPayload,
                     })
                     .catch((error) => {
                         this.auditLogger.logFlowError(

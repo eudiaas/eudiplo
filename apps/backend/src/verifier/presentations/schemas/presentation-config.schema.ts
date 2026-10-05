@@ -416,6 +416,19 @@ export const PresentationConfigCreateSchema = z
             .enum(["strict", "best_effort", "disabled"])
             .optional()
             .describe("Revocation/status check mode."),
+        // espuni fork — not upstream. Selects how the authorization request is
+        // built: signed JAR by reference (x509_hash, default, or x509_san_dns)
+        // vs unsigned by value with unencrypted direct_post (redirect_uri), the
+        // EU AV QR/deeplink fallback of Annex A §A.6. Same values as
+        // ClientIdScheme in presentation-request.dto.ts, spelled out because
+        // that module imports this one. A per-request clientIdScheme wins.
+        clientIdScheme: z
+            .enum(["x509_hash", "x509_san_dns", "redirect_uri"])
+            .nullable()
+            .optional()
+            .describe(
+                "Default OID4VP client identifier scheme for requests built from this configuration; a per-request clientIdScheme overrides it.",
+            ),
         dcql_query: DCQLSchema.describe(
             "DCQL query defining requested credentials and claims.",
         ),

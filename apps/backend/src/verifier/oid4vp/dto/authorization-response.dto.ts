@@ -13,10 +13,17 @@ import { z } from "zod";
  *
  * @see https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#name-error-response
  */
-const AuthorizationResponseSchema = z
+export const AuthorizationResponseSchema = z
     .object({
         response: z.string().optional(),
         sendResponse: z.boolean().optional(),
+        // espuni fork: unencrypted direct_post of the `redirect_uri` client
+        // identifier scheme carries the VP token directly (no JWE wrapper).
+        // The schema is strict, so it must be declared or the wallet's
+        // response is rejected outright.
+        vp_token: z
+            .union([z.record(z.string(), z.unknown()), z.string()])
+            .optional(),
         error: z.string().optional(),
         error_description: z.string().optional(),
         error_uri: z.string().optional(),
@@ -37,6 +44,14 @@ export class AuthorizationResponse extends createZodDto(
      * When set to true, the authorization response will be sent to the client.
      */
     sendResponse?: boolean;
+
+    /**
+     * The VP token, present for the unencrypted `direct_post` response used by
+     * the `redirect_uri` client identifier scheme (no JWE). A JSON object
+     * mapping each DCQL credential id to its presentation(s); may arrive as a
+     * JSON string in a form-urlencoded post.
+     */
+    vp_token?: Record<string, unknown> | string;
 
     // OAuth 2.0 Authorization Error Response fields (per RFC 6749 section 4.1.2.1)
 

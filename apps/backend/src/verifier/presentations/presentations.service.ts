@@ -1642,7 +1642,11 @@ export class PresentationsService {
                         requestObjectSessionData?.response_mode,
                 };
 
-                const type = this.getType(session.requestObject!, attId);
+                // espuni fork: the credential format comes from the
+                // presentation config's DCQL query, which is always available —
+                // unlike session.requestObject, which is absent for unsigned
+                // request-by-value flows (redirect_uri client identifier scheme).
+                const type = dcqlCredential.format as CredentialType;
 
                 // Extract required claim keys from DCQL claims
                 const requiredClaimKeys = this.getRequiredClaimKeys(
@@ -1742,20 +1746,6 @@ export class PresentationsService {
         } catch {
             return undefined;
         }
-    }
-
-    /**
-     * Get the credential type based on the configuration id.
-     * @param jwt
-     * @param att
-     * @returns
-     */
-    getType(jwt: string, att: string): CredentialType {
-        const payload = decodeJwt<any>(jwt);
-        return payload.dcql_query.credentials.find(
-            (credential: { id: string; format: CredentialType }) =>
-                credential.id === att,
-        ).format;
     }
 
     /**

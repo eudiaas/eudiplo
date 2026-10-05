@@ -23,6 +23,9 @@ export type ResponseTypeValue =
 export const ClientIdScheme = {
     X509_HASH: "x509_hash",
     X509_SAN_DNS: "x509_san_dns",
+    // espuni fork: unsigned request-by-value + unencrypted direct_post, the
+    // EU AV QR/deeplink fallback (AV profile Annex A §A.6).
+    REDIRECT_URI: "redirect_uri",
 } as const;
 
 export type ClientIdSchemeValue =
@@ -45,7 +48,11 @@ const PresentationRequestSchema = z
         transaction_data: z.array(TransactionDataSchema).optional(),
         skewSeconds: z.number().min(0).optional(),
         clientIdScheme: z
-            .enum([ClientIdScheme.X509_HASH, ClientIdScheme.X509_SAN_DNS])
+            .enum([
+                ClientIdScheme.X509_HASH,
+                ClientIdScheme.X509_SAN_DNS,
+                ClientIdScheme.REDIRECT_URI,
+            ])
             .optional(),
     })
     .strict();
@@ -116,7 +123,11 @@ export class PresentationRequest
     skewSeconds?: number;
 
     /**
-     * Client identifier scheme for the OID4VP request. Defaults to x509_hash.
+     * Client identifier scheme for the OID4VP request. Overrides the
+     * presentation configuration's `clientIdScheme`; when neither is set,
+     * x509_hash. `redirect_uri` builds an unsigned request passed by value
+     * with an unencrypted `direct_post` response and cannot be combined with
+     * `response_type: "dc-api"`.
      */
     @ApiPropertyOptional({
         enum: ClientIdScheme,

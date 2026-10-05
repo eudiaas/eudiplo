@@ -18,3 +18,17 @@ export function createClientId(
 
     return `${ClientIdScheme.X509_HASH}:${certService.getCertHash(cert)}`;
 }
+
+/**
+ * The client identifier scheme a request is built with: the per-request value
+ * if given, else the presentation configuration's, else x509_hash.
+ *
+ * espuni fork — the configuration-level scheme is ours; upstream only has the
+ * per-request one.
+ */
+export function resolveClientIdScheme(
+    requested?: ClientIdSchemeValue,
+    configured?: ClientIdSchemeValue | null,
+): ClientIdSchemeValue {
+    return requested ?? configured ?? ClientIdScheme.X509_HASH;
+}
