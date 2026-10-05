@@ -45,6 +45,9 @@ type Oid4VpManagedAuthorizationServerConfig =
         type: "oid4vp";
         id: string;
         presentationConfigId: string;
+        // Declared in the schema and in the DTO, but missing here, so the
+        // service could never read it and the option did nothing.
+        immediateWalletRedirect?: boolean;
         token?: ChainedAsTokenConfig;
         requireDPoP?: boolean;
         walletAttestationRequired?: boolean;
@@ -301,7 +304,7 @@ export class AuthorizationServersService {
         clientId: string,
         requestUri: string,
         origin?: string,
-    ): Promise<string> {
+    ): Promise<{ uri: string; immediate: boolean }> {
         const config = await this.getAuthorizationServerConfig(
             tenantId,
             authorizationServerId,
@@ -370,7 +373,12 @@ export class AuthorizationServersService {
             `Redirecting session ${session.id} to OID4VP wallet invocation for ${authorizationServerId}`,
         );
 
-        return `openid4vp://?${offer.uri}`;
+        return {
+            uri: `openid4vp://?${offer.uri}`,
+            // Documented as defaulting to true, so an unset config keeps the
+            // redirect every deployment has today.
+            immediate: config.immediateWalletRedirect !== false,
+        };
     }
 
     /**

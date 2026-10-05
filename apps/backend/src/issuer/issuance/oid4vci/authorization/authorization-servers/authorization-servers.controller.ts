@@ -28,6 +28,7 @@ import {
     ChainedAsTokenResponseDto,
     extractDpopJkt,
 } from "../shared/index.js";
+import { walletInvocationPage } from "../wallet-invocation.js";
 import { AuthorizationServersService } from "./authorization-servers.service.js";
 
 @ApiTags("Authorization Servers")
@@ -103,7 +104,7 @@ export class AuthorizationServersController {
         @Headers("origin") origin: string | undefined,
         @Res() res: Response,
     ): Promise<void> {
-        const redirectUrl =
+        const invocation =
             await this.authorizationServersService.handleAuthorize(
                 tenantId,
                 authorizationServerId,
@@ -111,7 +112,14 @@ export class AuthorizationServersController {
                 query.request_uri,
                 origin,
             );
-        res.redirect(redirectUrl);
+        // A redirect straight into the wallet is refused by Android browsers
+        // when they were opened by another app -- which is always, here. See
+        // walletInvocationPage.
+        if (invocation.immediate) {
+            res.redirect(invocation.uri);
+            return;
+        }
+        res.type("html").send(walletInvocationPage(invocation.uri));
     }
 
     @Public()
