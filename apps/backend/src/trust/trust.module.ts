@@ -4,6 +4,7 @@ import { CryptoModule } from "../crypto/crypto.module.js";
 import { TrustListModule } from "../issuer/trust-list/trustlist.module.js";
 import { OutboundUrlPolicyModule } from "../webhook/outbound-url-policy.module.js";
 import { OpenIdFederationResolver } from "./adapters/openid-federation-resolver.js";
+import { EtsiXmlTrustListProvider } from "./adapters/etsi-xml-trust-list-provider.js";
 import { VerifiedLoteProvider } from "./adapters/verified-lote-provider.js";
 import { CollectTrustedEntities } from "./application/collect-trusted-entities.js";
 import { EvaluateFederationTrustChain } from "./application/evaluate-federation-trust-chain.js";
@@ -49,9 +50,18 @@ export const evaluateFederationTrustChainProvider: Provider = {
         TrustStoreService,
         {
             provide: TRUST_LIST_PROVIDER,
-            inject: [TrustListJwtService, LoteParserService],
-            useFactory: (jwt: TrustListJwtService, parser: LoteParserService) =>
-                new VerifiedLoteProvider(jwt, parser),
+            inject: [TrustListJwtService, LoteParserService, TrustFetchService],
+            // espuni fork (PATCHES.md §1.2): ETSI TS 119 612 XML lists in front
+            // of upstream's LoTE provider.
+            useFactory: (
+                jwt: TrustListJwtService,
+                parser: LoteParserService,
+                fetch: TrustFetchService,
+            ) =>
+                new EtsiXmlTrustListProvider(
+                    new VerifiedLoteProvider(jwt, parser),
+                    fetch,
+                ),
         },
         {
             provide: CollectTrustedEntities,

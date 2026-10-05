@@ -80,6 +80,7 @@
         "@owf/crypto": "^0.4.1",
         "@owf/eudi-attestation-schema": "0.4.1",
         "@owf/eudi-lote": "^0.4.1",
+        "@owf/eudi-tl": "^0.4.1",
         "@owf/identity-common": "^0.4.1",
         "@owf/mdoc": "^0.8.1",
         "@owf/token-status-list": "^0.4.1",

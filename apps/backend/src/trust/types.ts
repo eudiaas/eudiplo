@@ -4,6 +4,11 @@ export interface TrustListRef {
     verifierKey?: Record<string, unknown>;
     verifierKeyPem?: string;
     verifierX509Der?: string;
+    // espuni fork (PATCHES.md §1.2): ETSI TS 119 612 XML trusted lists, read
+    // by adapters/etsi-xml-trust-list-provider.ts.
+    format?: "lote-json" | "etsi-xml";
+    serviceTypeMap?: Record<string, string>;
+    acceptedServiceStatus?: string[];
 }
 
 /**

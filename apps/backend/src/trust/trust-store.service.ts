@@ -121,6 +121,11 @@ export class TrustStoreService {
                 verifierKey: ref.verifierKey ?? null,
                 verifierKeyPem: ref.verifierKeyPem ?? null,
                 verifierX509Der: ref.verifierX509Der ?? null,
+                // espuni fork (PATCHES.md §1.2): the XML settings change what
+                // the same URL yields, so they are part of the key.
+                format: ref.format ?? null,
+                serviceTypeMap: ref.serviceTypeMap ?? null,
+                acceptedServiceStatus: ref.acceptedServiceStatus ?? null,
             })),
             acceptedServiceTypes: source.acceptedServiceTypes ?? [],
         });

@@ -56,6 +56,36 @@ export class TrustListRef {
             "Base64 DER-encoded X.509 certificate used to verify trust-list JWT signatures for external trusted authority values.",
     })
     verifierX509Der?: string;
+
+    // --- espuni fork: ETSI TS 119 612 XML trusted lists ---
+    // Folded into TrustListRef rather than carried in a separate top-level
+    // `trustListConfig` array (as the pre-v7 fork did): v7 already puts
+    // verifier material here, so `verifierX509Der` doubles as the pinned
+    // XAdES signer and there is no second place to keep in sync.
+
+    @ApiPropertyOptional({
+        type: "string",
+        enum: ["lote-json", "etsi-xml"],
+        description:
+            "Trust-list wire format. `lote-json` (default) is ETSI TS 119 602; `etsi-xml` is an ETSI TS 119 612 TrustServiceStatusList, the format of the EU Age Verification Trusted List.",
+    })
+    format?: "lote-json" | "etsi-xml";
+
+    @ApiPropertyOptional({
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+            "`etsi-xml` only: rename source service-type URIs to internal ones for matching.",
+    })
+    serviceTypeMap?: Record<string, string>;
+
+    @ApiPropertyOptional({
+        type: "array",
+        items: { type: "string" },
+        description:
+            "`etsi-xml` only: service status URIs accepted as active (defaults to the granted/recognised-at-national-level set).",
+    })
+    acceptedServiceStatus?: string[];
 }
 
 /**
