@@ -11,6 +11,15 @@ export class TrustListJwtService {
     constructor(private readonly httpService: HttpService) {}
 
     async fetchJwt(url: string, timeoutMs = 4000): Promise<string> {
+        return this.fetchText(url, timeoutMs);
+    }
+
+    /**
+     * Fetch a trust list resource as text (JWT or ETSI TS 119 612 XML), with a
+     * timeout. espuni fork: XML lists reuse this path, so the transport is
+     * shared and only the parsing differs.
+     */
+    async fetchText(url: string, timeoutMs = 4000): Promise<string> {
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), timeoutMs);
         try {

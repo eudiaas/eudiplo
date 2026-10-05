@@ -32,6 +32,25 @@ const TrustListRefSchema = z
             .string()
             .optional()
             .describe("Optional verifier certificate in DER/base64 form."),
+        // espuni fork — ETSI TS 119 612 XML trusted lists. Declared here
+        // because the schema is .strict(): an undeclared field would reject
+        // the whole config, not be ignored.
+        format: z
+            .enum(["lote-json", "etsi-xml"])
+            .optional()
+            .describe(
+                "Trust-list wire format: lote-json (TS 119 602, default) or etsi-xml (TS 119 612 TrustServiceStatusList).",
+            ),
+        serviceTypeMap: z
+            .record(z.string(), z.string())
+            .optional()
+            .describe(
+                "etsi-xml only: map source service-type URIs to internal ones.",
+            ),
+        acceptedServiceStatus: z
+            .array(z.string())
+            .optional()
+            .describe("etsi-xml only: service status URIs accepted as active."),
     })
     .describe("Reference to a trust list used for authority verification.")
     .strict();
