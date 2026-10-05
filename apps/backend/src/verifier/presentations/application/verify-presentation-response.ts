@@ -39,6 +39,9 @@ export interface PresentationQuery {
         credentials: Array<
             DcqlCredentialQuery & {
                 trusted_authorities?: DcqlTrustedAuthority[];
+                // espuni fork (PATCHES.md §1.1): read when the session has no
+                // signed request object (redirect_uri scheme).
+                format?: string;
             }
         >;
         credential_sets?: DcqlCredentialSetQuery[];
@@ -210,10 +213,13 @@ export class VerifyPresentationResponse {
                     ts12TransactionData: transactionData?.some(isTs12),
                 };
 
-                const format = requestedFormat(
-                    session.requestObject!,
-                    credentialId,
-                );
+                // espuni fork (PATCHES.md §1.1): an unsigned request-by-value
+                // (redirect_uri client identifier scheme) leaves no request
+                // object on the session; the format then comes from the DCQL
+                // query, which is what the request was built from.
+                const format = session.requestObject
+                    ? requestedFormat(session.requestObject, credentialId)
+                    : (credentialQuery.format as VerifierCredentialFormat);
                 // Throws UnknownClaimSetReferenceError for a malformed query.
                 const selections = claimSelections(credentialQuery);
                 const hasClaimSets =

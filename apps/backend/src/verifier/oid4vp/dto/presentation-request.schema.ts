@@ -11,6 +11,9 @@ export const ResponseType = {
 export const ClientIdScheme = {
     X509_HASH: "x509_hash",
     X509_SAN_DNS: "x509_san_dns",
+    // espuni fork (PATCHES.md §1.1): unsigned request-by-value + unencrypted
+    // direct_post, the EU AV QR/deeplink fallback (AV profile Annex A).
+    REDIRECT_URI: "redirect_uri",
 } as const;
 
 export const PresentationRequestSchema = z
@@ -52,10 +55,14 @@ export const PresentationRequestSchema = z
                 "Clock skew override in seconds for credential JWT time validation.",
             ),
         clientIdScheme: z
-            .enum([ClientIdScheme.X509_HASH, ClientIdScheme.X509_SAN_DNS])
+            .enum([
+                ClientIdScheme.X509_HASH,
+                ClientIdScheme.X509_SAN_DNS,
+                ClientIdScheme.REDIRECT_URI,
+            ])
             .optional()
             .describe(
-                "OID4VP client identifier scheme; defaults to x509_hash.",
+                "OID4VP client identifier scheme; defaults to the presentation configuration's, then x509_hash.",
             ),
         reference: z
             .string()
