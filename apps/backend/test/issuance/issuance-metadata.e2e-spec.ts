@@ -44,15 +44,25 @@ describe("Issuance - Metadata", () => {
         );
     });
 
-    test("get signed issuer metadata", async () => {
-        const tenantId = "root";
+    /**
+     * Fetches the issuer metadata of the root tenant with the given `Accept`.
+     * @param accept the raw header value, omitted when the client sends none
+     * @returns the response
+     */
+    const getMetadata = (accept?: string) => {
+        const req = request(app.getHttpServer())
+            .get("/.well-known/openid-credential-issuer/issuers/root")
+            .trustLocalhost();
+        return accept === undefined ? req : req.set("Accept", accept);
+    };
 
-        const res = await request(app.getHttpServer())
-            .get(`/.well-known/openid-credential-issuer/issuers/${tenantId}`)
-            .trustLocalhost()
-            .set("Accept", "application/jwt")
-            .expect(200);
-        expect(res.body).toBeDefined();
+    /**
+     * Asserts the response is the signed metadata, signed by a certificate the
+     * response itself carries.
+     * @param res the metadata response
+     */
+    const expectSignedMetadata = async (res: request.Response) => {
+        expect(res.headers["content-type"]).toContain("application/jwt");
         // Get the x5c header and verify the signature
         const jwtHeader = JSON.parse(
             Buffer.from(res.text.split(".")[0], "base64").toString("utf-8"),
@@ -72,6 +82,59 @@ describe("Issuance - Metadata", () => {
             throw err;
         });
         expect(payload.iss).toBeDefined();
+    };
+
+    /**
+     * Asserts the response is the unsigned metadata document.
+     * @param res the metadata response
+     */
+    const expectUnsignedMetadata = (res: request.Response) => {
+        expect(res.headers["content-type"]).toContain("application/json");
+        expect(res.body.credential_issuer).toBe(
+            "http://localhost:3000/issuers/root",
+        );
+    };
+
+    test("get signed issuer metadata", async () => {
+        const res = await getMetadata("application/jwt").expect(200);
+        expect(res.body).toBeDefined();
+        await expectSignedMetadata(res);
+    });
+
+    // `Accept` is a comma-separated list with optional `q` weights
+    // (RFC 9110 §12.5.1), and OpenID4VCI 1.0 §12.2.2 recommends that a Wallet
+    // announces every content type it supports — so a wallet that can read
+    // signed metadata asks for both, and must still get the signed variant.
+    test("get signed issuer metadata when both types are accepted", async () => {
+        const res = await getMetadata(
+            "application/jwt, application/json",
+        ).expect(200);
+        await expectSignedMetadata(res);
+    });
+
+    test("get signed issuer metadata when the JWT has the higher q weight", async () => {
+        const res = await getMetadata(
+            "application/jwt;q=1.0, application/json;q=0.9",
+        ).expect(200);
+        await expectSignedMetadata(res);
+    });
+
+    test("get unsigned issuer metadata when JSON has the higher q weight", async () => {
+        const res = await getMetadata(
+            "application/json;q=1.0, application/jwt;q=0.9",
+        ).expect(200);
+        expectUnsignedMetadata(res);
+    });
+
+    // A wildcard never names the signed variant: browsers and plain curl calls
+    // keep getting the JSON document they have always got.
+    test("get unsigned issuer metadata for a wildcard Accept", async () => {
+        expectUnsignedMetadata(await getMetadata("*/*").expect(200));
+        expectUnsignedMetadata(await getMetadata("application/*").expect(200));
+    });
+
+    test("get unsigned issuer metadata without an Accept header", async () => {
+        expectUnsignedMetadata(await getMetadata().expect(200));
     });
 
     test("metadata omits notification endpoint when disabled", async () => {
