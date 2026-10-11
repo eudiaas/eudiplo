@@ -18,7 +18,7 @@ rots.
 
 | | |
 |---|---|
-| Base upstream de `main` | **v7.2.0** (rebase del 2026-08-22, PR #19). La rama `rebase/v9.1.0` lleva el mismo conjunto de parches sobre **v9.1.0** (rebase del 2026-10-11, PR en borrador que sustituye al #45 de `rebase/v8.1.0`); este fichero describe esa rama. Hasta que se fusione, `main` sigue en v7.2.0 |
+| Base upstream de `main` | **v7.2.0** (rebase del 2026-08-22, PR #19). La rama `rebase/v9.1.0` lleva el mismo conjunto de parches sobre **v9.1.0** (rebase del 2026-10-11, PR en borrador [#46](https://github.com/eudiaas/eudiplo/pull/46), que sustituye al #45 de `rebase/v8.1.0`); este fichero describe esa rama. Hasta que se fusione, `main` sigue en v7.2.0 |
 | Parches solo del fork | **12** vivos (§1.1–§1.3, §1.5, §1.7 reducido al SSE, §1.8–§1.14) + infraestructura (§1.4). §1.6 y el núcleo de §1.7 están upstream desde v7.5.0 (#970, #974); el webhook de fallo de §1.7 (`notifyOnFailure`) lo sustituye #1133 en v9.0. Todo en §2 |
 | Última imagen publicada | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`, también etiquetada `sha-e5377d0`. Nada se ha publicado desde `rebase/v8.1.0` ni desde `rebase/v9.1.0` |
 | Construida desde | `e5377d02` (2026-09-21), el merge de [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10) sobre `db525564` con [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) y [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base comprobada antes de etiquetar: el merge-base con `upstream/main` era exactamente `v7.2.0` |
