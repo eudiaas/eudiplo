@@ -67,6 +67,53 @@ export function readConfig<T>(path: string): T {
     return spec as T;
 }
 
+/**
+ * Derives the jwkThumbprint SessionTranscript.forOid4Vp needs for the
+ * encrypted (direct_post.jwt / x509_hash) response mode, from the verifier's
+ * client_metadata.jwks in the resolved authorization request. Required
+ * whenever prepareMdocPresentation() is used against that mode — omitting it
+ * makes the device signature fail verification (the transcript the wallet
+ * and verifier each compute would differ).
+ */
+export function computeJwkThumbprint(jwks?: {
+    keys?: Array<Record<string, any>>;
+}): Uint8Array | undefined {
+    const keys = jwks?.keys;
+    if (!keys || keys.length === 0) return undefined;
+
+    const encJwk = keys.find((k) => k.use === "enc") ?? keys[0];
+    let canonical: string | undefined;
+
+    if (encJwk?.kty === "EC") {
+        canonical = JSON.stringify({
+            crv: encJwk.crv,
+            kty: encJwk.kty,
+            x: encJwk.x,
+            y: encJwk.y,
+        });
+    } else if (encJwk?.kty === "OKP") {
+        canonical = JSON.stringify({
+            crv: encJwk.crv,
+            kty: encJwk.kty,
+            x: encJwk.x,
+        });
+    } else if (encJwk?.kty === "RSA") {
+        canonical = JSON.stringify({
+            e: encJwk.e,
+            kty: encJwk.kty,
+            n: encJwk.n,
+        });
+    }
+
+    if (!canonical) return undefined;
+    return new Uint8Array(
+        crypto
+            .createHash("sha256")
+            .update(Buffer.from(canonical, "utf8"))
+            .digest(),
+    );
+}
+
 export async function prepareMdocPresentation(
     nonce: string,
     privateKey: CryptoKey,
@@ -81,25 +128,49 @@ export async function prepareMdocPresentation(
             uri: string;
         };
     },
+    // Optional credential-shape overrides. Defaults reproduce the original
+    // EU PID behaviour exactly, so every existing (positional) call site is
+    // unaffected. Added for espuni's AV negative-vector tests, which need a
+    // different docType/namespace/claims and, for the "expired" and
+    // "selective disclosure" cases, different validity/issued-vs-requested
+    // claim sets.
+    overrides?: {
+        docType?: string;
+        namespace?: string;
+        /** Claims embedded in the mDOC by the issuer. */
+        issuedClaims?: Record<string, unknown>;
+        /** Claims actually requested/disclosed in this presentation — may be
+         * a strict subset of issuedClaims (selective disclosure). Defaults to
+         * issuedClaims when omitted. */
+        requestedClaims?: Record<string, boolean>;
+        validFrom?: Date;
+        validUntil?: Date;
+        /** MSO `signed` time. @owf/mdoc >= 0.8 requires validFrom >= signed,
+         * so a back-dated credential needs a back-dated signature too. */
+        signed?: Date;
+    },
 ) {
-    // Use the EU PID docType and namespace to match the pid-de fixture
-    const docType = "eu.europa.ec.eudi.pid.1";
-    const namespace = "eu.europa.ec.eudi.pid.1";
+    // Use the EU PID docType and namespace to match the pid-de fixture,
+    // unless overridden.
+    const docType = overrides?.docType ?? "eu.europa.ec.eudi.pid.1";
+    const namespace = overrides?.namespace ?? "eu.europa.ec.eudi.pid.1";
 
     const issuer = new Issuer(docType, mdocContext);
 
-    const signed = new Date();
-    const validFrom = new Date(signed);
-    const validUntil = new Date(signed);
-    validUntil.setFullYear(signed.getFullYear() + 30);
+    const signed = overrides?.signed ?? new Date();
+    const defaultValidUntil = new Date(signed);
+    defaultValidUntil.setFullYear(signed.getFullYear() + 30);
+    const validFrom = overrides?.validFrom ?? new Date(signed);
+    const validUntil = overrides?.validUntil ?? defaultValidUntil;
 
     // Add claims with the correct names expected by the DCQL query
-    issuer.addIssuerNamespace(namespace, {
+    const issuedClaims = overrides?.issuedClaims ?? {
         given_name: "First",
         family_name: "Last",
         first_name: "First", // Keep for backward compatibility
         last_name: "Last", // Keep for backward compatibility
-    });
+    };
+    issuer.addIssuerNamespace(namespace, issuedClaims);
 
     //TODO: get key from eudiplo so it matches with the trust list
     const key = await exportJWK(privateKey);
@@ -120,18 +191,19 @@ export async function prepareMdocPresentation(
 
     const credential = IssuerSigned.fromEncodedForOid4Vci(encodedIssuerSigned);
 
+    const requestedClaims =
+        overrides?.requestedClaims ??
+        (Object.fromEntries(
+            Object.keys(issuedClaims).map((k) => [k, true]),
+        ) as Record<string, boolean>);
+
     const deviceRequest = DeviceRequest.create({
         docRequests: [
             DocRequest.create({
                 itemsRequest: ItemsRequest.create({
                     docType: docType,
                     namespaces: {
-                        [namespace]: {
-                            given_name: true,
-                            family_name: true,
-                            first_name: true,
-                            last_name: true,
-                        },
+                        [namespace]: requestedClaims,
                     },
                 }),
             }),
