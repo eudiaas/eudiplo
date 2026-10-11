@@ -25,7 +25,8 @@ export function trustListAuthorities(
 /**
  * Trust options for verifying a presented credential: the resolved trust
  * lists, OpenID Federation trust anchors, revocation policy and clock skew.
- * Issuers must be listed as PID or EAA issuance services.
+ * Issuers must be listed as PID, EAA or (espuni fork, §1.11) Pub-EAA
+ * issuance services.
  *
  * Which `trusted_authorities` entry decides:
  * - an `etsi_tl` trust list: the issuer must be listed in it. An
@@ -61,6 +62,12 @@ export function verifierTrustOptions(input: {
             acceptedServiceTypes: [
                 ServiceTypeIdentifiers.EaaIssuance,
                 ServiceTypeIdentifiers.PIDIssuance,
+                // espuni fork (PATCHES.md §1.11): without it a credential whose
+                // issuer is published in a Pub-EAA providers list is rejected
+                // with trust_chain_not_trusted although its signer is listed —
+                // CollectTrustedEntities drops the whole entity first. Shared
+                // by the SD-JWT VC / mdoc (OID4VP) and ISO 18013-7 paths.
+                ServiceTypeIdentifiers.PubEAAIssuance,
             ],
             ...(input.tenantId !== undefined
                 ? { tenantId: input.tenantId }

@@ -9,6 +9,9 @@ import {
 const credentialIssuanceServiceTypes = [
     ServiceTypeIdentifiers.PIDIssuance,
     ServiceTypeIdentifiers.EaaIssuance,
+    // espuni fork (PATCHES.md §1.11): accepted in verification, so its
+    // issuers also get DCQL `aki` values (#1134).
+    ServiceTypeIdentifiers.PubEAAIssuance,
 ];
 
 /** DCQL `aki` values for the credential issuers of a trust list. */

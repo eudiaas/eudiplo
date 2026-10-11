@@ -94,6 +94,14 @@ export const ServiceTypeIdentifiers = {
     EaaIssuance: "http://uri.etsi.org/19602/SvcType/EAA/Issuance",
     EaaRevocation: "http://uri.etsi.org/19602/SvcType/EAA/Revocation",
     PIDIssuance: "http://uri.etsi.org/19602/SvcType/PID/Issuance", // NOSONAR: ETSI identifier URI, not fetched
+    // espuni fork (PATCHES.md §1.11): the service type a Pub-EAA providers
+    // list declares for its issuance services (ETSI TS 119 602 V1.1.1, Annex
+    // H, Table H.3). Annex H admits this URI and its /Revocation sibling "to
+    // the exclusion of any other", so a conformant Pub-EAA list can never
+    // present its services as EAA/Issuance. Worth noting which one is the odd
+    // one: TS 119 602 registers PID, PubEAA, WRPAC, WRPRC, WalletSolution and
+    // Register — `SvcType/EAA` is not among them; it comes from @owf/eudi-lote.
+    PubEAAIssuance: "http://uri.etsi.org/19602/SvcType/PubEAA/Issuance", // NOSONAR: ETSI identifier URI, not fetched
     WalletSolution: "http://uri.etsi.org/19602/SvcType/WalletSolution",
     WalletSolutionIssuance:
         "http://uri.etsi.org/19602/SvcType/WalletSolution/Issuance",
