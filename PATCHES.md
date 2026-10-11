@@ -526,7 +526,7 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Commits | What |
 |---|---|
 | `5463f117` `a37a181f` | GHCR publish workflow under `ghcr.io/eudiaas` |
-| `ci/imagen-multiarch` | El mismo workflow, **multi-arch** (`linux/amd64` + `linux/arm64`) desde `v9.1.0-espuni.1`: un runner nativo por arquitectura (`ubuntu-24.04-arm`, sin qemu), push por digest y un manifest list con el tag, como `docker-backend-manifest` de upstream. El job falla si el tag no sale con las dos. arm64 es para el entorno de test local de cp-platform (WSL sobre ARM) |
+| [#47](https://github.com/eudiaas/eudiplo/pull/47) | El mismo workflow, **multi-arch** (`linux/amd64` + `linux/arm64`) desde `v9.1.0-espuni.1`: un runner nativo por arquitectura (`ubuntu-24.04-arm`, sin qemu), push por digest y un manifest list con el tag, como `docker-backend-manifest` de upstream. El job falla si el tag no sale con las dos. arm64 es para el entorno de test local de cp-platform (WSL sobre ARM) |
 | `CLAUDE.md` | Fork context: AV profile sources, protocol facts, fork deltas. Fork-authored, not upstream |
 | `34c572ae` `0acc54d5` | `docs/findings/` notes (trust-list config surface, mdoc-ts ReaderAuth signing gap) |
 
