@@ -48,7 +48,7 @@ model. Client authentication is out of scope.
 
 ### Reference request (Annex A §A.11)
 
-```
+```text
 GET /authorize?
   response_type=vp_token
   &response_mode=direct_post

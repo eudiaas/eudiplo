@@ -12,7 +12,7 @@ The `issuerAltName` (OID 2.5.29.18) extension value does not contain
 `GeneralNames` directly, as required by RFC 5280 §4.2.1.7. Instead it wraps a
 **full nested `Extension` structure** around them:
 
-```
+```text
 X509v3 Issuer Alternative Name:
   OCTET STRING:
     30 30                     SEQUENCE                     ← spurious Extension wrapper
@@ -40,7 +40,7 @@ extension, this breaks:
 In EUDIPLO this surfaced as a 400 during ISO 18013-7 DC API verification of a
 wallet-presented AV credential:
 
-```
+```text
 MdlError: Data does not match to GeneralName ASN1 schema. Wrong values for Choice type
     at IssuerAuth.verify (@owf/mdoc) → ctx.x509.verifyCertificateChain (mdoc-context)
 ```

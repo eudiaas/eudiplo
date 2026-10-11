@@ -86,7 +86,7 @@ if (Object.keys(claimsByNamespace).length > 0) {
 
 ## Resulting CBOR Structure (invalid)
 
-```
+```text
 IssuerSigned.nameSpaces["eu.europa.ec.av.1"] = [
   IssuerSignedItem {
     elementIdentifier: "age_over_18",        ← correct
@@ -105,7 +105,7 @@ IssuerSigned.nameSpaces["eu.europa.ec.av.1"] = [
 
 The EUDI Reference Wallet Android (multipaz library) processes the `IssuerSigned` when constructing the `DeviceResponse`. For the malformed item it calls an internal method equivalent to `asList()` on `elementValue`, expecting an array of sub-elements (or a simple scalar). Because `elementValue` is a CBOR map, not an array, multipaz throws:
 
-```
+```text
 java.lang.IllegalStateException: Not an array or map
 ```
 

@@ -55,7 +55,7 @@ Credential config field with `defaultValue`:
 
 Webhook returns `{ "given_name": "JUAN" }`. Resulting credential:
 
-```
+```text
 IssuerSigned.nameSpaces["eu.europa.ec.eudi.pid.1"] = [
   IssuerSignedItem { elementIdentifier: "given_name", elementValue: "ERIKA" },  ← config default
   IssuerSignedItem { elementIdentifier: "given_name", elementValue: "JUAN" }    ← webhook override
