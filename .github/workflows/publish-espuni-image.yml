@@ -1,14 +1,26 @@
 # Publica la imagen del fork espuni de EUDIPLO en GHCR con un tag explícito, para
-# que el droplet de producción haga `docker pull` en vez de construir en el host
-# (ver docs/notes/EUDIPLO_CAPACITY_BASELINE.md en cp-platform). Workflow propio y
+# que los droplets hagan `docker pull` en vez de construir en el host (ver
+# docs/notes/EUDIPLO_CAPACITY_BASELINE.md en cp-platform). Workflow propio y
 # mínimo — NO toca el pipeline de release de upstream (ci-and-release.yml).
+#
+# Multi-arch (linux/amd64 + linux/arm64) desde v9.1.0-espuni.1. Los droplets son
+# amd64; arm64 es para el entorno de test local de cp-platform, que corre en
+# WSL sobre ARM. Sin esa variante, en local había que emular (NestJS bajo qemu,
+# varias veces más lento) o tirar de la imagen de upstream, que es multi-arch
+# pero no lleva los parches del fork: se probaba contra algo que no es staging.
+#
+# Mismo patrón que upstream (`docker-backend` + `docker-backend-manifest` en
+# ci-and-release.yml): cada arquitectura se construye en un runner NATIVO
+# (`ubuntu-24.04-arm`, sin qemu), se empuja por digest, y un segundo job junta
+# los digests en un único manifest list con el tag explícito. Así el tag nace
+# completo o no nace: nunca queda publicado con una sola arquitectura.
 name: Publicar imagen espuni (GHCR)
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag explícito de la imagen (p. ej. v5.1.0-espuni.1)'
+        description: 'Tag explícito de la imagen (p. ej. v9.1.0-espuni.1)'
         required: true
         type: string
   push:
@@ -17,11 +29,93 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  build-push:
+  build:
+    name: Build ${{ matrix.target }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [eudiplo, client]
+        arch: [amd64, arm64]
+        include:
+          - target: eudiplo
+            image: ghcr.io/eudiaas/eudiplo
+          - target: client
+            image: ghcr.io/eudiaas/eudiplo-client
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolver tag
+        id: tag
+        run: echo "value=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login en GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Solo labels: los tags los pone el job `manifest` sobre el manifest list.
+      - name: Metadata (labels)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ matrix.image }}
+
+      - name: Build y push por digest
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ steps.tag.outputs.value }}
+            REVISION=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          # Un scope por target y arquitectura: con uno compartido, cada build
+          # pisaría la caché de los otros tres.
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Exportar digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Subir digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.target }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    name: Manifest ${{ matrix.target }}
+    needs: [build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
@@ -30,42 +124,50 @@ jobs:
           - target: client
             image: ghcr.io/eudiaas/eudiplo-client
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Resolver tag
         id: tag
         run: echo "value=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Descargar digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-${{ matrix.target }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
 
       - name: Login en GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Metadata (tags + labels)
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Metadata (tags)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ matrix.image }}
           tags: |
             type=raw,value=${{ steps.tag.outputs.value }}
             type=sha,format=short
 
-      - name: Build y push (linux/amd64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          platforms: linux/amd64
-          push: true
-          build-args: |
-            VERSION=${{ steps.tag.outputs.value }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Crear manifest list y push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ matrix.image }}@sha256:%s ' *)
+
+      # El tag tiene que salir con las dos arquitecturas; si falta una, el job
+      # falla en vez de dejar publicado un tag a medias sin que nadie lo note.
+      - name: Comprobar arquitecturas
+        run: |
+          ref="${{ matrix.image }}:${{ steps.tag.outputs.value }}"
+          docker buildx imagetools inspect "$ref"
+          archs=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' \
+            | jq -r '[.manifests[].platform | select(.os == "linux") | .architecture] | sort | join(",")')
+          echo "arquitecturas: $archs"
+          [ "$archs" = "amd64,arm64" ] || { echo "::error::$ref no es amd64+arm64 ($archs)"; exit 1; }
