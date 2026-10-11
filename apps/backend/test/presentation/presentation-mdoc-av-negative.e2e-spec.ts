@@ -277,6 +277,73 @@ describe("Presentation - mDOC AV negative vectors", () => {
         expect(session.credentials[0].values[0].age_over_18).toBe(true);
     });
 
+    // espuni fork (§1.1): the AV QR/deeplink fallback end to end. A config
+    // carrying clientIdScheme "redirect_uri", created through the REST API
+    // (Zod), yields an unsigned request passed by value; the wallet answers
+    // with an unencrypted form-urlencoded direct_post; the session completes.
+    test("redirect_uri fallback: unsigned by-value request, plain direct_post", async () => {
+        const fallbackConfig = {
+            ...readConfig<PresentationConfigCreateDto>(
+                `${import.meta.dirname}/../fixtures/av/presentation/av-negative-vectors.json`,
+            ),
+            id: "av-fallback-redirect-uri",
+            clientIdScheme: "redirect_uri",
+        } as PresentationConfigCreateDto;
+        await request(app.getHttpServer())
+            .post("/verifier/config")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send(fallbackConfig)
+            .expect(201);
+
+        const res = await createPresentationRequest(app, authToken, {
+            response_type: ResponseType.URI,
+            requestId: "av-fallback-redirect-uri",
+        });
+        const sessionId = res.body.session;
+        const params = new URL(res.body.uri).searchParams;
+        const clientId = params.get("client_id")!;
+        const responseUri = params.get("response_uri")!;
+        expect(clientId).toBe(`redirect_uri:${responseUri}`);
+        expect(params.get("response_mode")).toBe("direct_post");
+        expect(params.get("request_uri")).toBeNull();
+        expect(params.get("client_metadata")).toBeNull();
+        expect(JSON.parse(params.get("dcql_query")!).credentials[0].id).toBe(
+            "av-credential",
+        );
+
+        const vpToken = await prepareMdocPresentation(
+            params.get("nonce")!,
+            trustedPrivateKey,
+            trustedCert,
+            clientId,
+            responseUri,
+            "direct_post",
+            // No response encryption, so no JWK thumbprint in the transcript.
+            undefined,
+            undefined,
+            {
+                docType: AV_DOC_TYPE,
+                namespace: AV_NAMESPACE,
+                issuedClaims: { age_over_18: true },
+            },
+        );
+
+        await request(app.getHttpServer())
+            .post(new URL(responseUri).pathname)
+            .trustLocalhost()
+            .type("form")
+            .send({
+                vp_token: JSON.stringify({ "av-credential": [vpToken] }),
+                state: params.get("state")!,
+            })
+            .expect(200);
+
+        const session = await getSession(sessionId);
+        expect(session.status).toBe("completed");
+        expect(session.credentials[0].values[0].age_over_18).toBe(true);
+    });
+
     test("age_over_18=false is a clean negative result, not an error", async () => {
         const { sessionId, submitRes } = await submitAvPresentation({
             privateKey: trustedPrivateKey,
