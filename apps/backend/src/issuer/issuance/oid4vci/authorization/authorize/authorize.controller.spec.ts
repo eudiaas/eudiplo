@@ -1266,7 +1266,7 @@ describe("Built-in authorization server token endpoint", () => {
             ).toBeGreaterThanOrEqual(2592000 * 1000 - 5);
         });
 
-        it("derives authorization_details from the offer and honors the refresh config", async () => {
+        it("derives authorization_details from the offer, hides them from a pre-authorized wallet (fork §1.5) and honors the refresh config", async () => {
             h = createHarness({
                 signingKeyId: "pinned",
                 authorizationServers: [
@@ -1317,6 +1317,10 @@ describe("Built-in authorization server token endpoint", () => {
                             },
                         ],
                     },
+                    // espuni fork (PATCHES.md §1.5): the access token keeps
+                    // them, the token response of a pre-authorized flow does
+                    // not show them to the wallet.
+                    additionalAccessTokenResponsePayload: undefined,
                 }),
             );
             expect(h.sessions.updateIfUnconsumed).toHaveBeenCalledWith(

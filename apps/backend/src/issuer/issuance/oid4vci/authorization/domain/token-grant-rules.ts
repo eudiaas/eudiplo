@@ -292,3 +292,34 @@ export function preAuthorizedCodeExpiresAt(
 ): Date {
     return new Date(sessionCreatedAt.getTime() + sessionTtlSeconds * 1000);
 }
+
+/**
+ * espuni fork (PATCHES.md §1.5) — not upstream. Whether the token
+ * **response** tells the Wallet about `authorization_details`. Not in the
+ * pre-authorized_code flow.
+ *
+ * A pre-authorized flow has no authorization request, so
+ * {@link authorizationDetailsForToken} always falls back to the offer and the
+ * token response would carry `credential_identifiers`. OID4VCI then requires
+ * the Wallet to send `credential_identifier` in the credential request, which
+ * breaks wallets that only support `credential_configuration_id` — the EU AV
+ * reference wallet among them.
+ *
+ * Only the response hides them: the access token itself (opaque to the
+ * Wallet) keeps them, so the credential endpoint still restricts the token to
+ * the offered configurations, and accepts them by `credential_configuration_id`.
+ * Applies to the pre-authorized_code grant and to refresh grants of a
+ * pre-authorized session.
+ */
+export function walletSeesAuthorizationDetails(
+    grantType: string,
+    session: { credentialPayload?: unknown },
+): boolean {
+    const offerFlow = (
+        session.credentialPayload as { flow?: unknown } | undefined
+    )?.flow;
+    return !(
+        grantType === preAuthorizedCodeGrantIdentifier ||
+        offerFlow === "pre_authorized_code"
+    );
+}

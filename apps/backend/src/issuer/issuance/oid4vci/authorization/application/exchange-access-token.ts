@@ -38,6 +38,7 @@ import {
     refreshTokenExpiresAt,
     resolveRefreshTokenPolicy,
     TX_CODE_LOCKED_DESCRIPTION,
+    walletSeesAuthorizationDetails,
 } from "../domain/token-grant-rules.js";
 import { resolveWalletAttestationPolicy } from "../domain/wallet-attestation-policy.js";
 import type { AccessTokenSigningKeys } from "../ports/access-token-signing-keys.js";
@@ -361,7 +362,15 @@ export class ExchangeAccessToken {
 
         // The JWT (for the credential endpoint) and the token response (for
         // the wallet) carry the same authorization_details (OID4VCI Section 6).
+        // espuni fork (PATCHES.md §1.5): in the pre-authorized flow only the
+        // JWT keeps them; the token response does not show them to the wallet.
         const authorizationDetails = authorizationDetailsForToken(session);
+        const responseAuthorizationDetails = walletSeesAuthorizationDetails(
+            grantType,
+            session,
+        )
+            ? authorizationDetails
+            : undefined;
 
         const tokenResponse = await server
             .createAccessTokenResponse({
@@ -382,9 +391,13 @@ export class ExchangeAccessToken {
                 additionalAccessTokenPayload: authorizationDetails
                     ? { authorization_details: authorizationDetails }
                     : undefined,
-                additionalAccessTokenResponsePayload: authorizationDetails
-                    ? { authorization_details: authorizationDetails }
-                    : undefined,
+                additionalAccessTokenResponsePayload:
+                    responseAuthorizationDetails
+                        ? {
+                              authorization_details:
+                                  responseAuthorizationDetails,
+                          }
+                        : undefined,
             })
             .catch((err) => {
                 throw new OAuthError(
