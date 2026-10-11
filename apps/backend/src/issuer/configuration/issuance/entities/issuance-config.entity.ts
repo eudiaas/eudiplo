@@ -13,27 +13,33 @@ import {
     PrimaryColumn,
     UpdateDateColumn,
 } from "typeorm";
-import { TenantEntity } from "../../../../auth/tenant/entities/tenant.entity";
+import { TenantEntity } from "../../../../auth/tenant/entities/tenant.entity.js";
 import {
     AuthenticationMethodAuth,
     AuthenticationMethodNone,
     AuthenticationMethodPresentation,
-} from "../dto/authentication-config.dto";
+} from "../dto/authentication-config.dto.js";
 import {
     BuiltInAuthorizationServerConfig,
     ChainedAuthorizationServerConfig,
     ExternalAuthorizationServerConfig,
     ManagedAuthorizationServerConfig,
     Oid4VpAuthorizationServerConfig,
-} from "../dto/authorization-server-config.dto";
-import { DisplayInfo } from "../dto/display.dto";
-import { FederationConfig } from "../dto/federation-config.dto";
+} from "../dto/authorization-server-config.dto.js";
+import { DisplayInfo } from "../dto/display.dto.js";
+import { FederationConfig } from "../dto/federation-config.dto.js";
 import {
     IssuerRegistrationCertificateCache,
     IssuerRegistrationCertificateConfig,
-} from "../dto/issuer-registration-certificate.dto";
+} from "../dto/issuer-registration-certificate.dto.js";
 
 class WalletProviderTrustListRefDto {
+    @ApiPropertyOptional({
+        description:
+            "Managed trust-list ID in this tenant; resolves URL and verifier automatically.",
+    })
+    trustListId?: string;
+
     @ApiProperty({ format: "uri" })
     url!: string;
 
@@ -43,6 +49,13 @@ class WalletProviderTrustListRefDto {
         description: "JWK used to verify the trust-list JWT signature.",
     })
     verifierKey?: Record<string, unknown>;
+
+    @ApiPropertyOptional({
+        type: "string",
+        description:
+            "PEM-encoded public key (SPKI, -----BEGIN PUBLIC KEY-----) used to verify the trust-list JWT signature.",
+    })
+    verifierKeyPem?: string;
 
     @ApiPropertyOptional({
         type: "string",
@@ -94,7 +107,7 @@ export class IssuanceConfig {
     dPopRequired?: boolean;
 
     /**
-     * Indicates whether wallet attestation is required for the token endpoint.
+     * Default wallet attestation requirement for managed authorization servers.
      * When enabled, wallets must provide OAuth-Client-Attestation headers.
      * Default value is false.
      */
@@ -102,8 +115,9 @@ export class IssuanceConfig {
     walletAttestationRequired?: boolean;
 
     /**
-     * Trust lists containing trusted wallet providers.
-     * Each entry MUST include either `verifierKey` or `verifierX509Der`.
+     * Shared wallet provider trust lists for key attestations at the credential endpoint
+     * and default wallet-attestation trust at managed authorization servers.
+     * Each entry MUST include `verifierKey`, `verifierKeyPem` or `verifierX509Der`.
      */
     @ApiPropertyOptional({
         type: [WalletProviderTrustListRefDto],
@@ -239,6 +253,21 @@ export class IssuanceConfig {
     })
     @Column("int", { nullable: true })
     txCodeMaxAttempts?: number;
+
+    /**
+     * Default lifetime of credential offers in seconds. After it, the offer
+     * (credential offer URI, pre-authorized code, authorization flow) can no
+     * longer be redeemed; tokens already issued keep their own lifetimes.
+     * An offer request can override it. Unset: offers do not expire.
+     */
+    @ApiPropertyOptional({
+        description:
+            "Default lifetime of credential offers in seconds. Can be overridden per offer request. Unset: offers do not expire.",
+        nullable: true,
+        minimum: 1,
+    })
+    @Column("int", { nullable: true })
+    offerLifetimeSeconds?: number | null;
 
     /**
      * The timestamp when the VP request was created.

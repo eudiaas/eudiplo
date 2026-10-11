@@ -1,52 +1,25 @@
 import { ApiProperty } from "@nestjs/swagger";
-import {
-    CredentialOfferObject,
-    NotificationEvent,
-} from "@openid4vc/openid4vci";
+import { CredentialOfferObject } from "@openid4vc/openid4vci";
 import { VerificationResult } from "@sd-jwt/sd-jwt-vc";
+import { JWK } from "jose";
 import {
     Column,
     CreateDateColumn,
     Entity,
+    Index,
     ManyToOne,
     PrimaryColumn,
     UpdateDateColumn,
 } from "typeorm";
-import { TenantEntity } from "../../auth/tenant/entities/tenant.entity";
-import { AuthorizeQueries } from "../../issuer/issuance/oid4vci/authorization/authorize/dto/authorize-request.dto";
-import { OfferRequestDto } from "../../issuer/issuance/oid4vci/dto/offer-request.dto";
-import { EncryptedJsonTransformer } from "../../platform/data-encryption";
-import { WebhookConfig } from "../../webhook/webhook.dto";
-import { TransactionData } from "../../verifier/presentations/entities/presentation-config.entity";
-import { JWK } from "jose";
-import { SessionOutcome } from "./session-outcome";
-
-export enum SessionStatus {
-    Active = "active",
-    Fetched = "fetched",
-    Completed = "completed",
-    Expired = "expired",
-    Failed = "failed",
-}
-
-/**
- * Represents a session entity for managing user sessions in the application.
- */
-export type Notification = {
-    /**
-     * Unique identifier for the notification.
-     */
-    id: string;
-    /**
-     * The type of notification.
-     */
-    event?: NotificationEvent;
-
-    /**
-     * The credential ID associated with the notification.
-     */
-    credentialConfigurationId: string;
-};
+import { TenantEntity } from "../../auth/tenant/entities/tenant.entity.js";
+import { AuthorizeQueries } from "../../issuer/issuance/oid4vci/authorization/authorize/dto/authorize-request.dto.js";
+import { OfferRequestDto } from "../../issuer/issuance/oid4vci/dto/offer-request.dto.js";
+import { EncryptedJsonTransformer } from "../../platform/data-encryption/index.js";
+import { TransactionData } from "../../verifier/presentations/entities/presentation-config.entity.js";
+import { WebhookConfig } from "../../webhook/webhook.dto.js";
+import type { Notification } from "../domain/session-data.js";
+import { SessionOutcome } from "../domain/session-outcome.js";
+import { SessionStatus } from "../domain/session-state.js";
 
 /**
  * Entity representing a user session in the application.
@@ -54,6 +27,12 @@ export type Notification = {
  * request URI, authorization queries, and more.
  */
 @Entity()
+@Index("IDX_session_tenant_created_at", ["tenantId", "createdAt"])
+@Index("IDX_session_tenant_updated_at", ["tenantId", "updatedAt"])
+@Index("IDX_session_tenant_status", ["tenantId", "status"])
+@Index("IDX_session_tenant_request_id", ["tenantId", "requestId"])
+@Index("IDX_session_tenant_reference", ["tenantId", "reference"])
+@Index("IDX_session_wallet_nonce", ["walletNonce"])
 export class Session {
     /**
      * Unique identifier for the session.
@@ -74,9 +53,10 @@ export class Session {
     updatedAt!: Date;
 
     /**
-     * The timestamp when the request is set to expire.
+     * The timestamp after which a wallet can no longer redeem the offer or
+     * presentation request. Not set for offers without a lifetime.
      */
-    @Column("date", { nullable: true })
+    @Column({ nullable: true })
     expiresAt?: Date;
 
     /**
@@ -116,6 +96,14 @@ export class Session {
     tenant!: TenantEntity;
 
     /**
+     * Caller-provided reference of the offer, e.g. an order or case id of the
+     * integrating system. Stored in plaintext and kept when the session is
+     * anonymized, so it must not contain personal data.
+     */
+    @Column("varchar", { nullable: true })
+    reference?: string | null;
+
+    /**
      * Status of the session.
      */
     @ApiProperty({ enum: SessionStatus })
@@ -128,6 +116,24 @@ export class Session {
      */
     @Column("varchar", { nullable: true })
     authorization_code?: string;
+    /**
+     * Expiration timestamp of the authorization code issued by the authorization endpoint.
+     * Not set for pre-authorized codes.
+     */
+    @Column({ nullable: true })
+    authorization_code_expires_at?: Date;
+    /**
+     * JWK thumbprint of the DPoP key the session's tokens are bound to.
+     * Set from the PAR request (DPoP header or `dpop_jkt`) or at token issuance.
+     */
+    @Column("varchar", { nullable: true })
+    dpop_jkt?: string;
+    /**
+     * JWK thumbprint of the client instance key (client attestation `cnf`)
+     * the refresh token is bound to.
+     */
+    @Column("varchar", { nullable: true })
+    client_key_jkt?: string;
     /**
      * Refresh token for the session - used to obtain a new access token.
      */
@@ -144,6 +150,12 @@ export class Session {
      */
     @Column("varchar", { nullable: true })
     request_uri?: string;
+    /**
+     * Expiration timestamp of the PAR request_uri. Set to the time of use once
+     * the request_uri was redeemed, making it single-use.
+     */
+    @Column({ nullable: true })
+    request_uri_expires_at?: Date;
     /**
      * Authorization queries associated with the session.
      * Encrypted at rest.
@@ -170,6 +182,12 @@ export class Session {
      */
     @Column("text", { nullable: true, transformer: EncryptedJsonTransformer })
     credentialPayload?: OfferRequestDto;
+    /**
+     * Credential configuration ids of the issuance offer. Stored in plaintext
+     * (unlike {@link credentialPayload}) so the session list can filter by them.
+     */
+    @Column("json", { nullable: true })
+    credentialConfigurationIds?: string[] | null;
     /**
      * ID of the webhook endpoint to notify about issuance status.
      */
@@ -206,7 +224,7 @@ export class Session {
      * wallet responses. Encrypted at rest.
      */
     @Column("text", { nullable: true, transformer: EncryptedJsonTransformer })
-    responseEncryptionPrivateJwk?: JWK;
+    responseEncryptionPrivateJwk?: JWK | null;
 
     /**
      * Verified credentials from the presentation process.

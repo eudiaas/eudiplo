@@ -13,19 +13,23 @@
       "type": "boolean"
     },
     "walletAttestationRequired": {
-      "description": "Require wallet attestation in issuance flows.",
+      "description": "Default wallet attestation requirement for managed authorization servers.",
       "type": "boolean"
     },
     "walletProviderTrustLists": {
-      "description": "Optional wallet provider trust list references.",
+      "description": "Shared wallet provider trust lists for key attestations and default authorization server wallet authentication.",
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "url": {
+          "trustListId": {
             "type": "string",
-            "format": "uri",
-            "description": "URL of the wallet provider trust list."
+            "minLength": 1
+          },
+          "url": {
+            "description": "URL of the wallet provider trust list.",
+            "type": "string",
+            "format": "uri"
           },
           "verifierKey": {
             "description": "Optional verifier key material used for trust list verification.",
@@ -35,14 +39,16 @@
             },
             "additionalProperties": {}
           },
+          "verifierKeyPem": {
+            "description": "Optional verifier public key in SPKI PEM form (-----BEGIN PUBLIC KEY-----).",
+            "type": "string",
+            "pattern": "^\\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\\s]+-----END PUBLIC KEY-----\\s*$"
+          },
           "verifierX509Der": {
             "description": "Optional verifier certificate in DER/base64 form.",
             "type": "string"
           }
         },
-        "required": [
-          "url"
-        ],
         "additionalProperties": false
       }
     },
@@ -163,6 +169,46 @@
                 "description": "Require DPoP proofs for token/credential requests.",
                 "type": "boolean"
               },
+              "walletAttestationRequired": {
+                "description": "Require wallet attestation for this authorization server.",
+                "type": "boolean"
+              },
+              "walletProviderTrustLists": {
+                "description": "Optional wallet provider trust list references for this authorization server.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "trustListId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "url": {
+                      "description": "URL of the wallet provider trust list.",
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "verifierKey": {
+                      "description": "Optional verifier key material used for trust list verification.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
+                    "verifierKeyPem": {
+                      "description": "Optional verifier public key in SPKI PEM form (-----BEGIN PUBLIC KEY-----).",
+                      "type": "string",
+                      "pattern": "^\\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\\s]+-----END PUBLIC KEY-----\\s*$"
+                    },
+                    "verifierX509Der": {
+                      "description": "Optional verifier certificate in DER/base64 form.",
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
               "label": {
                 "description": "Optional display label for UI selection.",
                 "type": "string"
@@ -256,6 +302,46 @@
                 "description": "Require DPoP proofs for token/credential requests.",
                 "type": "boolean"
               },
+              "walletAttestationRequired": {
+                "description": "Require wallet attestation for this authorization server.",
+                "type": "boolean"
+              },
+              "walletProviderTrustLists": {
+                "description": "Optional wallet provider trust list references for this authorization server.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "trustListId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "url": {
+                      "description": "URL of the wallet provider trust list.",
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "verifierKey": {
+                      "description": "Optional verifier key material used for trust list verification.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
+                    "verifierKeyPem": {
+                      "description": "Optional verifier public key in SPKI PEM form (-----BEGIN PUBLIC KEY-----).",
+                      "type": "string",
+                      "pattern": "^\\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\\s]+-----END PUBLIC KEY-----\\s*$"
+                    },
+                    "verifierX509Der": {
+                      "description": "Optional verifier certificate in DER/base64 form.",
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
               "label": {
                 "description": "Optional display label for UI selection.",
                 "type": "string"
@@ -314,6 +400,46 @@
               "requireDPoP": {
                 "description": "Require DPoP proofs for token/credential requests.",
                 "type": "boolean"
+              },
+              "walletAttestationRequired": {
+                "description": "Require wallet attestation for this authorization server.",
+                "type": "boolean"
+              },
+              "walletProviderTrustLists": {
+                "description": "Optional wallet provider trust list references for this authorization server.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "trustListId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "url": {
+                      "description": "URL of the wallet provider trust list.",
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "verifierKey": {
+                      "description": "Optional verifier key material used for trust list verification.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
+                    "verifierKeyPem": {
+                      "description": "Optional verifier public key in SPKI PEM form (-----BEGIN PUBLIC KEY-----).",
+                      "type": "string",
+                      "pattern": "^\\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\\s]+-----END PUBLIC KEY-----\\s*$"
+                    },
+                    "verifierX509Der": {
+                      "description": "Optional verifier certificate in DER/base64 form.",
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
               },
               "label": {
                 "description": "Optional display label for UI selection.",
@@ -496,6 +622,19 @@
     },
     "txCodeMaxAttempts": {
       "description": "Maximum verification attempts for transaction codes. Null resets to defaults.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "offerLifetimeSeconds": {
+      "description": "Default lifetime of credential offers in seconds. Can be overridden per offer request. Null or unset: offers do not expire.",
       "anyOf": [
         {
           "type": "integer",

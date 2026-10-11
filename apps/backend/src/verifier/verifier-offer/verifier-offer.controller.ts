@@ -6,19 +6,27 @@ import {
     Req,
     Res,
 } from "@nestjs/common";
-import { ApiBody, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
+import {
+    ApiBody,
+    ApiExtraModels,
+    ApiProduces,
+    ApiResponse,
+    ApiTags,
+} from "@nestjs/swagger";
 import { Request, Response } from "express";
-import { Role } from "../../auth/roles/role.enum";
-import { Secured } from "../../auth/secure.decorator";
-import { Token, TokenPayload } from "../../auth/token.decorator";
-import { Iso18013Service } from "../iso18013/iso18013.service";
+import { Role } from "../../auth/roles/role.enum.js";
+import { Secured } from "../../auth/secure.decorator.js";
+import { Token, TokenPayload } from "../../auth/token.decorator.js";
+import { OfferResponse } from "../../issuer/issuance/oid4vci/dto/offer-request.dto.js";
+import { Iso18013Service } from "../iso18013/iso18013.service.js";
 import {
     PresentationRequest,
     ResponseType,
-} from "../oid4vp/dto/presentation-request.dto";
-import { Oid4vpService } from "../oid4vp/oid4vp.service";
+} from "../oid4vp/dto/presentation-request.dto.js";
+import { Oid4vpService } from "../oid4vp/oid4vp.service.js";
 
 @ApiTags("Verifier")
+@ApiExtraModels(OfferResponse)
 @Secured([Role.PresentationRequest, Role.Presentations])
 @Controller("verifier/offer")
 export class VerifierOfferController {
@@ -94,6 +102,7 @@ export class VerifierOfferController {
                 origin,
                 body.skewSeconds,
                 body.webhook,
+                body.reference,
             );
             return res.status(201).json(offer);
         }
@@ -105,6 +114,8 @@ export class VerifierOfferController {
                 redirectUri: body.redirectUri,
                 transaction_data: body.transaction_data,
                 skewSeconds: body.skewSeconds,
+                clientIdScheme: body.clientIdScheme,
+                reference: body.reference,
             },
             user.entity!.id,
             body.response_type === ResponseType.DC_API,

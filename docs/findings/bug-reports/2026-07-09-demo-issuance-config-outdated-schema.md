@@ -21,7 +21,7 @@ and a `type` discriminator (`external` | `oid4vp` | `chained` | `built-in`) and 
 `@IsOptional`. During startup config import (`CONFIG_IMPORT=true`), class-validator
 strips the unknown `authServers` key (`whitelist: true`) and then fails:
 
-```
+```text
 ERROR: [ConfigImportService] [demo] Validation failed for issuance config issuance.json
 ```
 
@@ -56,7 +56,7 @@ when `NODE_ENV=production` unless `OUTBOUND_URL_ALLOW_HTTP=true` and
 `OUTBOUND_URL_ALLOW_PRIVATE_NETWORK=true` are set, so these two demo resources
 also fail to import in production containers:
 
-```
+```text
 ERROR: Failed to import attribute provider claims-provider.json: Outbound URL must use HTTPS in this environment
 ERROR: Failed to import webhook endpoint notification.json: Outbound URL must use HTTPS in this environment
 ```

@@ -6,24 +6,31 @@ import type { Signer } from "@sd-jwt/core";
 import type { JWK, JWSHeaderParameters, JWTPayload } from "jose";
 import { Repository } from "typeorm";
 import { v4 } from "uuid";
-import { TenantEntity } from "../../auth/tenant/entities/tenant.entity";
-import { CertificateBuilderService } from "./cert/certificate-builder.service";
-import { KeyChainCreateDto, KeyChainType } from "./dto/key-chain-create.dto";
-import { KeyChainExportDto } from "./dto/key-chain-export.dto";
-import { KeyChainImportDto } from "./dto/key-chain-import.dto";
+import { TenantEntity } from "../../auth/tenant/entities/tenant.entity.js";
+import {
+    CertificateBuilderService,
+    certificateNotBefore,
+} from "./cert/certificate-builder.service.js";
+import { KeyChainCreateDto, KeyChainType } from "./dto/key-chain-create.dto.js";
+import { KeyChainExportDto } from "./dto/key-chain-export.dto.js";
+import { KeyChainImportDto } from "./dto/key-chain-import.dto.js";
 import {
     CertificateInfoDto,
     KeyChainResponseDto,
     PublicKeyInfoDto,
-} from "./dto/key-chain-response.dto";
-import { KeyChainUpdateDto } from "./dto/key-chain-update.dto";
-import { KmsProvidersResponseDto } from "./dto/kms-providers-response.dto";
-import { KeyChainEntity, KeyUsage } from "./entities/key-chain.entity";
-import { KeyUsageType } from "./types/key-usage-type";
-import type { KmsAdapter, KmsKeyRef, KmsSigningAlg } from "./kms/kms-adapter";
-import { KmsProviderRegistry } from "./kms/kms-provider.registry";
-import { KeyChainImportService } from "./key-chain-import.service";
-import { KeyChainSigningService } from "./key-chain-signing.service";
+} from "./dto/key-chain-response.dto.js";
+import { KeyChainUpdateDto } from "./dto/key-chain-update.dto.js";
+import { KmsProvidersResponseDto } from "./dto/kms-providers-response.dto.js";
+import { KeyChainEntity, KeyUsage } from "./entities/key-chain.entity.js";
+import { KeyChainImportService } from "./key-chain-import.service.js";
+import { KeyChainSigningService } from "./key-chain-signing.service.js";
+import type {
+    KmsAdapter,
+    KmsKeyRef,
+    KmsSigningAlg,
+} from "./kms/kms-adapter.js";
+import { KmsProviderRegistry } from "./kms/kms-provider.registry.js";
+import { KeyUsageType } from "./types/key-usage-type.js";
 
 /**
  * KeyChainService manages the unified key chain model.
@@ -69,6 +76,45 @@ export class KeyChainService {
 
     async create(tenantId: string, dto: KeyChainCreateDto): Promise<string> {
         const id = v4();
+        return this.createWithId(tenantId, id, dto);
+    }
+
+    /** Replace a key chain with newly generated material while preserving its id. */
+    async regenerate(
+        tenantId: string,
+        id: string,
+        dto: KeyChainCreateDto,
+    ): Promise<string> {
+        const previous = await this.keyChainRepository.findOneBy({
+            tenantId,
+            id,
+        });
+        const temporaryId = v4();
+        await this.createWithId(tenantId, temporaryId, dto);
+        const generated = await this.keyChainRepository.findOneByOrFail({
+            tenantId,
+            id: temporaryId,
+        });
+        try {
+            await this.keyChainRepository.save({ ...generated, id });
+            await this.keyChainRepository.delete({
+                tenantId,
+                id: temporaryId,
+            });
+        } catch (error) {
+            await this.delete(tenantId, temporaryId);
+            throw error;
+        }
+        if (previous) await this.deleteExternalKeyMaterial(previous);
+        this.logger.log(`Regenerated key chain ${id} for tenant ${tenantId}`);
+        return id;
+    }
+
+    private async createWithId(
+        tenantId: string,
+        id: string,
+        dto: KeyChainCreateDto,
+    ): Promise<string> {
         const tenant = await this.tenantRepository.findOneByOrFail({
             id: tenantId,
         });
@@ -91,7 +137,7 @@ export class KeyChainService {
                 adapter,
                 subjectCN,
                 hostname,
-                now,
+                certificateNotBefore(now),
                 notAfter,
             );
         } else {
@@ -100,7 +146,7 @@ export class KeyChainService {
                 adapter,
                 subjectCN,
                 hostname,
-                now,
+                certificateNotBefore(now),
                 notAfter,
             );
         }
@@ -228,7 +274,14 @@ export class KeyChainService {
         usageType?: KeyUsageType,
     ): Promise<KeyChainResponseDto[]> {
         const keyChains = await this.keyChainRepository.find({
-            where: { tenantId, ...(usageType ? { usageType } : {}) },
+            // Only signing key chains are user-manageable. Tenant-wide
+            // encryption material is system-owned and must not be exposed in
+            // the key-management list.
+            where: {
+                tenantId,
+                usage: KeyUsage.Sign,
+                ...(usageType ? { usageType } : {}),
+            },
         });
 
         return keyChains.map((kc) => this.toResponseDto(kc));
@@ -248,14 +301,21 @@ export class KeyChainService {
 
     async export(tenantId: string, id: string): Promise<KeyChainExportDto> {
         const keyChain = await this.getEntity(tenantId, id);
+        const storedKey = keyChain.hasInternalCa()
+            ? keyChain.rootJwk!
+            : keyChain.activeJwk;
 
         const exportDto: KeyChainExportDto = {
             id: keyChain.id,
             description: keyChain.description,
             usageType: keyChain.usageType,
-            key: keyChain.hasInternalCa()
-                ? (keyChain.rootJwk as KeyChainExportDto["key"])
-                : (keyChain.activeJwk as KeyChainExportDto["key"]),
+            // Private key material is only exported for database-held keys.
+            // For external KMS providers the entity stores the public JWK;
+            // strip private components defensively so a key that belongs
+            // to a KMS can never leave through this endpoint.
+            key: (this.isDatabaseHeld(keyChain)
+                ? storedKey
+                : this.getPublicJwk(storedKey)) as KeyChainExportDto["key"],
             kmsProvider: keyChain.kmsProvider,
         };
 
@@ -381,6 +441,15 @@ export class KeyChainService {
             throw new NotFoundException(`Key chain ${id} not found`);
         }
 
+        await this.deleteExternalKeyMaterial(keyChain);
+
+        await this.keyChainRepository.delete({ tenantId, id });
+        this.logger.log(`Deleted key chain ${id}`);
+    }
+
+    private async deleteExternalKeyMaterial(
+        keyChain: KeyChainEntity,
+    ): Promise<void> {
         // Best-effort: ask the adapter to clean up external key material.
         try {
             const adapter = this.kmsRegistry.resolve(
@@ -392,12 +461,9 @@ export class KeyChainService {
             }
         } catch (err) {
             this.logger.warn(
-                `Failed to delete external key material for key chain ${id}: ${String(err)}`,
+                `Failed to delete external key material for key chain ${keyChain.id}: ${String(err)}`,
             );
         }
-
-        await this.keyChainRepository.delete({ tenantId, id });
-        this.logger.log(`Deleted key chain ${id}`);
     }
 
     // ─────────────────────── config import ───────────────────────
@@ -456,7 +522,7 @@ export class KeyChainService {
                 subjectPublicJwk: newMat.ref.publicJwk,
                 subjectCN,
                 hostname,
-                notBefore: now,
+                notBefore: certificateNotBefore(now),
                 notAfter,
             });
             newCertificate = chain.join("\n");
@@ -466,7 +532,7 @@ export class KeyChainService {
                 newMat.ref,
                 subjectCN,
                 hostname,
-                now,
+                certificateNotBefore(now),
                 notAfter,
             );
         }
@@ -525,6 +591,16 @@ export class KeyChainService {
         keyId?: string,
     ): Promise<Uint8Array> {
         return this.signingService.signBytes(data, tenantId, keyId);
+    }
+
+    async createCertificateSigningRequest(
+        tenantId: string,
+        keyId: string,
+    ): Promise<string> {
+        return this.signingService.createCertificateSigningRequest(
+            tenantId,
+            keyId,
+        );
     }
 
     getPublicKey(type: "jwk", tenantId: string, keyId?: string): Promise<JWK>;
@@ -609,6 +685,27 @@ export class KeyChainService {
             publicJwk: storedJwk,
             alg,
         };
+    }
+
+    /**
+     * True when the private key of the key chain is held in the database
+     * (`db` provider). Keys of external KMS providers are referenced by an
+     * external key id and their private material never leaves the KMS.
+     */
+    private isDatabaseHeld(keyChain: KeyChainEntity): boolean {
+        if (keyChain.externalKeyId || keyChain.rootExternalKeyId) {
+            return false;
+        }
+        try {
+            return (
+                this.kmsRegistry.resolve(
+                    keyChain.kmsProvider,
+                    keyChain.tenantId,
+                ).type === "db"
+            );
+        } catch {
+            return false;
+        }
     }
 
     private getPublicJwk(jwk: JWK): JWK {

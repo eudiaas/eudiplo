@@ -6,9 +6,11 @@ import {
     ApiSecurity,
     ApiTags,
 } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../auth/auth.guard";
-import { FrontendConfigResponseDto } from "./dto/frontend-config-response.dto";
-import { VersionResponseDto } from "./dto/version-response.dto";
+import { JwtAuthGuard } from "../../auth/auth.guard.js";
+import { ConfigImportModeService } from "../../platform/config-import/config-import-mode.service.js";
+import { FrontendConfigResponseDto } from "./dto/frontend-config-response.dto.js";
+import { ServiceInfoResponseDto } from "./dto/service-info-response.dto.js";
+import { VersionResponseDto } from "./dto/version-response.dto.js";
 
 /**
  * Main application controller
@@ -16,17 +18,25 @@ import { VersionResponseDto } from "./dto/version-response.dto";
 @ApiTags("App")
 @Controller()
 export class AppController {
-    constructor(private readonly configService: ConfigService) {}
+    constructor(
+        private readonly configService: ConfigService,
+        private readonly configImportModeService: ConfigImportModeService,
+    ) {}
 
     /**
      * Main endpoint providing service info
      */
     @Get()
-    main() {
+    @ApiOperation({ summary: "Get service info" })
+    @ApiResponse({
+        status: 200,
+        description: "Service info",
+        type: ServiceInfoResponseDto,
+    })
+    main(): ServiceInfoResponseDto {
         return {
             service: "EUDIPLO",
-            documentation:
-                "https://openwallet-foundation.github.io/eudiplo/docs/latest/",
+            documentation: "https://docs.eudiplo.dev",
         };
     }
 
@@ -45,6 +55,7 @@ export class AppController {
     getVersion(): VersionResponseDto {
         return {
             version: process.env.VERSION ?? "main",
+            revision: process.env.REVISION || undefined,
         };
     }
 
@@ -74,6 +85,8 @@ export class AppController {
                     "loki",
                 ),
             },
+            configImportMode: this.configImportModeService.resolve(),
+            publicUrl: this.configService.getOrThrow<string>("PUBLIC_URL"),
         };
     }
 }

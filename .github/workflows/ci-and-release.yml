@@ -1,4 +1,5 @@
-# espuni fork note: every push to ghcr.io/openwallet-foundation/* is gated on
+# espuni fork note: every push to ghcr.io/eudiplo/* (upstream's image
+# namespace since v9) is gated on
 # `github.repository == 'openwallet-foundation/eudiplo'`. Without it those jobs
 # fail on every merge to this fork's main with
 # `denied: permission_denied` — we cannot push to the upstream namespace — and
@@ -7,7 +8,14 @@
 #
 # The negated "Build to validate" conditions carry the same repository check on
 # purpose, so the fork keeps building (and testing) the image; it just never
-# pushes it.
+# pushes it. The same gate also covers `deploy-docs` (reusable deploy-site.yml,
+# Cloudflare Pages preview of upstream's website), which needs secrets only
+# upstream holds.
+#
+# The `pnpm schemas:check-contract` step is tolerated (continue-on-error), and
+# only that step: the fork's presentation-config fields (`clientIdScheme`,
+# §1.1; XML trust-list fields, §1.2) are deliberately kept out of upstream's
+# immutable portable schemas. See PATCHES.md, "Portable config contract".
 
 name: CI / Docker
 
@@ -20,26 +28,72 @@ on:
     types: [checks_requested]
   workflow_dispatch:
 
+permissions: {}
+
+# Docker Hub login is optional: without the secrets, jobs pull anonymously.
+env:
+  HAS_DOCKERHUB_LOGIN: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# main only advances through the merge queue, whose merge_group run already
+# checked the exact commit. Push runs therefore skip the checks and only
+# publish images, deploy the preview site and upload default-branch coverage.
 jobs:
+  config-schemas:
+    name: Check Config Schemas and Website
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+      - name: Install dependencies for contract generation
+        run: pnpm install --frozen-lockfile
+      - name: Check current DTOs against published config contracts
+        # espuni fork: tolerated on purpose, see the note at the top of this
+        # file and PATCHES.md ("Portable config contract"). Fork-only
+        # presentation-config fields are REST-only and never enter the
+        # published v1/v2/v3 schemas.
+        continue-on-error: ${{ github.repository != 'openwallet-foundation/eudiplo' }}
+        run: pnpm schemas:check-contract
+      - name: Check shared config implementation and bundled snapshots
+        run: node scripts/sync-config-format.mjs --check
+      - name: Prevent changes to existing published schema versions
+        env:
+          SCHEMA_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD' }}
+        run: |
+          if [ "$SCHEMA_BASE_REVISION" = "0000000000000000000000000000000000000000" ]; then SCHEMA_BASE_REVISION=HEAD; fi
+          node scripts/check-published-schemas.mjs "$SCHEMA_BASE_REVISION"
+      - name: Build website and verify published schema references
+        run: node scripts/build-website.mjs
+
   lint:
     permissions:
       contents: read
     name: Lint Codebase
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -50,35 +104,42 @@ jobs:
       - name: Run linter for code
         run: pnpm run lint
 
+      - name: Check code formatting
+        run: pnpm run format:check
+
+      - name: Check .env.example covers required config
+        run: pnpm run check:env-example
+
       - name: Run linter for documentation
-        run: pnpm run doc:lint
+        run: pnpm --filter @eudiplo/docs run lint
 
       - name: Run license check (backend, production)
         working-directory: apps/backend
-        run: pnpm dlx license-checker --production --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
+        run: pnpm dlx license-checker --production --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
 
       - name: Run license check (client, production)
         working-directory: apps/client
-        run: pnpm dlx license-checker --production --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
+        run: pnpm dlx license-checker --production --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
 
       - name: Run knip
         run: pnpm knip --no-progress
 
   build-sdk-core:
     name: Build SDK Core
+    if: github.event_name != 'push'
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -91,24 +152,28 @@ jobs:
 
   build-cli:
     name: Build CLI
+    if: github.event_name != 'push'
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: Build CLI
         run: pnpm --filter @eudiplo/cli build
@@ -122,21 +187,46 @@ jobs:
       - name: Smoke test standalone CLI
         run: ./apps/cli/dist-sea/eudiplo --help
 
+      - name: Build CLI npm bundle
+        run: pnpm --filter @eudiplo/cli build:publish
+
+      - name: Pack CLI as it would be published to npm
+        working-directory: apps/cli
+        run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+
+      - name: Smoke test packed CLI outside the workspace
+        # Extracts the exact tarball npm would publish and runs it from
+        # outside the repo/pnpm workspace so relative template asset paths
+        # can't accidentally resolve against files that only exist locally.
+        run: |
+          set -euo pipefail
+          extract_dir="$RUNNER_TEMP/cli-pack-test"
+          rm -rf "$extract_dir"
+          mkdir -p "$extract_dir"
+          tar -xzf "$RUNNER_TEMP"/eudiplo-cli-*.tgz -C "$extract_dir"
+          cd "$extract_dir/package"
+          node dist/index.js --help
+          init_dir="$RUNNER_TEMP/cli-init-test"
+          rm -rf "$init_dir"
+          node dist/index.js init "$init_dir" --target compose --no-interactive --yes --demo-tenant --demo --no-client
+          node dist/index.js config validate tenant "$init_dir/config/demo"
+
   build-backend:
     name: Build Backend
+    if: github.event_name != 'push'
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -144,24 +234,28 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
+
       - name: Build backend
         run: pnpm --filter @eudiplo/backend build
 
   build-client:
     name: Build Client
+    if: github.event_name != 'push'
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -175,21 +269,25 @@ jobs:
       - name: Build client
         run: pnpm --filter @eudiplo/client build
 
+      - name: Run client unit tests
+        run: pnpm --filter @eudiplo/client test --watch=false
+
   build-webhook:
     name: Build Webhook
+    if: github.event_name != 'push'
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -202,19 +300,20 @@ jobs:
 
   build-doc:
     name: Build Documentation
+    if: github.event_name != 'push'
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -222,133 +321,82 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.11'
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
+      - name: Test documentation (sidebar orphans, schema generator)
+        run: pnpm --filter @eudiplo/docs test
+
+      - name: Typecheck documentation scripts
+        run: pnpm --filter @eudiplo/docs typecheck:scripts
 
       - name: Build documentation
         env:
-          MASTER_SECRET: ci-docs-build-secret-minimum-32-chars
-          AUTH_CLIENT_ID: ci-docs-client
-          AUTH_CLIENT_SECRET: ci-docs-secret
-          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-        run: pnpm run doc:generate && pnpm run compodoc && mkdocs build --strict
+          ALGOLIA_APP_ID: ${{ secrets.ALGOLIA_APP_ID }}
+          ALGOLIA_SEARCH_API_KEY: ${{ secrets.ALGOLIA_SEARCH_API_KEY }}
+          ALGOLIA_INDEX_NAME: ${{ secrets.ALGOLIA_INDEX_NAME }}
+          DOCSEARCH_AGENT_ID: ${{ secrets.DOCSEARCH_AGENT_ID }}
+        run: pnpm --filter @eudiplo/docs run build
 
       - name: Upload built documentation
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: generated-docs
-          path: site/
+          path: apps/docs/build/
 
   deploy-docs:
-    name: Deploy Website & Documentation
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build-doc]
-    runs-on: ubuntu-latest
+    name: Deploy Preview Website & Documentation
+    if: github.repository == 'openwallet-foundation/eudiplo' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - uses: pnpm/action-setup@v5
-        name: Install pnpm
-        with:
-          run_install: false
-
-      - name: Install Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 26
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
-
-      - name: Build generated docs content
-        env:
-          PUBLIC_URL: https://example.com
-          ENABLE_SWAGGER: true
-          MASTER_SECRET: ci-docs-build-secret-minimum-32-chars
-          AUTH_CLIENT_ID: ci-docs-client
-          AUTH_CLIENT_SECRET: ci-docs-secret
-          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-        run: pnpm run doc:generate && pnpm run compodoc
-
-      - name: Build versioned docs with mike under /docs
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Reuse existing gh-pages history when available so mike can maintain version metadata.
-          git fetch origin gh-pages:gh-pages || true
-
-          mike deploy --branch gh-pages --deploy-prefix docs --alias-type copy --update-aliases main latest-dev
-
-          git worktree add gh-pages-out gh-pages
-
-          git -C gh-pages-out pull --rebase origin gh-pages
-
-          # Keep gh-pages root in sync with website/ from main while preserving docs/ generated by mike.
-          rsync -a --delete \
-            --exclude='/.git' \
-            --exclude='/docs/' \
-            website/ gh-pages-out/
-
-          test -f gh-pages-out/.git
-          test "$(git -C gh-pages-out branch --show-current)" = "gh-pages"
-
-          git -C gh-pages-out add -A
-
-          if ! git -C gh-pages-out diff --cached --quiet; then
-            git -C gh-pages-out commit -m "chore(docs): sync website root from main (${GITHUB_SHA::7})"
-          else
-            echo "No gh-pages root changes detected"
-          fi
-
-          git -C gh-pages-out push origin gh-pages
-
-      - name: Cleanup temporary worktree
-        if: always()
-        run: git worktree remove gh-pages-out --force || true
+      contents: read
+    uses: ./.github/workflows/deploy-site.yml
+    with:
+      environment: preview
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ALGOLIA_APP_ID: ${{ secrets.ALGOLIA_APP_ID }}
+      ALGOLIA_SEARCH_API_KEY: ${{ secrets.ALGOLIA_SEARCH_API_KEY }}
+      ALGOLIA_INDEX_NAME: ${{ secrets.ALGOLIA_INDEX_NAME }}
+      DOCSEARCH_AGENT_ID: ${{ secrets.DOCSEARCH_AGENT_ID }}
 
   test-e2e:
     permissions:
       contents: read
     name: E2E Tests (non-OIDF)
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    needs: [lint]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Add entry to /etc/hosts
         run: echo "127.0.0.1       host.testcontainers.internal" | sudo tee -a /etc/hosts
 
-      - uses: pnpm/action-setup@v5
+      # Authenticated pulls avoid Docker Hub's anonymous rate limit. Skipped
+      # where the secrets are unavailable (forks, Dependabot).
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: setup test webhooks
         run: |
@@ -363,27 +411,39 @@ jobs:
     permissions:
       contents: read
     name: E2E Tests (OIDF)
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    needs: [lint]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Add entry to /etc/hosts
         run: echo "127.0.0.1       host.testcontainers.internal" | sudo tee -a /etc/hosts
 
-      - uses: pnpm/action-setup@v5
+      # Authenticated pulls avoid Docker Hub's anonymous rate limit. Skipped
+      # where the secrets are unavailable (forks, Dependabot).
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: setup test webhooks
         run: |
@@ -396,10 +456,72 @@ jobs:
 
       - name: Upload OIDF test results
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: oidf-test-results
           path: tmp/oidf-logs
+          if-no-files-found: ignore
+
+  # Playwright tests of the production client build against the built backend,
+  # which imports the demo tenant into a fresh database (E2E_USE_BUILD). Also
+  # runs on pushes to main for the default-branch client coverage.
+  test-e2e-client:
+    permissions:
+      contents: read
+    name: E2E Tests (Client)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        name: Install pnpm
+        with:
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
+
+      - name: Build sdk core
+        run: pnpm --filter @eudiplo/sdk-core build
+
+      - name: Build backend
+        run: pnpm --filter @eudiplo/backend build
+
+      - name: Build client
+        run: pnpm --filter @eudiplo/client build
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @eudiplo/client exec playwright install --with-deps chromium
+
+      - name: Run client E2E tests
+        run: pnpm --filter @eudiplo/client e2e
+        env:
+          E2E_USE_BUILD: 'true'
+          E2E_COVERAGE: 'true'
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: client-e2e-report
+          path: apps/client/playwright-report
+          if-no-files-found: ignore
+
+      - name: Upload client coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: client-e2e-coverage
+          path: apps/client/coverage/e2e
           if-no-files-found: ignore
 
   test-coverage-report:
@@ -407,9 +529,8 @@ jobs:
       contents: read
     name: Test Coverage Report
     runs-on: ubuntu-latest
-    needs: [lint]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -417,19 +538,31 @@ jobs:
       - name: Add entry to /etc/hosts
         run: echo "127.0.0.1       host.testcontainers.internal" | sudo tee -a /etc/hosts
 
-      - uses: pnpm/action-setup@v5
+      # Authenticated pulls avoid Docker Hub's anonymous rate limit. Skipped
+      # where the secrets are unavailable (forks, Dependabot).
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: setup test webhooks
         run: |
@@ -445,7 +578,7 @@ jobs:
 
       - name: Upload Cobertura coverage artifacts
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-cobertura-coverage
           path: |
@@ -464,39 +597,95 @@ jobs:
     needs: [test-coverage-report]
     if: >-
       needs.test-coverage-report.result == 'success' &&
+      github.event_name != 'merge_group' &&
       (
         github.event_name != 'pull_request' ||
         github.event.pull_request.head.repo.full_name == github.repository
       )
     steps:
       - name: Download Cobertura coverage artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: backend-cobertura-coverage
           path: apps/backend/coverage
 
-      - uses: actions/upload-code-coverage@v1
+      - uses: actions/upload-code-coverage@bfa741d815a28cb064a8e3a0837e577457a017d5 # v1.4.3
         with:
           file: apps/backend/coverage/unit/cobertura-coverage.xml
           language: TypeScript
           label: backend-unit
           fail-on-error: false
 
-      - uses: actions/upload-code-coverage@v1
+      - uses: actions/upload-code-coverage@bfa741d815a28cb064a8e3a0837e577457a017d5 # v1.4.3
         with:
           file: apps/backend/coverage/e2e/cobertura-coverage.xml
           language: TypeScript
           label: backend-e2e
           fail-on-error: false
 
+  # Separate from the backend upload, so one failing suite doesn't hold back
+  # the other's coverage.
+  upload-client-coverage:
+    permissions:
+      contents: read
+      pull-requests: read
+      code-quality: write
+    continue-on-error: true
+    name: Upload Client Coverage to GitHub Code Quality
+    runs-on: ubuntu-latest
+    needs: [test-e2e-client]
+    if: >-
+      needs.test-e2e-client.result == 'success' &&
+      github.event_name != 'merge_group' &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
+    steps:
+      - name: Download client coverage artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: client-e2e-coverage
+          path: apps/client/coverage/e2e
+
+      - uses: actions/upload-code-coverage@bfa741d815a28cb064a8e3a0837e577457a017d5 # v1.4.3
+        with:
+          file: apps/client/coverage/e2e/cobertura-coverage.xml
+          language: TypeScript
+          label: client-e2e
+          fail-on-error: false
+
+  # =============================================================================
+  # Build info: one version shared by all Docker images of this run, so the
+  # client can detect when it is connected to a backend from a different build.
+  # =============================================================================
+  build-info:
+    name: Compute Build Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      revision: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Compute version
+        id: version
+        run: echo "version=$(scripts/ci-version.sh "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
   # =============================================================================
   # Docker Backend: Build, Test & Push (multi-platform with native runners)
   # Uses native ARM runners instead of QEMU for ~4x faster arm64 builds.
   # Skip arm64 on PRs to save time - only build amd64 for validation.
+  # Runs alongside the tests: on main only tested merge-queue commits get pushed.
   # =============================================================================
   docker-backend:
     name: Build & Test Backend Docker (${{ matrix.arch }})
-    needs: [test-e2e, test-e2e-oidf]
+    needs: [build-info]
     strategy:
       fail-fast: false
       matrix:
@@ -507,36 +696,48 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # Runners are ephemeral; removing the builder only adds 15-60s.
+          cleanup: false
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/openwallet-foundation/eudiplo
+          images: ghcr.io/eudiplo/eudiplo
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Authenticated pulls avoid Docker Hub's anonymous rate limit. Skipped
+      # where the secrets are unavailable (forks, Dependabot).
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # --- Health test (amd64 only) ---
       - name: Build Backend Docker image (for testing)
         if: matrix.arch == 'amd64'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: eudiplo
           load: true
-          tags: ghcr.io/openwallet-foundation/eudiplo:test
-          build-args: VERSION=main
-          cache-from: type=gha,scope=backend-${{ matrix.arch }}
-          cache-to: type=gha,scope=backend-${{ matrix.arch }},mode=max
+          tags: ghcr.io/eudiplo/eudiplo:test
+          build-args: |
+            VERSION=${{ needs.build-info.outputs.version }}
+            REVISION=${{ needs.build-info.outputs.revision }}
 
       - name: Run container (detached)
         if: matrix.arch == 'amd64'
@@ -548,7 +749,7 @@ jobs:
             -e AUTH_CLIENT_ID=ci-docker-client \
             -e AUTH_CLIENT_SECRET=ci-docker-secret \
             -e ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-            ghcr.io/openwallet-foundation/eudiplo:test
+            ghcr.io/eudiplo/eudiplo:test
 
       - name: Wait for healthy
         if: matrix.arch == 'amd64'
@@ -615,16 +816,16 @@ jobs:
       - name: Build and push by digest
         if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: eudiplo
           platforms: ${{ matrix.platform }}
-          build-args: VERSION=main
+          build-args: |
+            VERSION=${{ needs.build-info.outputs.version }}
+            REVISION=${{ needs.build-info.outputs.revision }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=ghcr.io/openwallet-foundation/eudiplo,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=backend-${{ matrix.arch }}
-          cache-to: type=gha,scope=backend-${{ matrix.arch }},mode=max
+          outputs: type=image,name=ghcr.io/eudiplo/eudiplo,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -635,7 +836,7 @@ jobs:
 
       - name: Upload digest
         if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
@@ -652,27 +853,27 @@ jobs:
       packages: write
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: backend-digest-*
           merge-multiple: true
           path: ${{ runner.temp }}/digests
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/openwallet-foundation/eudiplo
+          images: ghcr.io/eudiplo/eudiplo
           tags: |
             type=raw,value=main
             type=raw,value=sha-${{ github.sha }}
@@ -681,131 +882,10 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/openwallet-foundation/eudiplo@sha256:%s ' *)
+            $(printf 'ghcr.io/eudiplo/eudiplo@sha256:%s ' *)
 
       - name: Inspect image
-        run: docker buildx imagetools inspect ghcr.io/openwallet-foundation/eudiplo:main
-
-  # =============================================================================
-  # Docker Backend Demo: Build & Push (multi-platform with native runners)
-  # Publishes ghcr.io/openwallet-foundation/eudiplo-demo:main on main branch.
-  # =============================================================================
-  docker-backend-demo:
-    name: Build & Push Backend Demo Docker (${{ matrix.arch }})
-    needs: [test-e2e, test-e2e-oidf]
-    strategy:
-      fail-fast: false
-      matrix:
-        include: '${{ fromJSON(github.event_name == ''push'' && github.ref == ''refs/heads/main'' && ''[{"platform": "linux/amd64", "runner": "ubuntu-latest", "arch": "amd64"}, {"platform": "linux/arm64", "runner": "ubuntu-24.04-arm", "arch": "arm64"}]'' || ''[{"platform": "linux/amd64", "runner": "ubuntu-latest", "arch": "amd64"}]'') }}'
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/openwallet-foundation/eudiplo-demo
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # --- Build to validate (PRs/workflow_dispatch only) ---
-      - name: Build to validate
-        if: ${{ !(github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push') }}
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: eudiplo-demo
-          platforms: ${{ matrix.platform }}
-          build-args: VERSION=main
-          cache-from: type=gha,scope=backend-demo-${{ matrix.arch }}
-          cache-to: type=gha,scope=backend-demo-${{ matrix.arch }},mode=max
-
-      # --- Build and push by digest (main push only) ---
-      - name: Build and push by digest
-        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
-        id: push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: eudiplo-demo
-          platforms: ${{ matrix.platform }}
-          build-args: VERSION=main
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=ghcr.io/openwallet-foundation/eudiplo-demo,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=backend-demo-${{ matrix.arch }}
-          cache-to: type=gha,scope=backend-demo-${{ matrix.arch }},mode=max
-
-      - name: Export digest
-        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: |
-          mkdir -p ${{ runner.temp }}/digests
-          digest="${{ steps.push.outputs.digest }}"
-          touch "${{ runner.temp }}/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-artifact@v7
-        with:
-          name: backend-demo-digest-${{ matrix.arch }}
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  docker-backend-demo-manifest:
-    name: Create Backend Demo Docker Manifest
-    if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [docker-backend-demo]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Download digests
-        uses: actions/download-artifact@v8
-        with:
-          pattern: backend-demo-digest-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/digests
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/openwallet-foundation/eudiplo-demo
-          tags: |
-            type=raw,value=main
-            type=raw,value=sha-${{ github.sha }}
-
-      - name: Create manifest list and push
-        working-directory: ${{ runner.temp }}/digests
-        run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/openwallet-foundation/eudiplo-demo@sha256:%s ' *)
-
-      - name: Inspect image
-        run: docker buildx imagetools inspect ghcr.io/openwallet-foundation/eudiplo-demo:main
+        run: docker buildx imagetools inspect ghcr.io/eudiplo/eudiplo:main
 
   # =============================================================================
   # Docker Client: Build & Push (multi-platform with native runners)
@@ -813,7 +893,7 @@ jobs:
   # =============================================================================
   docker-client:
     name: Build & Push Client Docker (${{ matrix.arch }})
-    needs: [lint]
+    needs: [build-info]
     strategy:
       fail-fast: false
       matrix:
@@ -824,48 +904,62 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # Runners are ephemeral; removing the builder only adds 15-60s.
+          cleanup: false
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/openwallet-foundation/eudiplo-client
+          images: ghcr.io/eudiplo/eudiplo-client
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Authenticated pulls avoid Docker Hub's anonymous rate limit. Skipped
+      # where the secrets are unavailable (forks, Dependabot).
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # --- Build and push by digest (main push only) ---
       - name: Build and push by digest
         if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: client
           platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ needs.build-info.outputs.version }}
+            REVISION=${{ needs.build-info.outputs.revision }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=ghcr.io/openwallet-foundation/eudiplo-client,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=client-${{ matrix.arch }}
-          cache-to: type=gha,scope=client-${{ matrix.arch }},mode=max
+          outputs: type=image,name=ghcr.io/eudiplo/eudiplo-client,push-by-digest=true,name-canonical=true,push=true
 
       # --- Build to validate (PRs/workflow_dispatch only) ---
       - name: Build to validate
         if: ${{ !(github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push') }}
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: client
           platforms: ${{ matrix.platform }}
-          cache-from: type=gha,scope=client-${{ matrix.arch }}
-          cache-to: type=gha,scope=client-${{ matrix.arch }},mode=max
+          build-args: |
+            VERSION=${{ needs.build-info.outputs.version }}
+            REVISION=${{ needs.build-info.outputs.revision }}
 
       - name: Export digest
         if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -876,7 +970,7 @@ jobs:
 
       - name: Upload digest
         if: github.repository == 'openwallet-foundation/eudiplo' && github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: client-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
@@ -893,27 +987,27 @@ jobs:
       packages: write
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: client-digest-*
           merge-multiple: true
           path: ${{ runner.temp }}/digests
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/openwallet-foundation/eudiplo-client
+          images: ghcr.io/eudiplo/eudiplo-client
           tags: |
             type=raw,value=main
             type=raw,value=sha-${{ github.sha }}
@@ -922,7 +1016,7 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/openwallet-foundation/eudiplo-client@sha256:%s ' *)
+            $(printf 'ghcr.io/eudiplo/eudiplo-client@sha256:%s ' *)
 
       - name: Inspect image
-        run: docker buildx imagetools inspect ghcr.io/openwallet-foundation/eudiplo-client:main
+        run: docker buildx imagetools inspect ghcr.io/eudiplo/eudiplo-client:main

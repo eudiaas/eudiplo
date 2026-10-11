@@ -1,7 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { readCliBinaryAsset, readCliTextAsset } from "../sea-assets.js";
+import {
+    readCliBinaryAsset,
+    readCliTextAsset,
+    templateAssetUrl,
+} from "../sea-assets.js";
 
 export const defaultComposeFileName = "eudiplo.compose.yaml";
 export const defaultComposeOverrideFileName = "eudiplo.compose.override.yaml";
@@ -31,29 +35,35 @@ interface ComposeEnvOptions {
 
 export function createComposeEnv(options: ComposeEnvOptions): string {
     const imageTag = resolveImageTag(options.imageTagOverride);
-    const envFileName = options.mode === "demo" ? demoEnvFileName : defaultEnvFileName;
-    const database = options.mode === "demo" ? "sqlite" : (options.database ?? "sqlite");
-    const storage = options.mode === "demo" ? "local" : (options.storage ?? "local");
+    const envFileName =
+        options.mode === "demo" ? demoEnvFileName : defaultEnvFileName;
+    const database =
+        options.mode === "demo" ? "sqlite" : (options.database ?? "sqlite");
+    const storage =
+        options.mode === "demo" ? "local" : (options.storage ?? "local");
     const kms = options.mode === "demo" ? "db" : (options.kms ?? "db");
     const publicUrl = options.publicUrl ?? "http://localhost:3000";
     const authClientId = options.authClientId ?? "root";
     const authClientSecret = options.authClientSecret ?? "root";
     const lines = [
         `EUDIPLO_ENV_FILE=${envFileName}`,
-        `EUDIPLO_IMAGE=ghcr.io/openwallet-foundation/eudiplo:${imageTag}`,
-        `EUDIPLO_CLIENT_IMAGE=ghcr.io/openwallet-foundation/eudiplo-client:${imageTag}`,
+        `EUDIPLO_IMAGE=ghcr.io/eudiplo/eudiplo:${imageTag}`,
+        `EUDIPLO_CLIENT_IMAGE=ghcr.io/eudiplo/eudiplo-client:${imageTag}`,
         ...(options.mode === "demo" ? ["EUDIPLO_BIND_ADDRESS=127.0.0.1"] : []),
         `EUDIPLO_CONFIG_MOUNT=./${configDirectoryName}:/app/config`,
         "CONFIG_FOLDER=/app/config",
-        "CONFIG_IMPORT=true",
-        "CONFIG_IMPORT_FORCE=false",
+        "CONFIG_IMPORT_MODE=create",
         `PUBLIC_URL=${escapeEnvValue(publicUrl)}`,
         `MASTER_SECRET=${randomBytes(32).toString("base64")}`,
         `AUTH_CLIENT_ID=${escapeEnvValue(authClientId)}`,
         `AUTH_CLIENT_SECRET=${escapeEnvValue(authClientSecret)}`,
     ];
 
-    lines.push("", ...databaseEnv(database), "", ...storageEnv(storage), "", ...kmsEnv(kms));
+    lines.push("", ...databaseEnv(database), "", ...storageEnv(storage));
+    const kmsLines = kmsEnv(kms);
+    if (kmsLines.length > 0) {
+        lines.push("", ...kmsLines);
+    }
 
     return `${lines.join("\n")}\n`;
 }
@@ -107,26 +117,31 @@ function storageEnv(storage: ComposeStorage): string[] {
         return ["STORAGE_DRIVER=local", "LOCAL_STORAGE_DIR=/app/uploads"];
     }
 
-    const minioPassword = randomSecret();
+    const rustfsPassword = randomSecret();
     return [
         "STORAGE_DRIVER=s3",
-        "S3_ENDPOINT=http://minio:9000",
+        "S3_ENDPOINT=http://rustfs:9000",
         "S3_REGION=us-east-1",
-        "S3_ACCESS_KEY_ID=minioadmin",
-        `S3_SECRET_ACCESS_KEY=${minioPassword}`,
+        "S3_ACCESS_KEY_ID=rustfsadmin",
+        `S3_SECRET_ACCESS_KEY=${rustfsPassword}`,
         "S3_BUCKET=uploads",
         "S3_FORCE_PATH_STYLE=true",
-        "MINIO_ROOT_USER=minioadmin",
-        `MINIO_ROOT_PASSWORD=${minioPassword}`,
+        "RUSTFS_ACCESS_KEY=rustfsadmin",
+        `RUSTFS_SECRET_KEY=${rustfsPassword}`,
     ];
 }
 
+/**
+ * The KMS provider itself is selected in `config/kms.json` (see
+ * {@link createGlobalKmsConfig}); these variables only fill its `${VAULT_*}`
+ * placeholders.
+ */
 function kmsEnv(kms: ComposeKms): string[] {
     if (kms === "db") {
-        return ["KM_TYPE=db"];
+        return [];
     }
 
-    return ["KM_TYPE=vault", "VAULT_ADDR=http://vault:8200", "VAULT_TOKEN=root"];
+    return ["VAULT_ADDR=http://vault:8200", "VAULT_TOKEN=root"];
 }
 
 function randomSecret(): string {
@@ -151,7 +166,7 @@ export function resolveImageTag(imageTagOverride?: string): string {
 export async function createComposeFile(): Promise<string> {
     return readCliTextAsset(
         "templates/docker-compose.yml",
-        new URL("../../templates/docker-compose.yml", import.meta.url),
+        templateAssetUrl("docker-compose.yml"),
     );
 }
 
@@ -164,7 +179,10 @@ export function createNoClientComposeOverride(): string {
     ].join("\n");
 }
 
-export async function copyBundledDemoConfig(targetDirectory: string, force: boolean): Promise<void> {
+export async function copyBundledDemoConfig(
+    targetDirectory: string,
+    force: boolean,
+): Promise<void> {
     if (force) {
         await rm(targetDirectory, { recursive: true, force: true });
     }
@@ -175,17 +193,23 @@ export async function copyBundledDemoConfig(targetDirectory: string, force: bool
         for (const relativePath of manifest) {
             const normalized = normalizeRelativePath(relativePath);
             const destinationPath = join(targetDirectory, normalized);
-            await mkdir(dirname(destinationPath), { recursive: true, mode: 0o700 });
+            await mkdir(dirname(destinationPath), {
+                recursive: true,
+                mode: 0o700,
+            });
             const contents = await readCliBinaryAsset(
                 `templates/demo-config/${normalized}`,
-                new URL(`../../templates/demo-config/${normalized}`, import.meta.url),
+                templateAssetUrl(`demo-config/${normalized}`),
             );
             await writeFile(destinationPath, contents, { mode: 0o600 });
         }
         return;
     }
 
-    const fallbackDirectory = new URL("../../../../assets/config/demo/", import.meta.url);
+    const fallbackDirectory = new URL(
+        "../../../../assets/config/demo/",
+        import.meta.url,
+    );
     await cp(fallbackDirectory, targetDirectory, {
         recursive: true,
         force,
@@ -206,20 +230,26 @@ async function readDemoConfigManifest(): Promise<string[] | undefined> {
     try {
         const manifestText = await readCliTextAsset(
             demoConfigManifestAssetKey,
-            new URL("../../templates/demo-config.manifest.json", import.meta.url),
+            templateAssetUrl("demo-config.manifest.json"),
         );
         const parsed = JSON.parse(manifestText);
-        if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+        if (
+            Array.isArray(parsed) &&
+            parsed.every((item) => typeof item === "string")
+        ) {
             return parsed;
         }
     } catch {
         try {
             const localManifest = await readFile(
-                new URL("../../templates/demo-config.manifest.json", import.meta.url),
+                templateAssetUrl("demo-config.manifest.json"),
                 "utf8",
             );
             const parsed = JSON.parse(localManifest);
-            if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+            if (
+                Array.isArray(parsed) &&
+                parsed.every((item) => typeof item === "string")
+            ) {
                 return parsed;
             }
         } catch {

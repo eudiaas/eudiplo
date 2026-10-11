@@ -1,6 +1,12 @@
 import { BitsPerStatus } from "@owf/token-status-list";
-import { Column, CreateDateColumn, Entity, ManyToOne } from "typeorm";
-import { TenantEntity } from "../../../auth/tenant/entities/tenant.entity";
+import {
+    Column,
+    CreateDateColumn,
+    Entity,
+    ManyToOne,
+    VersionColumn,
+} from "typeorm";
+import { TenantEntity } from "../../../auth/tenant/entities/tenant.entity.js";
 
 /**
  * Entity representing a status list for a tenant.
@@ -80,6 +86,14 @@ export class StatusListEntity {
      */
     @Column({ nullable: true })
     expiresAt?: Date;
+
+    /**
+     * Optimistic locking version for concurrency control.
+     * Incremented on every modification to stack, elements, or cached tokens.
+     * Used to detect concurrent modifications and ensure consistency.
+     */
+    @VersionColumn()
+    version!: number;
 
     /**
      * Timestamp when this status list was created.

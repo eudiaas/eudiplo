@@ -3,10 +3,10 @@ import { join } from "node:path";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
-    parseResolvedKmsConfig,
     type KmsConfig,
     type KmsProviderConfig,
-} from "../schemas/kms-config.schema";
+    parseResolvedKmsConfig,
+} from "../schemas/kms-config.schema.js";
 
 const DEFAULT_PROVIDER_ID = "db";
 

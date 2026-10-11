@@ -1,17 +1,18 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { S3Client } from "@aws-sdk/client-s3";
 import { Readable } from "node:stream";
+import { S3Client } from "@aws-sdk/client-s3";
 import { GenericContainer, StartedTestContainer, Wait } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { LocalFileStorage } from "../src/storage/adapters/local.storage";
-import { S3FileStorage } from "../src/storage/adapters/s3.storage";
-import type { FileStorage } from "../src/storage/storage.types";
+import { LocalFileStorage } from "../src/storage/adapters/local.storage.js";
+import { S3FileStorage } from "../src/storage/adapters/s3.storage.js";
+import type { FileStorage } from "../src/storage/storage.types.js";
+import { describeWithContainers } from "./container-runtime.js";
 
 /**
  * Shared test suite for FileStorage implementations.
- * Tests both LocalFileStorage and S3FileStorage (via MinIO).
+ * Tests both LocalFileStorage and S3FileStorage (via RustFS).
  */
 function runStorageTests(getStorage: () => FileStorage, name: string) {
     describe(name, () => {
@@ -168,35 +169,33 @@ describe("LocalFileStorage", () => {
     });
 });
 
-describe("S3FileStorage (MinIO)", () => {
-    let minioContainer: StartedTestContainer;
+describeWithContainers("S3FileStorage (RustFS)", () => {
+    let rustfsContainer: StartedTestContainer;
     let s3Client: S3Client;
     let s3Storage: S3FileStorage;
 
     const BUCKET_NAME = "test-bucket";
-    const ACCESS_KEY = "minioadmin";
-    const SECRET_KEY = "minioadmin";
-    const MINIO_PORT = 9000;
+    const ACCESS_KEY = "rustfs-test-admin";
+    const SECRET_KEY = "rustfs-test-admin";
+    const S3_PORT = 9000;
 
     beforeAll(async () => {
-        // Start MinIO container
-        minioContainer = await new GenericContainer(
-            "quay.io/minio/minio:latest",
-        )
-            .withExposedPorts(MINIO_PORT)
+        // Start RustFS container
+        rustfsContainer = await new GenericContainer("rustfs/rustfs:1.0.0")
+            .withExposedPorts(S3_PORT)
             .withEnvironment({
-                MINIO_ROOT_USER: ACCESS_KEY,
-                MINIO_ROOT_PASSWORD: SECRET_KEY,
+                RUSTFS_ACCESS_KEY: ACCESS_KEY,
+                RUSTFS_SECRET_KEY: SECRET_KEY,
             })
-            .withCommand(["server", "/data"])
-            .withWaitStrategy(Wait.forHttp("/minio/health/ready", MINIO_PORT))
+            .withCommand(["/data"])
+            .withWaitStrategy(Wait.forHttp("/health/ready", S3_PORT))
             .start();
 
-        const host = minioContainer.getHost();
-        const port = minioContainer.getMappedPort(MINIO_PORT);
+        const host = rustfsContainer.getHost();
+        const port = rustfsContainer.getMappedPort(S3_PORT);
         const endpoint = `http://${host}:${port}`;
 
-        // Create S3 client configured for MinIO
+        // Create S3 client configured for RustFS
         s3Client = new S3Client({
             endpoint,
             region: "us-east-1",
@@ -204,7 +203,7 @@ describe("S3FileStorage (MinIO)", () => {
                 accessKeyId: ACCESS_KEY,
                 secretAccessKey: SECRET_KEY,
             },
-            forcePathStyle: true, // Required for MinIO
+            forcePathStyle: true, // Required for RustFS
         });
 
         // Create test bucket using AWS SDK
@@ -217,7 +216,7 @@ describe("S3FileStorage (MinIO)", () => {
 
     afterAll(async () => {
         s3Client?.destroy();
-        await minioContainer?.stop();
+        await rustfsContainer?.stop();
     });
 
     runStorageTests(() => s3Storage, "S3FileStorage operations");

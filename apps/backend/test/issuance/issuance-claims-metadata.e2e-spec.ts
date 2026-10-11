@@ -3,9 +3,9 @@ import request from "supertest";
 import { App } from "supertest/types";
 import { Agent, setGlobalDispatcher } from "undici";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { IssuanceTestContext, setupIssuanceTestApp } from "../utils";
-import { CredentialFormat } from "../../src/issuer/configuration/credentials/entities/credential.entity";
-import { CredentialConfigUpdate } from "../../src/issuer/configuration/credentials/dto/credential-config-update.dto";
+import { CredentialConfigUpdate } from "../../src/issuer/configuration/credentials/dto/credential-config-update.dto.js";
+import { CredentialFormat } from "../../src/issuer/configuration/credentials/entities/credential.entity.js";
+import { IssuanceTestContext, setupIssuanceTestApp } from "../utils.js";
 
 setGlobalDispatcher(
     new Agent({
@@ -28,7 +28,7 @@ describe("Issuance - Claims Metadata", () => {
 
     afterAll(async () => {
         if (app) {
-            await app.close();
+            await app?.close();
         }
     });
 

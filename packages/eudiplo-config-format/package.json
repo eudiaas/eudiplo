@@ -1,0 +1,48 @@
+{
+    "name": "@eudiplo/config-format",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "Shared portable-config format, validation, and bundle logic for the EUDIPLO backend and CLI",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./*.js": {
+            "types": "./dist/*.d.ts",
+            "default": "./dist/*.js"
+        }
+    },
+    "scripts": {
+        "build": "tsc -p tsconfig.json",
+        "test": "vitest run",
+        "clean": "rm -rf dist"
+    },
+    "dependencies": {
+        "ajv": "^8.20.0",
+        "fflate": "^0.8.3"
+    },
+    "devDependencies": {
+        "@fast-check/vitest": "^0.5.0",
+        "@types/node": "^26.6.4",
+        "fast-check": "^4.10.2",
+        "typescript": "^6.0.3",
+        "vitest": "5.0.3"
+    },
+    "files": [
+        "dist"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/EUDIPLO/eudiplo.git",
+        "directory": "packages/eudiplo-config-format"
+    },
+    "author": "LF Decentralized Trust",
+    "license": "Apache-2.0",
+    "engines": {
+        "node": ">=22.12.0"
+    }
+}

@@ -20,10 +20,12 @@ export const ChainedAsTokenConfigSchema = z
     })
     .strict();
 
-const ChainedAsVpConfigSchema = z
+const WalletProviderTrustListRefSchema = z
     .object({
-        enabled: z.boolean(),
-        presentationConfigId: z.string(),
+        url: z.string(),
+        verifierKey: z.record(z.string(), z.unknown()).optional(),
+        verifierKeyPem: z.string().optional(),
+        verifierX509Der: z.string().optional(),
     })
     .strict();
 
@@ -31,9 +33,12 @@ const ChainedAsConfigSchema = z
     .object({
         enabled: z.boolean(),
         upstream: UpstreamOidcConfigSchema.optional(),
-        vp: ChainedAsVpConfigSchema.optional(),
         token: ChainedAsTokenConfigSchema.optional(),
         requireDPoP: z.boolean().optional(),
+        walletAttestationRequired: z.boolean().optional(),
+        walletProviderTrustLists: z
+            .array(WalletProviderTrustListRefSchema)
+            .optional(),
     })
     .strict();
 
@@ -128,34 +133,6 @@ export class ChainedAsTokenConfig extends createZodDto(
 }
 
 /**
- * Configuration for a VP-backed Authorization Server facade.
- *
- * In this mode, EUDIPLO acts as the AS for the wallet, but instead of
- * delegating authentication to an upstream OIDC provider, it starts an
- * OID4VP verifier flow and only returns the OAuth authorization code after
- * a successful presentation callback.
- */
-export class ChainedAsVpConfig extends createZodDto(ChainedAsVpConfigSchema) {
-    /**
-     * Whether the VP-backed AS is enabled.
-     */
-    @ApiProperty({
-        description: "Enable VP-backed chained AS mode",
-        default: false,
-    })
-    enabled!: boolean;
-
-    /**
-     * The presentation configuration ID used to start the OID4VP request.
-     */
-    @ApiProperty({
-        description: "Presentation configuration ID used for OID4VP",
-        example: "pid-no-hook",
-    })
-    presentationConfigId!: string;
-}
-
-/**
  * Configuration for enabling "Chained Authorization Server" mode.
  *
  * In this mode, EUDIPLO acts as the Authorization Server for wallets,
@@ -199,15 +176,6 @@ export class ChainedAsConfig extends createZodDto(ChainedAsConfigSchema) {
     upstream?: UpstreamOidcConfig;
 
     /**
-     * Configuration for a VP-backed AS facade.
-     */
-    @ApiPropertyOptional({
-        description: "VP-backed chained AS configuration",
-        type: () => ChainedAsVpConfig,
-    })
-    vp?: ChainedAsVpConfig;
-
-    /**
      * Configuration for tokens issued by EUDIPLO.
      */
     @ApiPropertyOptional({
@@ -226,4 +194,23 @@ export class ChainedAsConfig extends createZodDto(ChainedAsConfigSchema) {
         default: true,
     })
     requireDPoP?: boolean;
+
+    @ApiPropertyOptional({
+        description:
+            "Require wallet attestation for this authorization server. Omit to inherit the issuance default.",
+    })
+    walletAttestationRequired?: boolean;
+
+    @ApiPropertyOptional({
+        description:
+            "Wallet authentication trust lists for this authorization server. Omit to inherit shared issuance trust; an empty array rejects presented attestations.",
+        type: "array",
+        items: { type: "object" },
+    })
+    walletProviderTrustLists?: Array<{
+        url: string;
+        verifierKey?: Record<string, unknown>;
+        verifierKeyPem?: string;
+        verifierX509Der?: string;
+    }>;
 }

@@ -3,20 +3,32 @@ import { readFileSync } from "node:fs";
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import type { JWK } from "jose";
+import { exportJWK, importPKCS8, type JWK } from "jose";
 import { Repository } from "typeorm";
 import { v4 } from "uuid";
-import { TenantEntity } from "../../auth/tenant/entities/tenant.entity";
+import { TenantEntity } from "../../auth/tenant/entities/tenant.entity.js";
+import { ConfigImportService } from "../../platform/config-import/config-import.service.js";
 import {
     ConfigImportOrchestratorService,
     ImportPhase,
-} from "../../platform/config-import/config-import-orchestrator.service";
-import { ConfigImportService } from "../../platform/config-import/config-import.service";
-import { CertificateBuilderService } from "./cert/certificate-builder.service";
-import { KeyChainImportDto } from "./dto/key-chain-import.dto";
-import { KeyChainEntity, KeyUsage } from "./entities/key-chain.entity";
-import type { KmsAdapter, KmsKeyRef } from "./kms/kms-adapter";
-import { KmsProviderRegistry } from "./kms/kms-provider.registry";
+} from "../../platform/config-import/config-import-orchestrator.service.js";
+import {
+    CertificateBuilderService,
+    certificateNotBefore,
+} from "./cert/certificate-builder.service.js";
+import { KeyChainImportDto } from "./dto/key-chain-import.dto.js";
+import { KeyChainEntity, KeyUsage } from "./entities/key-chain.entity.js";
+import type { KmsAdapter, KmsKeyRef } from "./kms/kms-adapter.js";
+import { KmsProviderRegistry } from "./kms/kms-provider.registry.js";
+
+// Avoids a backtracking-prone `=+$` regex by trimming padding with a bounded loop.
+function stripTrailingPadding(value: string): string {
+    let end = value.length;
+    while (end > 0 && value[end - 1] === "=") {
+        end -= 1;
+    }
+    return value.slice(0, end);
+}
 
 /**
  * Handles config-driven key-chain import and the config-import lifecycle hook.
@@ -52,7 +64,7 @@ export class KeyChainImportService {
             {
                 subfolder: "key-chains",
                 fileExtension: ".json",
-                validationClass: KeyChainImportDto,
+                validationSchema: KeyChainImportDto,
                 resourceType: "key-chain",
                 loadData: (filePath) => {
                     const payload = JSON.parse(readFileSync(filePath, "utf8"));
@@ -82,7 +94,11 @@ export class KeyChainImportService {
         });
         const hostname = this.getHostname();
 
-        const privateKey: JWK = { ...dto.key };
+        const privateKey = await this.resolvePrivateKey(dto);
+        const replacing = await this.keyChainRepository.existsBy({
+            tenantId,
+            id,
+        });
         if (!privateKey.kid) {
             privateKey.kid = `${id}-active`;
         }
@@ -91,6 +107,9 @@ export class KeyChainImportService {
         }
 
         const adapter = this.kmsRegistry.resolve(dto.kmsProvider, tenantId);
+        // External adapters must not overwrite the active key while a replacement is being validated.
+        if (replacing && adapter.type !== "db")
+            privateKey.kid = `${id}-import-${v4()}`;
         const normalizedCertificates = this.resolveCertificateChain(dto);
 
         if (dto.rotationPolicy?.enabled) {
@@ -112,6 +131,10 @@ export class KeyChainImportService {
 
         let activeCertificate: string;
         if (normalizedCertificates && normalizedCertificates.length > 0) {
+            this.validateLeafCertificate(
+                normalizedCertificates[0],
+                activeMat.ref.publicJwk,
+            );
             activeCertificate = normalizedCertificates.join("\n");
         } else {
             const now = new Date();
@@ -123,7 +146,7 @@ export class KeyChainImportService {
                 activeMat.ref,
                 tenant.name,
                 hostname,
-                now,
+                certificateNotBefore(now),
                 notAfter,
             );
         }
@@ -137,14 +160,42 @@ export class KeyChainImportService {
             kmsProvider: adapter.providerId,
             activeJwk: this.storedKeyForEntity(adapter, activeMat.ref),
             activeCertificate,
-            externalKeyId: activeMat.ref.externalKeyId,
+            externalKeyId: activeMat.ref.externalKeyId ?? (null as any),
+            rootJwk: null as any,
+            rootCertificate: null as any,
+            rootExternalKeyId: null as any,
             rotationEnabled: false,
+            rotationIntervalDays: null as any,
+            certValidityDays: null as any,
         });
 
         this.logger.log(
             `Imported key chain ${id} for tenant ${tenantId} (usage: ${dto.usageType}, provider: ${adapter.providerId})`,
         );
         return id;
+    }
+
+    private async resolvePrivateKey(dto: KeyChainImportDto): Promise<JWK> {
+        if (dto.key) {
+            return { ...dto.key };
+        }
+
+        if (!dto.keyPem) {
+            throw new BadRequestException("An import requires key or keyPem.");
+        }
+
+        try {
+            const key = await importPKCS8(dto.keyPem, "ES256", {
+                extractable: true,
+            });
+            return await exportJWK(key);
+        } catch (error) {
+            throw new BadRequestException(
+                `Invalid PKCS#8 PEM private key: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
     }
 
     private async importKeyChainWithRotation(
@@ -184,7 +235,7 @@ export class KeyChainImportService {
                 rootMat.ref,
                 `${subjectCN} Root CA`,
                 hostname,
-                now,
+                certificateNotBefore(now),
                 rootNotAfter,
             );
         }
@@ -204,7 +255,7 @@ export class KeyChainImportService {
             subjectPublicJwk: activeMat.ref.publicJwk,
             subjectCN,
             hostname,
-            notBefore: now,
+            notBefore: certificateNotBefore(now),
             notAfter,
         });
 
@@ -216,11 +267,11 @@ export class KeyChainImportService {
             description: dto.description,
             kmsProvider: adapter.providerId,
             rootJwk: this.storedKeyForEntity(adapter, rootMat.ref),
-            rootExternalKeyId: rootMat.ref.externalKeyId,
+            rootExternalKeyId: rootMat.ref.externalKeyId ?? (null as any),
             rootCertificate,
             activeJwk: this.storedKeyForEntity(adapter, activeMat.ref),
             activeCertificate: chain.join("\n"),
-            externalKeyId: activeMat.ref.externalKeyId,
+            externalKeyId: activeMat.ref.externalKeyId ?? (null as any),
             rotationEnabled: true,
             rotationIntervalDays,
             certValidityDays,
@@ -277,8 +328,8 @@ export class KeyChainImportService {
             }
 
             // Ensure the string was valid base64 before PEM wrapping.
-            const canonical = der.toString("base64").replace(/=+$/, "");
-            if (canonical !== normalized.replace(/=+$/, "")) {
+            const canonical = stripTrailingPadding(der.toString("base64"));
+            if (canonical !== stripTrailingPadding(normalized)) {
                 throw new Error("input is not valid base64 DER");
             }
 
@@ -334,6 +385,35 @@ export class KeyChainImportService {
         ) {
             throw new BadRequestException(
                 "Invalid rotation root certificate: certificate public key does not match the provided private key",
+            );
+        }
+    }
+
+    private validateLeafCertificate(
+        leafCertificatePem: string,
+        expectedPublicJwk: JWK,
+    ): void {
+        let certificate: X509Certificate;
+        try {
+            certificate = new X509Certificate(leafCertificatePem);
+        } catch (error) {
+            throw new BadRequestException(
+                `Invalid leaf certificate: ${String(error)}`,
+            );
+        }
+
+        const certificatePublicJwk = certificate.publicKey.export({
+            format: "jwk",
+        }) as JWK;
+
+        if (
+            !this.arePublicJwksEquivalent(
+                certificatePublicJwk,
+                expectedPublicJwk,
+            )
+        ) {
+            throw new BadRequestException(
+                "Invalid leaf certificate: certificate public key does not match the provided private key",
             );
         }
     }

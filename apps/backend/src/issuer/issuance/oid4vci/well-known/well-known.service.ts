@@ -1,18 +1,19 @@
 import { HttpStatus, Injectable } from "@nestjs/common";
-import { CertService } from "../../../../crypto/key/cert/cert.service";
-import { CryptoImplementationService } from "../../../../crypto/key/crypto-implementation/crypto-implementation.service";
-import { KeyUsageType } from "../../../../crypto/key/types/key-usage-type";
-import { KeyChainService } from "../../../../crypto/key/key-chain.service";
-import { MediaType } from "../../../../shared/utils/media-type/media-type.enum";
-import { IssuanceService } from "../../../configuration/issuance/issuance.service";
-import { AuthorizeService } from "../authorization/authorize/authorize.service";
-import { AuthorizationServersService } from "../authorization/authorization-servers/authorization-servers.service";
-import { ChainedAsService } from "../authorization/chained-as/chained-as.service";
-import { ChainedAsVpService } from "../authorization/chained-as-vp/chained-as-vp.service";
-import { WellKnownException } from "../exceptions";
-import { Oid4vciService } from "../oid4vci.service";
-import { CredentialIssuerMetadataDto } from "./dto/credential-issuer-metadata.dto";
-import { EC_Public, JwksResponseDto } from "./dto/jwks-response.dto";
+import { CertService } from "../../../../crypto/key/cert/cert.service.js";
+import { CryptoImplementationService } from "../../../../crypto/key/crypto-implementation/crypto-implementation.service.js";
+import { KeyChainService } from "../../../../crypto/key/key-chain.service.js";
+import { KeyUsageType } from "../../../../crypto/key/types/key-usage-type.js";
+import { MediaType } from "../../../../shared/utils/media-type/media-type.enum.js";
+import { IssuanceService } from "../../../configuration/issuance/issuance.service.js";
+import { BuildIssuerMetadata } from "../application/build-issuer-metadata.js";
+import { AuthorizationServersService } from "../authorization/authorization-servers/authorization-servers.service.js";
+import { AuthorizeService } from "../authorization/authorize/authorize.service.js";
+import { ChainedAsService } from "../authorization/chained-as/chained-as.service.js";
+import { builtInAccessTokenSettings } from "../authorization/domain/token-grant-rules.js";
+import { WellKnownException } from "../exceptions/index.js";
+import { Oid4vciSdkFactory } from "../oid4vci-sdk.factory.js";
+import { CredentialIssuerMetadataDto } from "./dto/credential-issuer-metadata.dto.js";
+import { EC_Public, JwksResponseDto } from "./dto/jwks-response.dto.js";
 
 /**
  * Service to handle well-known endpoints and metadata retrieval.
@@ -21,19 +22,19 @@ import { EC_Public, JwksResponseDto } from "./dto/jwks-response.dto";
 export class WellKnownService {
     /**
      * Constructor for WellKnownService.
-     * @param oid4vciService
+     * @param buildIssuerMetadata
      * @param certService
      * @param authorizeService
      */
     constructor(
-        private readonly oid4vciService: Oid4vciService,
+        private readonly buildIssuerMetadata: BuildIssuerMetadata,
+        private readonly sdk: Oid4vciSdkFactory,
         private readonly certService: CertService,
         public readonly keyChainService: KeyChainService,
         private readonly authorizeService: AuthorizeService,
         private readonly cryptoImplementationService: CryptoImplementationService,
         private readonly authorizationServersService: AuthorizationServersService,
         private readonly chainedAsService: ChainedAsService,
-        private readonly chainedAsVpService: ChainedAsVpService,
         private readonly issuanceService: IssuanceService,
     ) {}
 
@@ -49,7 +50,10 @@ export class WellKnownService {
     async getIssuerMetadata(tenantId: string, contentType: MediaType) {
         try {
             const metadata = (
-                await this.oid4vciService.issuerMetadata(tenantId)
+                await this.buildIssuerMetadata.execute(
+                    tenantId,
+                    this.sdk.issuer(tenantId),
+                )
             ).credentialIssuer as unknown as CredentialIssuerMetadataDto;
 
             if (contentType === MediaType.APPLICATION_JWT) {
@@ -108,8 +112,9 @@ export class WellKnownService {
 
     /**
      * Returns the JSON Web Key Set (JWKS) for a given tenant.
-     * Resolves the signing key from issuance config (or default) and
-     * includes the `kid` so that JWT verification can match keys.
+     * Resolves the access token signing key of the built-in authorization
+     * server (or the default) and includes the `kid` so that JWT
+     * verification can match keys.
      * @returns
      */
     async getJwks(tenantId: string): Promise<JwksResponseDto> {
@@ -118,7 +123,7 @@ export class WellKnownService {
                 await this.issuanceService.getIssuanceConfiguration(tenantId);
 
             const signingKeyId =
-                issuanceConfig.signingKeyId ||
+                builtInAccessTokenSettings(issuanceConfig).signingKeyId ||
                 (await this.keyChainService.getKid(tenantId));
 
             const publicKey = await this.keyChainService.getPublicKey(
@@ -183,44 +188,6 @@ export class WellKnownService {
             }
             throw new WellKnownException(
                 `Failed to retrieve Chained AS JWKS for tenant ${tenantId}: ${error instanceof Error ? error.message : "Unknown error"}`,
-                HttpStatus.INTERNAL_SERVER_ERROR,
-            );
-        }
-    }
-
-    /**
-     * Returns the OAuth 2.0 Authorization Server metadata for the VP-backed Chained AS.
-     */
-    async getChainedAsVpMetadata(
-        tenantId: string,
-    ): Promise<Record<string, unknown>> {
-        try {
-            return await this.chainedAsVpService.getMetadata(tenantId);
-        } catch (error) {
-            if (error instanceof WellKnownException) {
-                throw error;
-            }
-            throw new WellKnownException(
-                `Failed to retrieve VP Chained AS metadata for tenant ${tenantId}: ${error instanceof Error ? error.message : "Unknown error"}`,
-                HttpStatus.INTERNAL_SERVER_ERROR,
-            );
-        }
-    }
-
-    /**
-     * Returns the JSON Web Key Set (JWKS) for the VP-backed Chained Authorization Server.
-     */
-    async getChainedAsVpJwks(
-        tenantId: string,
-    ): Promise<{ keys: Record<string, unknown>[] }> {
-        try {
-            return await this.chainedAsVpService.getJwks(tenantId);
-        } catch (error) {
-            if (error instanceof WellKnownException) {
-                throw error;
-            }
-            throw new WellKnownException(
-                `Failed to retrieve VP Chained AS JWKS for tenant ${tenantId}: ${error instanceof Error ? error.message : "Unknown error"}`,
                 HttpStatus.INTERNAL_SERVER_ERROR,
             );
         }

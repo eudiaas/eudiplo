@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
     Inject,
     Injectable,
@@ -6,31 +8,37 @@ import {
     OnApplicationBootstrap,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
 import type { UpDownCounter } from "@opentelemetry/api";
-import { Request } from "express";
 import { MetricService } from "nestjs-otel";
-import { Repository } from "typeorm";
-import { AuditLogService } from "../../audit-log/audit-log.service";
-import { EncryptionService } from "../../crypto/encryption/encryption.service";
-import { RegistrarService } from "../../registrar/registrar.service";
+import type { AuditLogRequestMeta } from "../../audit-log/audit-log.service.js";
+import { AuditLogService } from "../../audit-log/audit-log.service.js";
 import {
-    extractRequestMeta,
     getChangedFieldsForKeys,
     resolveAuditActor,
-} from "../../audit-log/audit-log-context.util";
-import { ConfigImportOrchestratorService } from "../../platform/config-import/config-import-orchestrator.service";
-import { FilesService } from "../../storage/files.service";
-import { CLIENTS_PROVIDER, ClientsProvider } from "../client/client.provider";
-import { Role } from "../roles/role.enum";
-import { TokenPayload } from "../token.decorator";
-import { TenantEntity } from "./entities/tenant.entity";
-import { ImportTenantSchema } from "./schemas/create-tenant.schema";
+} from "../../audit-log/audit-log-context.util.js";
+import { EncryptionService } from "../../crypto/encryption/encryption.service.js";
+import { ConfigImportModeService } from "../../platform/config-import/config-import-mode.service.js";
+import { ConfigImportOrchestratorService } from "../../platform/config-import/config-import-orchestrator.service.js";
+import { ConfigMigrationService } from "../../platform/config-portability/config-migration.service.js";
+import { ConfigOwnershipService } from "../../platform/config-portability/config-ownership.service.js";
+import { RegistrarService } from "../../registrar/registrar.service.js";
+import { FilesService } from "../../storage/files.service.js";
+import {
+    CLIENTS_PROVIDER,
+    ClientsProvider,
+} from "../client/client.provider.js";
+import { Role } from "../roles/role.enum.js";
+import { TokenPayload } from "../token.decorator.js";
+import type { TenantData } from "./domain/tenant-data.js";
+import {
+    TENANT_REPOSITORY,
+    type TenantRepository,
+} from "./ports/tenant.repository.js";
 import type {
     CreateTenant,
-    ImportTenant,
     UpdateTenant,
-} from "./schemas/create-tenant.schema";
+} from "./schemas/create-tenant.schema.js";
+import { ImportTenantSchema } from "./schemas/create-tenant.schema.js";
 @Injectable()
 export class TenantService implements OnApplicationBootstrap {
     private readonly logger = new Logger(TenantService.name);
@@ -41,12 +49,15 @@ export class TenantService implements OnApplicationBootstrap {
         private readonly configService: ConfigService,
         private readonly encryptionService: EncryptionService,
         private readonly registrarService: RegistrarService,
-        @InjectRepository(TenantEntity)
-        private readonly tenantRepository: Repository<TenantEntity>,
+        @Inject(TENANT_REPOSITORY)
+        private readonly tenantRepository: TenantRepository,
         metricService: MetricService,
         private readonly filesService: FilesService,
         private readonly configImportOrchestrator: ConfigImportOrchestratorService,
         private readonly tenantActionLogService: AuditLogService,
+        private readonly configOwnershipService: ConfigOwnershipService,
+        private readonly configMigrationService: ConfigMigrationService,
+        private readonly configImportModeService: ConfigImportModeService,
     ) {
         this.tenantTotal = metricService.getUpDownCounter("tenant_total", {
             description: "Total number of tenants",
@@ -74,12 +85,49 @@ export class TenantService implements OnApplicationBootstrap {
         const configPath = this.configService.getOrThrow("CONFIG_FOLDER");
 
         // Check if tenant already exists
-        const existing = await this.tenantRepository.findOneBy({
-            id: tenantId,
-            status: "active",
-        });
+        const existing = await this.tenantRepository.findActive(tenantId);
 
         if (existing) {
+            const file = `${configPath}/${tenantId}/info.json`;
+            if (existsSync(file)) {
+                const configFile = readFileSync(file, "utf-8");
+                const upgraded = this.upgradeTenantConfig(configFile);
+                const validationResult = ImportTenantSchema.safeParse(
+                    upgraded.spec,
+                );
+                if (validationResult.success) {
+                    const mode = this.configImportModeService.resolve();
+                    if (mode !== "create" && mode !== "disabled") {
+                        const stored = await this.configOwnershipService.get(
+                            tenantId,
+                            "Tenant",
+                            "tenant",
+                        );
+                        const generation =
+                            upgraded.document.metadata.generation ?? 1;
+                        if (generation < stored.generation) {
+                            throw new Error(
+                                `Tenant configuration generation ${generation} is older than stored generation ${stored.generation}`,
+                            );
+                        }
+                        await this.tenantRepository.update(
+                            tenantId,
+                            validationResult.data,
+                        );
+                        await this.configOwnershipService.markApplied({
+                            tenantId,
+                            kind: "Tenant",
+                            resourceId: "tenant",
+                            ownership: "file-managed",
+                            generation,
+                            source: `folder:${resolve(configPath, tenantId)}`,
+                            sourceHash: createHash("sha256")
+                                .update(configFile)
+                                .digest("hex"),
+                        });
+                    }
+                }
+            }
             this.logger.debug(
                 `[${tenantId}] Tenant already exists, proceeding with imports`,
             );
@@ -98,9 +146,11 @@ export class TenantService implements OnApplicationBootstrap {
 
         try {
             const configFile = readFileSync(file, "utf-8");
-            const payload = JSON.parse(configFile);
+            const upgraded = this.upgradeTenantConfig(configFile);
 
-            const validationResult = ImportTenantSchema.safeParse(payload);
+            const validationResult = ImportTenantSchema.safeParse(
+                upgraded.spec,
+            );
 
             if (!validationResult.success) {
                 this.logger.error(
@@ -121,6 +171,17 @@ export class TenantService implements OnApplicationBootstrap {
                 ...validationResult.data,
                 id: tenantId,
             } as CreateTenant);
+            await this.configOwnershipService.markApplied({
+                tenantId,
+                kind: "Tenant",
+                resourceId: "tenant",
+                ownership: "file-managed",
+                generation: upgraded.document.metadata.generation ?? 1,
+                source: `folder:${resolve(configPath, tenantId)}`,
+                sourceHash: createHash("sha256")
+                    .update(configFile)
+                    .digest("hex"),
+            });
             return true;
         } catch (error: any) {
             this.logger.error(
@@ -130,12 +191,41 @@ export class TenantService implements OnApplicationBootstrap {
         }
     }
 
+    private upgradeTenantConfig(raw: string): {
+        spec: Record<string, unknown>;
+        document: import("../../platform/config-portability/config-resource.types.js").ConfigDocument;
+    } {
+        const payload = JSON.parse(raw) as Record<string, unknown>;
+        const document = this.configMigrationService.isDocument(payload)
+            ? payload
+            : this.configMigrationService.wrapLegacy(
+                  "Tenant",
+                  payload,
+                  "tenant",
+              );
+        const result = this.configMigrationService.upgrade(document);
+        if (result.document.kind !== "Tenant")
+            throw new Error("Expected Tenant configuration");
+        const blocking = result.issues.filter(
+            (issue) => issue.severity !== "warning",
+        );
+        if (blocking.length) {
+            throw new Error(blocking.map((issue) => issue.message).join("; "));
+        }
+        return {
+            spec: this.configMigrationService.unwrapForLegacyImporter(
+                result.document,
+            ),
+            document: result.document,
+        };
+    }
+
     /**
      * Get all tenants
      * @returns A list of all tenants
      */
     getAll() {
-        return this.tenantRepository.find();
+        return this.tenantRepository.list();
     }
 
     /**
@@ -144,13 +234,14 @@ export class TenantService implements OnApplicationBootstrap {
      * @returns The created tenant with optional client credentials (if roles were specified)
      */
     async createTenant(
-        data: ImportTenant | CreateTenant,
+        data: CreateTenant,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
-        const tenant = (await this.tenantRepository.save(
-            data as any,
-        )) as TenantEntity;
+        const tenant = await this.tenantRepository.save({
+            ...data,
+            id: data.id,
+        });
         await this.setUpTenant(tenant);
 
         let clientCredentials:
@@ -181,7 +272,7 @@ export class TenantService implements OnApplicationBootstrap {
                 actionType: "tenant_created",
                 actor: resolveAuditActor(actorToken),
                 after: this.sanitizeTenantForLog(tenant),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -193,26 +284,18 @@ export class TenantService implements OnApplicationBootstrap {
      * @param id The ID of the tenant to retrieve
      * @returns The tenant entity
      */
-    getTenant(id: string): Promise<TenantEntity> {
-        return this.tenantRepository.findOneOrFail({
-            where: { id },
-            relations: {
-                clients: true,
-            },
-        });
+    getTenant(id: string): Promise<TenantData> {
+        return this.tenantRepository.getWithClients(id);
     }
 
     /**
      * Sends an event to set up a tenant, allowing all other services to listen and react accordingly.
      * @param tenant
      */
-    async setUpTenant(tenant: TenantEntity) {
+    async setUpTenant(tenant: TenantData) {
         await this.encryptionService.onTenantInit(tenant.id);
         await this.registrarService.onTenantInit(tenant);
-        await this.tenantRepository.update(
-            { id: tenant.id },
-            { status: "active" },
-        );
+        await this.tenantRepository.update(tenant.id, { status: "active" });
     }
 
     /**
@@ -225,10 +308,10 @@ export class TenantService implements OnApplicationBootstrap {
         id: string,
         data: UpdateTenant,
         actorToken?: TokenPayload,
-        req?: Request,
-    ): Promise<TenantEntity> {
+        requestMeta?: AuditLogRequestMeta,
+    ): Promise<TenantData> {
         const existing = await this.getTenant(id);
-        await this.tenantRepository.update({ id }, data as any);
+        await this.tenantRepository.update(id, data);
         const updated = await this.getTenant(id);
 
         if (actorToken) {
@@ -239,7 +322,7 @@ export class TenantService implements OnApplicationBootstrap {
                 changedFields: this.getChangedFields(existing, updated),
                 before: this.sanitizeTenantForLog(existing),
                 after: this.sanitizeTenantForLog(updated),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -253,16 +336,14 @@ export class TenantService implements OnApplicationBootstrap {
     async deleteTenant(
         tenantId: string,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
-        const existingTenant = await this.tenantRepository.findOne({
-            where: { id: tenantId },
-        });
+        const existingTenant = await this.tenantRepository.findById(tenantId);
 
         //delete all files associated with the tenant
         await this.filesService.deleteByTenant(tenantId);
         //because of cascading, all related entities will be deleted.
-        await this.tenantRepository.delete({ id: tenantId });
+        await this.tenantRepository.delete(tenantId);
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -272,14 +353,12 @@ export class TenantService implements OnApplicationBootstrap {
                 before: existingTenant
                     ? this.sanitizeTenantForLog(existingTenant)
                     : undefined,
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
     }
 
-    private sanitizeTenantForLog(
-        tenant: TenantEntity,
-    ): Record<string, unknown> {
+    private sanitizeTenantForLog(tenant: TenantData): Record<string, unknown> {
         return {
             id: tenant.id,
             name: tenant.name,
@@ -290,10 +369,7 @@ export class TenantService implements OnApplicationBootstrap {
         };
     }
 
-    private getChangedFields(
-        before: TenantEntity,
-        after: TenantEntity,
-    ): string[] {
+    private getChangedFields(before: TenantData, after: TenantData): string[] {
         return getChangedFieldsForKeys(before, after, [
             "name",
             "description",

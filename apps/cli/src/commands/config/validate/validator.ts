@@ -1,9 +1,20 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import Ajv2020Module from "ajv/dist/2020.js";
+import { basename, join } from "node:path";
 import type { ErrorObject, ValidateFunction } from "ajv";
+import Ajv2020Module from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
+import {
+    CONFIG_FORMATS,
+    CONFIG_RESOURCE_KINDS,
+    CONFIG_SINGLETON_IDS,
+    isConfigDocument,
+    migrateDocument,
+    schemaUrl,
+    serializeDocument,
+} from "@eudiplo/config-format/config-format.js";
+import { validateConfigDocument } from "@eudiplo/config-format/config-validator.js";
+import { resolveConfigVariables } from "@eudiplo/config-format/config-values.js";
 import { CLI_VALIDATED_REGISTRY } from "./registry.js";
 import type {
     DirectoryResourceDefinition,
@@ -11,8 +22,6 @@ import type {
     TenantValidationResult,
     ValidationIssue,
 } from "./types.js";
-
-const ENV_PLACEHOLDER_PATTERN = /\$\{([A-Z0-9_]+)(?::([^}]*))?\}/g;
 
 async function discoverTenantDirectories(rootPath: string): Promise<string[]> {
     const entries = await readdir(rootPath, { withFileTypes: true });
@@ -35,7 +44,12 @@ export async function validateTenantsRoot(
     const results: TenantValidationResult[] = [];
     for (const tenantId of tenantIds) {
         results.push(
-            await validateTenantDirectory(join(rootPath, tenantId), tenantId, schemas, env),
+            await validateTenantDirectory(
+                join(rootPath, tenantId),
+                tenantId,
+                schemas,
+                env,
+            ),
         );
     }
     return results;
@@ -88,7 +102,12 @@ function createValidatorFactory(
     schemas: Map<string, Record<string, unknown>>,
 ): (schemaFile: string) => ValidateFunction {
     const ajv = new Ajv2020Module.default({ allErrors: true, strict: false });
-    addFormatsModule.default(ajv as Parameters<typeof addFormatsModule.default>[0]);
+    addFormatsModule.default(
+        ajv as Parameters<typeof addFormatsModule.default>[0],
+    );
+    for (const [schemaFile, schema] of schemas) {
+        ajv.addSchema(schema, schemaFile);
+    }
     const validators = new Map<string, ValidateFunction>();
     return (schemaFile: string): ValidateFunction => {
         const cached = validators.get(schemaFile);
@@ -99,7 +118,11 @@ function createValidatorFactory(
         if (!schema) {
             throw new Error(`No bundled schema found for "${schemaFile}".`);
         }
-        const validator = ajv.compile(schema);
+        const schemaId =
+            typeof schema.$id === "string" ? schema.$id : undefined;
+        const validator =
+            (schemaId ? ajv.getSchema(schemaId) : undefined) ??
+            ajv.compile(schema);
         validators.set(schemaFile, validator);
         return validator;
     };
@@ -122,7 +145,13 @@ async function validateFixedFileEntry(
     }
 
     state.files += 1;
-    await recordValidationOutcome(filePath, entry.file, entry.resourceType, entry.schemaFile, state);
+    await recordValidationOutcome(
+        filePath,
+        entry.file,
+        entry.resourceType,
+        entry.schemaFile,
+        state,
+    );
 }
 
 async function validateDirectoryEntry(
@@ -136,14 +165,22 @@ async function validateDirectoryEntry(
     }
 
     const dirEntries = (await readdir(directoryPath, { withFileTypes: true }))
-        .filter((dirEntry) => dirEntry.isFile() && dirEntry.name.endsWith(".json"))
+        .filter(
+            (dirEntry) => dirEntry.isFile() && dirEntry.name.endsWith(".json"),
+        )
         .sort((left, right) => left.name.localeCompare(right.name));
 
     for (const dirEntry of dirEntries) {
         const relativeFile = `${entry.subfolder}/${dirEntry.name}`;
         const filePath = join(directoryPath, dirEntry.name);
         state.files += 1;
-        await recordValidationOutcome(filePath, relativeFile, entry.resourceType, entry.schemaFile, state);
+        await recordValidationOutcome(
+            filePath,
+            relativeFile,
+            entry.resourceType,
+            entry.schemaFile,
+            state,
+        );
     }
 }
 
@@ -163,7 +200,8 @@ async function recordValidationOutcome(
         state.errors,
     );
     if (isValid) {
-        state.resourceCounts[resourceType] = (state.resourceCounts[resourceType] ?? 0) + 1;
+        state.resourceCounts[resourceType] =
+            (state.resourceCounts[resourceType] ?? 0) + 1;
     }
 }
 
@@ -190,16 +228,71 @@ async function validateResourceFile(
     try {
         payload = JSON.parse(raw);
     } catch (error) {
-        errors.push({ file: relativeFile, message: `Invalid JSON: ${(error as Error).message}` });
+        errors.push({
+            file: relativeFile,
+            message: `Invalid JSON: ${(error as Error).message}`,
+        });
         return false;
     }
 
     const errorsBefore = errors.length;
-    const resolved = resolvePlaceholders(payload, env, relativeFile, errors);
+    let resolved = resolvePlaceholders(payload, env, relativeFile, errors);
     if (errors.length > errorsBefore) {
         return false;
     }
 
+    if (isConfigDocument(resolved)) {
+        try {
+            const result = migrateDocument(resolved, validateConfigDocument);
+            const blocking = result.issues.filter(
+                (issue) => issue.severity !== "warning",
+            );
+            if (blocking.length) {
+                for (const issue of blocking)
+                    errors.push({
+                        file: relativeFile,
+                        path: issue.path,
+                        message: issue.message,
+                    });
+                return false;
+            }
+            resolved = serializeDocument(result.document);
+        } catch (error) {
+            errors.push({
+                file: relativeFile,
+                message: (error as Error).message,
+            });
+            return false;
+        }
+    } else {
+        const kind = CONFIG_RESOURCE_KINDS.find(
+            (candidate) =>
+                CONFIG_FORMATS[candidate].file ===
+                schemaFile.replace(/\.schema\.json$/, ""),
+        );
+        if (
+            kind &&
+            resolved &&
+            typeof resolved === "object" &&
+            !Array.isArray(resolved)
+        ) {
+            const spec = structuredClone(resolved) as Record<string, unknown>;
+            if (kind === "KeyChain" && spec.key && !spec.keySource) {
+                spec.keySource = { type: "private-jwk", jwk: spec.key };
+                delete spec.key;
+            }
+            if (!CONFIG_SINGLETON_IDS[kind])
+                spec[kind === "Client" ? "clientId" : "id"] ??= basename(
+                    relativeFile,
+                    ".json",
+                );
+            resolved = {
+                $schema: schemaUrl(kind),
+                metadata: { generation: 1 },
+                spec,
+            };
+        }
+    }
     const validate = getValidator(schemaFile);
     if (!validate(resolved)) {
         for (const issue of validate.errors ?? []) {
@@ -220,8 +313,9 @@ function formatErrorPath(issue: ErrorObject): string | undefined {
     if (path) {
         return path;
     }
-    const missingProperty = (issue.params as { missingProperty?: string } | undefined)
-        ?.missingProperty;
+    const missingProperty = (
+        issue.params as { missingProperty?: string } | undefined
+    )?.missingProperty;
     return missingProperty;
 }
 
@@ -236,34 +330,8 @@ function resolvePlaceholders(
     file: string,
     errors: ValidationIssue[],
 ): unknown {
-    if (typeof value === "string") {
-        return value.replace(
-            ENV_PLACEHOLDER_PATTERN,
-            (match, varName: string, defaultValue?: string) => {
-                const envValue = env[varName];
-                if (envValue !== undefined && envValue !== "") {
-                    return envValue;
-                }
-                if (defaultValue !== undefined) {
-                    return defaultValue;
-                }
-                errors.push({
-                    file,
-                    message: `Unresolved placeholder \${${varName}}: no environment value or default is available`,
-                });
-                return match;
-            },
-        );
-    }
-    if (Array.isArray(value)) {
-        return value.map((item) => resolvePlaceholders(item, env, file, errors));
-    }
-    if (value && typeof value === "object") {
-        const result: Record<string, unknown> = {};
-        for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-            result[key] = resolvePlaceholders(val, env, file, errors);
-        }
-        return result;
-    }
-    return value;
+    const result = resolveConfigVariables(value, env);
+    for (const issue of result.issues)
+        errors.push({ file, path: issue.path, message: issue.message });
+    return result.value;
 }

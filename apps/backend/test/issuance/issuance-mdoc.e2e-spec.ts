@@ -5,8 +5,8 @@ import {
     JwtSignerJwk,
 } from "@openid4vc/oauth2";
 import { Openid4vciClient } from "@openid4vc/openid4vci";
-import { exportJWK, generateKeyPair } from "jose";
 import { Issuer } from "@owf/mdoc";
+import { exportJWK, generateKeyPair } from "jose";
 import request from "supertest";
 import { App } from "supertest/types";
 import { Agent, setGlobalDispatcher } from "undici";
@@ -19,14 +19,14 @@ import {
     test,
     vi,
 } from "vitest";
-import { MdocIssuerService } from "../../src/issuer/configuration/credentials/issuer/mdoc-issuer/mdoc-issuer.service";
+import { MdocIssuerService } from "../../src/issuer/configuration/credentials/issuer/mdoc-issuer/mdoc-issuer.service.js";
 import {
     callbacks,
     getSignJwtCallback,
     IssuanceTestContext,
     setupIssuanceTestApp,
-} from "../utils";
-import { mdocContext } from "../utils-mdoc";
+} from "../utils.js";
+import { mdocContext } from "../utils-mdoc.js";
 
 function createMdocIssuerService() {
     return new MdocIssuerService({} as any, {} as any, {} as any);
@@ -54,7 +54,7 @@ describe("Issuance - mDOC Credentials", () => {
     });
 
     afterAll(async () => {
-        await app.close();
+        await app?.close();
     });
 
     afterEach(() => {

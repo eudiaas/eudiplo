@@ -1,16 +1,13 @@
-import { Buffer } from "node:buffer";
-import { Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import type { LoTE } from "@owf/eudi-lote";
-import { loadTrustedList } from "@owf/eudi-tl";
-import { decodeJwt } from "jose";
-import { LoteParserService } from "./lote-parser.service";
-import { TrustListJwtService } from "./trustlist-jwt.service";
-import type { TrustListRef } from "../verifier/presentations/entities/presentation-config.entity";
+import { TrustListService } from "../issuer/trust-list/trustlist.service.js";
+import { CollectTrustedEntities } from "./application/collect-trusted-entities.js";
+import { LoteParserService } from "./lote-parser.service.js";
 import {
-    TrustedEntity,
-    TrustedEntityServiceCert,
-    TrustListSource,
-} from "./types";
+    TRUST_STORE_SETTINGS,
+    type TrustStoreSettings,
+} from "./trust-store-settings.js";
+import { TrustedEntity, TrustListRef, TrustListSource } from "./types.js";
 
 /**
  * Built trust store with TrustedEntities preserving service groupings.
@@ -28,7 +25,10 @@ export class TrustStoreService {
     private readonly cache = new Map<string, BuiltTrustStore>();
 
     constructor(
-        private readonly trustListJwt: TrustListJwtService,
+        private readonly collectTrustedEntities: CollectTrustedEntities,
+        private readonly trustListService: TrustListService,
+        @Inject(TRUST_STORE_SETTINGS)
+        private readonly settings: TrustStoreSettings,
         private readonly loteParser: LoteParserService,
     ) {}
 
@@ -36,6 +36,33 @@ export class TrustStoreService {
         source: TrustListSource,
         cacheTtlMs = 5 * 60 * 1000,
     ): Promise<BuiltTrustStore> {
+        // Resolve managed IDs at request time: configuration import may run before
+        // trust-list import, and the selected signing certificate can rotate.
+        source = {
+            ...source,
+            lotes: await Promise.all(
+                source.lotes.map(async (ref) => {
+                    if (ref.trustListId === undefined) return ref;
+                    const id = ref.trustListId.trim();
+                    if (!source.tenantId || !id) {
+                        throw new Error(
+                            "Managed trust lists require a tenant and a non-empty trustListId",
+                        );
+                    }
+                    const verifierX509Der =
+                        await this.trustListService.getVerifierX509Der(
+                            source.tenantId,
+                            id,
+                        );
+                    const baseUrl =
+                        this.settings.internalUrl || this.settings.publicUrl;
+                    return {
+                        url: `${baseUrl.replace(/\/$/, "")}/issuers/${encodeURIComponent(source.tenantId)}/trust-list/${encodeURIComponent(id)}`,
+                        verifierX509Der,
+                    };
+                }),
+            ),
+        };
         const cacheKey = this.buildCacheKey(source);
         const cached = this.cache.get(cacheKey);
 
@@ -43,143 +70,39 @@ export class TrustStoreService {
             return cached;
         }
 
-        const entities: TrustedEntity[] = [];
-        let nextUpdate: string | undefined;
-
-        for (const ref of source.lotes) {
-            // espuni fork: ETSI TS 119 612 XML lists (the EU Age Verification
-            // Trusted List) take a different parse path. The wire format is
-            // declared on the ref itself; everything else — fetch, cache,
-            // service-type filtering — is shared with LoTE.
-            if (ref.format === "etsi-xml") {
-                const xmlResult = await this.loadEtsiXmlRef(
-                    ref,
-                    source.acceptedServiceTypes,
-                );
-                nextUpdate = nextUpdate ?? xmlResult.nextUpdate;
-                for (const entity of xmlResult.entities) {
-                    entities.push(entity);
-                }
-                continue;
-            }
-
-            this.logger.debug(`Fetching trust list from: ${ref.url}`);
-            const jwt = await this.trustListJwt.fetchJwt(ref.url);
-            await this.trustListJwt.verifyTrustListJwt(ref, jwt); // hook
-            const decoded = decodeJwt<{ LoTE: LoTE }>(jwt);
-
-            this.logger.debug(
-                `Decoded LoTE from ${ref.url}: TrustedEntitiesList has ${decoded.LoTE.TrustedEntitiesList?.length ?? 0} raw entries`,
-            );
-
-            let parsed = this.loteParser.parse(decoded.LoTE);
-            this.logger.debug(
-                `Parsed ${parsed.entities.length} entities from ${ref.url}`,
-            );
-
-            if (source.acceptedServiceTypes) {
-                this.logger.debug(
-                    `Filtering by accepted service types: ${source.acceptedServiceTypes.join(", ")}`,
-                );
-                const beforeFilter = parsed.entities.length;
-                parsed = this.loteParser.filterByServiceTypes(
-                    parsed,
-                    source.acceptedServiceTypes,
-                );
-                this.logger.debug(
-                    `After filtering: ${parsed.entities.length} entities (was ${beforeFilter})`,
-                );
-            }
-
-            nextUpdate = nextUpdate ?? parsed.info.nextUpdate;
-
-            // Add entities preserving grouping
-            for (const entity of parsed.entities) {
-                entities.push(entity);
-            }
-        }
-
-        const store: BuiltTrustStore = {
-            fetchedAt: Date.now(),
-            nextUpdate,
-            entities,
-        };
+        const result = await this.collectTrustedEntities.execute(source);
+        const store: BuiltTrustStore = { fetchedAt: Date.now(), ...result };
         this.cache.set(cacheKey, store);
 
         this.logger.debug(
-            `Built trust store with ${entities.length} trusted entit${entities.length === 1 ? "y" : "ies"}`,
+            `Built trust store with ${store.entities.length} trusted entit${store.entities.length === 1 ? "y" : "ies"}`,
         );
         return store;
     }
 
     /**
-     * Load an ETSI TS 119 612 XML trusted list and map it onto the internal
-     * TrustedEntity model. The list's XAdES signature is verified **fail
-     * closed** against the pinned signer certificate before use.
-     *
-     * espuni fork — not upstream. Upstream v7 speaks LoTE (TS 119 602 JSON)
-     * and managed trust lists only; the EU AV Trusted List is TS 119 612 XML.
-     * Parsing lives in `@owf/eudi-tl`, the OWF Labs package this fork used to
-     * vendor as `@eudiplo/etsi-trusted-list` (identity-common-ts#170, merged
-     * and published) — so this bridge is now the whole delta, not a library.
-     *
-     * The pinned signer comes from `verifierX509Der`, v7's own field for
-     * verifier material, rather than the separate `signerCertificates` array
-     * the pre-v7 fork carried in a top-level `trustListConfig`.
+     * Trusted entities of a single trust list, for hints that do not decide
+     * trust (DCQL `trusted_authorities` sent to the wallet). Managed lists are
+     * read from their stored content; external lists are fetched and their
+     * signature verified like in {@link getTrustStore}, sharing its cache.
+     * Staleness is not checked here; verification still fails closed on it.
      */
-    private async loadEtsiXmlRef(
+    async getListedEntities(
         ref: TrustListRef,
-        acceptedServiceTypes?: string[],
-    ): Promise<{ nextUpdate?: string; entities: TrustedEntity[] }> {
-        this.logger.debug(`Fetching ETSI TS 119 612 trust list: ${ref.url}`);
-        const xml = await this.trustListJwt.fetchText(ref.url);
-
-        const trustAnchors = ref.verifierX509Der
-            ? [pemOrBase64ToDer(ref.verifierX509Der)]
-            : [];
-        const trustedList = await loadTrustedList(
-            xml,
-            trustAnchors.length > 0 ? { trustAnchors } : {},
-        );
-
-        const entities: TrustedEntity[] = [];
-        for (const provider of trustedList.providers) {
-            const services: TrustedEntityServiceCert[] = [];
-            for (const service of provider.services) {
-                if (
-                    ref.acceptedServiceStatus &&
-                    !ref.acceptedServiceStatus.includes(service.serviceStatus)
-                ) {
-                    continue;
-                }
-                const serviceTypeIdentifier =
-                    ref.serviceTypeMap?.[service.serviceTypeIdentifier] ??
-                    service.serviceTypeIdentifier;
-                if (
-                    acceptedServiceTypes &&
-                    !acceptedServiceTypes.includes(serviceTypeIdentifier)
-                ) {
-                    continue;
-                }
-                for (const identity of service.digitalIdentities) {
-                    // Chain validation needs an embedded certificate; identities
-                    // given only by subject name / key identifier are skipped here.
-                    if (!identity.certificate) continue;
-                    services.push({
-                        serviceTypeIdentifier,
-                        certValue: identity.certificate,
-                    });
-                }
-            }
-            if (services.length > 0) {
-                entities.push({ entityId: provider.name, services });
-            }
+        tenantId: string,
+    ): Promise<TrustedEntity[]> {
+        if (ref.trustListId === undefined) {
+            return (await this.getTrustStore({ tenantId, lotes: [ref] }))
+                .entities;
         }
-
-        this.logger.debug(
-            `ETSI TS 119 612 trust list ${ref.url}: ${entities.length} trusted entit${entities.length === 1 ? "y" : "ies"}`,
+        const { data } = await this.trustListService.findOne(
+            tenantId,
+            ref.trustListId.trim(),
         );
-        return { nextUpdate: trustedList.nextUpdate, entities };
+        if (!data) return [];
+        // Stored as `{ LoTE: ... }`; lists created by older releases lack the wrapper.
+        const lote = ((data as { LoTE?: LoTE }).LoTE ?? data) as LoTE;
+        return this.loteParser.parse(lote).entities;
     }
 
     /**
@@ -192,22 +115,19 @@ export class TrustStoreService {
 
     private buildCacheKey(source: TrustListSource): string {
         return JSON.stringify({
+            tenantId: source.tenantId,
             lotes: source.lotes.map((ref) => ({
                 url: ref.url,
                 verifierKey: ref.verifierKey ?? null,
+                verifierKeyPem: ref.verifierKeyPem ?? null,
+                verifierX509Der: ref.verifierX509Der ?? null,
+                // espuni fork (PATCHES.md §1.2): the XML settings change what
+                // the same URL yields, so they are part of the key.
+                format: ref.format ?? null,
+                serviceTypeMap: ref.serviceTypeMap ?? null,
+                acceptedServiceStatus: ref.acceptedServiceStatus ?? null,
             })),
             acceptedServiceTypes: source.acceptedServiceTypes ?? [],
         });
     }
-}
-
-/** Convert a PEM or base64-DER certificate string to raw DER bytes. */
-function pemOrBase64ToDer(cert: string): Uint8Array {
-    const base64 = cert.includes("-----BEGIN")
-        ? cert
-              .replace(/-----BEGIN [^-]+-----/g, "")
-              .replace(/-----END [^-]+-----/g, "")
-              .replace(/\s/g, "")
-        : cert.replace(/\s/g, "");
-    return new Uint8Array(Buffer.from(base64, "base64"));
 }

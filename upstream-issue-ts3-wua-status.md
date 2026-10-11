@@ -14,12 +14,14 @@ The KA status is not checked at all, although TS3 v1.5.2 §2.4.3 says: *"Before 
 ### How to reproduce
 
 1. Run `eu-digital-identity-wallet/eudi-srv-wallet-provider` with a Token Status List service, and request a WIA via `POST /wallet-instance-attestation/jwk`. Its payload contains:
+
    ```json
    "client_status": {
      "status": { "status_list": { "idx": 1522, "uri": "https://…/status/wia" } },
      "exp": 1797605547
    }
    ```
+
 2. Revoke index 1522 in that status list.
 3. Use the WIA in an issuance flow with `walletProviderTrustLists` configured. The attestation is accepted. The debug log shows the status check was skipped.
 

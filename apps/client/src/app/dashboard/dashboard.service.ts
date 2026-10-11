@@ -27,6 +27,7 @@ export class DashboardService {
   sessionFetched = 0;
   sessionFailed = 0;
   sessionExpired = 0;
+  sessionCancelled = 0;
   totalKeyChains = 0;
   accessKeyChains = 0;
   hasActiveAccessCertificate = false;
@@ -40,6 +41,7 @@ export class DashboardService {
   lastSuccessfulIssuanceAt: string | null = null;
   lastSuccessfulPresentationAt: string | null = null;
   hasIssuanceConfig = false;
+  recentSessions: Session[] = [];
   isLoading = true;
 
   constructor(private readonly jwtService: JwtService) {}
@@ -52,6 +54,7 @@ export class DashboardService {
     this.sessionFetched = 0;
     this.sessionFailed = 0;
     this.sessionExpired = 0;
+    this.sessionCancelled = 0;
     this.totalKeyChains = 0;
     this.accessKeyChains = 0;
     this.hasActiveAccessCertificate = false;
@@ -67,6 +70,7 @@ export class DashboardService {
     this.credentialConfigs = 0;
     this.presentationConfigs = 0;
     this.hasIssuanceConfig = false;
+    this.recentSessions = [];
 
     try {
       // Build list of promises based on user roles
@@ -128,6 +132,12 @@ export class DashboardService {
               this.presentationConfigs = result.value.data.length;
               break;
             case 'sessions':
+              this.recentSessions = [...result.value.data.items]
+                .sort(
+                  (left: Session, right: Session) =>
+                    new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+                )
+                .slice(0, 5);
               result.value.data.items.forEach((session: Session) => {
                 switch (session.status) {
                   case 'active':
@@ -144,6 +154,9 @@ export class DashboardService {
                     break;
                   case 'expired':
                     this.sessionExpired++;
+                    break;
+                  case 'cancelled':
+                    this.sessionCancelled++;
                     break;
                 }
 
@@ -211,6 +224,16 @@ export class DashboardService {
   get canViewSessions(): boolean {
     return (
       this.jwtService.hasRole('issuance:offer') || this.jwtService.hasRole('presentation:request')
+    );
+  }
+
+  get totalSessions(): number {
+    return (
+      this.sessionActive +
+      this.sessionCompleted +
+      this.sessionFetched +
+      this.sessionFailed +
+      this.sessionExpired
     );
   }
 

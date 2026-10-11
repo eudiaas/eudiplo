@@ -1,8 +1,17 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import {
+    architectureDebt,
+    boundaryViolations,
+    controllerPersistenceViolations,
+    ratchetViolations,
+    readGraph,
+} from "../../test/architecture/dependency-rules.js";
 
-const sourceRoot = resolve(process.cwd(), "src");
+const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const typescriptFiles = (directory: string): string[] =>
     readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -46,5 +55,44 @@ describe("backend module boundaries", () => {
                 existsSync(resolve(sourceRoot, directory)),
             ),
         ).toEqual([]);
+    });
+});
+
+describe("layer boundaries", () => {
+    const configFile = resolve(sourceRoot, "../tsconfig.json");
+    const config = ts.readConfigFile(configFile, ts.sys.readFile);
+    const { options } = ts.parseJsonConfigFileContent(
+        config.config,
+        ts.sys,
+        dirname(configFile),
+    );
+    const files = typescriptFiles(sourceRoot).filter(
+        (file) => !file.endsWith(".spec.ts"),
+    );
+    const graph = readGraph(files, options);
+
+    it("keeps application, domain, and ports independent of infrastructure, including through barrels", () => {
+        expect(boundaryViolations(graph, sourceRoot)).toEqual([]);
+    });
+
+    it("does not add controller persistence dependencies", () => {
+        expect(controllerPersistenceViolations(graph, sourceRoot)).toEqual([]);
+    });
+
+    // Regenerate with UPDATE_ARCHITECTURE_BASELINE=1 pnpm --filter @eudiplo/backend test
+    it("does not add architecture debt beyond the ratchet baseline", () => {
+        const baselineFile = resolve(
+            sourceRoot,
+            "../test/architecture/architecture-baseline.json",
+        );
+        const current = architectureDebt(graph, sourceRoot);
+        if (process.env.UPDATE_ARCHITECTURE_BASELINE) {
+            writeFileSync(
+                baselineFile,
+                `${JSON.stringify(current, null, 4)}\n`,
+            );
+        }
+        const baseline = JSON.parse(readFileSync(baselineFile, "utf8"));
+        expect(ratchetViolations(current, baseline)).toEqual([]);
     });
 });

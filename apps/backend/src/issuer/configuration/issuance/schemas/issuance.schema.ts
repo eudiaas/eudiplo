@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { REMOVED_CHAINED_VP_MESSAGE } from "../domain/removed-authorization-servers.js";
 
 const ChainedAsTokenConfigSchema = z
     .object({
@@ -46,6 +47,63 @@ const UpstreamOidcConfigSchema = z
     })
     .describe("OIDC upstream settings for chained authorization server mode.")
     .strict();
+
+const SpkiPemSchema = z
+    .string()
+    .trim()
+    .regex(
+        /^\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\s]+-----END PUBLIC KEY-----\s*$/,
+        "Expected a PEM public key (-----BEGIN PUBLIC KEY-----)",
+    );
+
+const WalletProviderTrustListRefSchema = z
+    .object({
+        trustListId: z.string().trim().min(1).optional(),
+        url: z
+            .url()
+            .optional()
+            .describe("URL of the wallet provider trust list."),
+        verifierKey: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+                "Optional verifier key material used for trust list verification.",
+            ),
+        verifierKeyPem: SpkiPemSchema.optional().describe(
+            "Optional verifier public key in SPKI PEM form (-----BEGIN PUBLIC KEY-----).",
+        ),
+        verifierX509Der: z
+            .string()
+            .optional()
+            .describe("Optional verifier certificate in DER/base64 form."),
+    })
+    .describe("Wallet provider trust list reference.")
+    .strict()
+    .refine(
+        (ref) =>
+            !!ref.trustListId ||
+            (!!ref.url &&
+                (!!ref.verifierKey ||
+                    !!ref.verifierKeyPem ||
+                    !!ref.verifierX509Der)),
+        {
+            message:
+                "Provide a managed trustListId or a URL with verifier material",
+        },
+    );
+
+const WalletAttestationAuthorizationServerSchema = {
+    walletAttestationRequired: z
+        .boolean()
+        .optional()
+        .describe("Require wallet attestation for this authorization server."),
+    walletProviderTrustLists: z
+        .array(WalletProviderTrustListRefSchema)
+        .optional()
+        .describe(
+            "Optional wallet provider trust list references for this authorization server.",
+        ),
+};
 
 const ExternalAuthorizationServerConfigSchema = z
     .object({
@@ -111,6 +169,7 @@ const Oid4VpAuthorizationServerConfigSchema = z
             .boolean()
             .optional()
             .describe("Require DPoP proofs for token/credential requests."),
+        ...WalletAttestationAuthorizationServerSchema,
         label: z
             .string()
             .optional()
@@ -124,30 +183,42 @@ const Oid4VpAuthorizationServerConfigSchema = z
     .strict();
 
 const ChainedAuthorizationServerConfigSchema = z
-    .object({
-        type: z
-            .literal("chained")
-            .describe("Use upstream OIDC as authorization source."),
-        id: z.string().min(1).describe("Authorization server identifier."),
-        upstream: UpstreamOidcConfigSchema.describe(
-            "Upstream OIDC connection settings.",
-        ),
-        token: ChainedAsTokenConfigSchema.optional().describe(
-            "Optional token issuance settings.",
-        ),
-        requireDPoP: z
-            .boolean()
-            .optional()
-            .describe("Require DPoP proofs for token/credential requests."),
-        label: z
-            .string()
-            .optional()
-            .describe("Optional display label for UI selection."),
-        enabled: z
-            .boolean()
-            .optional()
-            .describe("Whether this authorization server entry is enabled."),
-    })
+    .object(
+        {
+            type: z
+                .literal("chained")
+                .describe("Use upstream OIDC as authorization source."),
+            id: z.string().min(1).describe("Authorization server identifier."),
+            upstream: UpstreamOidcConfigSchema.describe(
+                "Upstream OIDC connection settings.",
+            ),
+            token: ChainedAsTokenConfigSchema.optional().describe(
+                "Optional token issuance settings.",
+            ),
+            requireDPoP: z
+                .boolean()
+                .optional()
+                .describe("Require DPoP proofs for token/credential requests."),
+            ...WalletAttestationAuthorizationServerSchema,
+            label: z
+                .string()
+                .optional()
+                .describe("Optional display label for UI selection."),
+            enabled: z
+                .boolean()
+                .optional()
+                .describe(
+                    "Whether this authorization server entry is enabled.",
+                ),
+        },
+        {
+            // Point configurations of the removed `vp` option to `oid4vp`.
+            error: (issue) =>
+                issue.code === "unrecognized_keys" && issue.keys.includes("vp")
+                    ? REMOVED_CHAINED_VP_MESSAGE
+                    : undefined,
+        },
+    )
     .describe("Chained authorization server configuration.")
     .strict();
 
@@ -164,6 +235,7 @@ const BuiltInAuthorizationServerConfigSchema = z
             .boolean()
             .optional()
             .describe("Require DPoP proofs for token/credential requests."),
+        ...WalletAttestationAuthorizationServerSchema,
         label: z
             .string()
             .optional()
@@ -184,23 +256,6 @@ const ManagedAuthorizationServerSchema = z
         BuiltInAuthorizationServerConfigSchema,
     ])
     .describe("Supported authorization server configurations.");
-
-const WalletProviderTrustListRefSchema = z
-    .object({
-        url: z.url().describe("URL of the wallet provider trust list."),
-        verifierKey: z
-            .record(z.string(), z.unknown())
-            .optional()
-            .describe(
-                "Optional verifier key material used for trust list verification.",
-            ),
-        verifierX509Der: z
-            .string()
-            .optional()
-            .describe("Optional verifier certificate in DER/base64 form."),
-    })
-    .describe("Wallet provider trust list reference.")
-    .strict();
 
 const DisplayLogoSchema = z
     .object({
@@ -240,11 +295,41 @@ const FederationTrustAnchorConfigSchema = z
     .describe("Trust anchor reference for OpenID Federation.")
     .strict();
 
+const UNSUPPORTED_FEDERATION_ROLE =
+    "Only the federation role 'leaf' is supported: EUDIPLO does not act as a trust anchor or intermediate";
+const UNSUPPORTED_FEDERATION_SIGNING_POLICY =
+    "enforceSigningPolicy cannot be disabled: federation trust checks are always enforced";
+
+/**
+ * Federation options the schema accepts but EUDIPLO cannot honor: a role
+ * other than `leaf` (no entity configuration is published) and a disabled
+ * signing policy (federation checks are always enforced).
+ *
+ * @returns the reason, or `undefined` when the options are supported.
+ */
+export function unsupportedFederationOption(
+    federation:
+        | { role?: string | null; enforceSigningPolicy?: boolean | null }
+        | null
+        | undefined,
+): string | undefined {
+    if (federation?.role != null && federation.role !== "leaf") {
+        return UNSUPPORTED_FEDERATION_ROLE;
+    }
+    if (federation?.enforceSigningPolicy === false) {
+        return UNSUPPORTED_FEDERATION_SIGNING_POLICY;
+    }
+    return undefined;
+}
+
 const FederationConfigSchema = z
     .object({
         role: z
             .enum(["trust_anchor", "intermediate", "leaf"])
             .optional()
+            .refine((role) => !unsupportedFederationOption({ role }), {
+                message: UNSUPPORTED_FEDERATION_ROLE,
+            })
             .describe("Federation role for this issuer."),
         mode: z
             .enum(["federation-only", "hybrid"])
@@ -257,6 +342,11 @@ const FederationConfigSchema = z
         enforceSigningPolicy: z
             .boolean()
             .optional()
+            .refine(
+                (enforceSigningPolicy) =>
+                    !unsupportedFederationOption({ enforceSigningPolicy }),
+                { message: UNSUPPORTED_FEDERATION_SIGNING_POLICY },
+            )
             .describe("Enforce strict signing policy checks."),
         cacheTtlSeconds: z.coerce
             .number()
@@ -311,11 +401,15 @@ export const IssuanceConfigSchema = z
         walletAttestationRequired: z
             .boolean()
             .optional()
-            .describe("Require wallet attestation in issuance flows."),
+            .describe(
+                "Default wallet attestation requirement for managed authorization servers.",
+            ),
         walletProviderTrustLists: z
             .array(WalletProviderTrustListRefSchema)
             .optional()
-            .describe("Optional wallet provider trust list references."),
+            .describe(
+                "Shared wallet provider trust lists for key attestations and default authorization server wallet authentication.",
+            ),
         signingKeyId: z
             .string()
             .min(1)
@@ -358,6 +452,15 @@ export const IssuanceConfigSchema = z
             .optional()
             .describe(
                 "Maximum verification attempts for transaction codes. Null resets to defaults.",
+            ),
+        offerLifetimeSeconds: z.coerce
+            .number()
+            .int()
+            .min(1)
+            .nullable()
+            .optional()
+            .describe(
+                "Default lifetime of credential offers in seconds. Can be overridden per offer request. Null or unset: offers do not expire.",
             ),
     })
     .describe("Issuer issuance configuration.")

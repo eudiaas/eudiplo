@@ -1,4 +1,8 @@
 import { HttpException, HttpStatus } from "@nestjs/common";
+import type {
+    OAuthError,
+    OAuthErrorCode,
+} from "../authorization/domain/oauth-error.js";
 
 /**
  * OAuth 2.0 Token Error Codes as defined in:
@@ -16,16 +20,7 @@ import { HttpException, HttpStatus } from "@nestjs/common";
  * - `invalid_client`:
  *   - The Client tried to send a Token Request with a Pre-Authorized Code without a Client ID but the Authorization Server does not support anonymous access.
  */
-export type TokenErrorCode =
-    | "invalid_request"
-    | "invalid_client"
-    | "invalid_grant"
-    | "unauthorized_client"
-    | "unsupported_grant_type"
-    | "invalid_scope"
-    // OID4VCI Section 6.3: returned when the Client provides the wrong
-    // Transaction Code in the Pre-Authorized Code Flow.
-    | "invalid_tx_code";
+export type TokenErrorCode = OAuthErrorCode;
 
 /**
  * Exception for OAuth 2.0 Token Error responses.
@@ -52,16 +47,47 @@ export type TokenErrorCode =
  *   exceeds the scope granted by the resource owner.
  */
 export class TokenErrorException extends HttpException {
-    constructor(error: TokenErrorCode, errorDescription?: string) {
+    constructor(
+        error: TokenErrorCode,
+        errorDescription?: string,
+        status: HttpStatus = HttpStatus.BAD_REQUEST,
+    ) {
         const response: {
             error: TokenErrorCode;
             error_description?: string;
         } = {
             error,
         };
-        if (errorDescription) {
-            response.error_description = errorDescription;
+        const sanitized = errorDescription
+            ? sanitizeErrorDescription(errorDescription)
+            : undefined;
+        if (sanitized) {
+            response.error_description = sanitized;
         }
-        super(response, HttpStatus.BAD_REQUEST);
+        super(response, status);
     }
+}
+
+/**
+ * HTTP response for an application {@link OAuthError}: 401 when client
+ * authentication failed at the token endpoint, 400 otherwise.
+ */
+export function tokenErrorResponse(error: OAuthError): TokenErrorException {
+    return new TokenErrorException(
+        error.code,
+        error.description,
+        error.clientAuthenticationFailed
+            ? HttpStatus.UNAUTHORIZED
+            : HttpStatus.BAD_REQUEST,
+    );
+}
+
+/**
+ * RFC 6749 Section 5.2: `error_description` MUST only contain %x20-21 / %x23-5B / %x5D-7E.
+ */
+function sanitizeErrorDescription(description: string): string {
+    return description
+        .replaceAll(/[^\x20-\x21\x23-\x5B\x5D-\x7E]+/g, " ")
+        .replaceAll(/\s+/g, " ")
+        .trim();
 }

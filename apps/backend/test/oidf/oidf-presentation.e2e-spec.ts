@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import https from "node:https";
 import { join, resolve } from "node:path";
 import { INestApplication, ValidationPipe } from "@nestjs/common";
@@ -9,16 +9,16 @@ import { Test, TestingModule } from "@nestjs/testing";
 import * as axios from "axios";
 import { Logger } from "nestjs-pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { AppModule } from "../../src/app.module";
-import { KeyChainService } from "../../src/crypto/key/key-chain.service";
-import { getDefaultSecret } from "../utils";
+import { AppModule } from "../../src/app.module.js";
+import { KeyChainService } from "../../src/crypto/key/key-chain.service.js";
+import { getDefaultSecret, readConfig } from "../utils.js";
 import {
     BACKEND_TEST_CA_PATH,
     OIDF_HTTPD_CA_PATH,
     shouldExportOidfLogs,
     useOidfContainers,
-} from "./oidf-setup";
-import { OIDFSuite, TestInstance } from "./oidf-suite";
+} from "./oidf-setup.js";
+import { OIDFSuite, TestInstance } from "./oidf-suite.js";
 
 function getAllowedResults(moduleName: string): string[] {
     const signal = moduleName.toLowerCase();
@@ -84,8 +84,6 @@ describe("OIDF", () => {
         response_mode?: string;
     };
 
-    const PUBLIC_DOMAIN =
-        import.meta.env.VITE_DOMAIN ?? "host.testcontainers.internal:3000";
     const OIDF_URL = import.meta.env.VITE_OIDF_URL ?? "https://localhost:8443";
     const OIDF_DEMO_TOKEN = import.meta.env.VITE_OIDF_DEMO_TOKEN;
     const ENFORCE_MODULE_COVERAGE_GUARD =
@@ -401,7 +399,7 @@ describe("OIDF", () => {
     }
 
     beforeAll(async () => {
-        // Start the app first so CONFIG_IMPORT runs and key chains are generated
+        // Start the app first so startup config reconciliation runs and key chains are generated
         const moduleFixture: TestingModule = await Test.createTestingModule({
             imports: [AppModule],
         }).compile();
@@ -425,16 +423,17 @@ describe("OIDF", () => {
         const tmpFolder = resolve(__dirname, "../../../../tmp");
         configService.set("FOLDER", tmpFolder);
         configService.set("CONFIG_FOLDER", configFolder);
-        configService.set("PUBLIC_URL", `https://${PUBLIC_DOMAIN}`);
-        configService.set("CONFIG_IMPORT", true);
+        // PUBLIC_URL and INTERNAL_URL are provided via vitest.oidf.config.ts:
+        // typed settings read them at compile time, before this point.
+        configService.set("CONFIG_IMPORT_MODE", "create");
         configService.set("LOG_LEVEL", "debug");
 
         await app.init();
         await app.listen(3000, "0.0.0.0");
 
         // Get client credentials
-        const client = JSON.parse(
-            readFileSync(join(configFolder, "haip/clients/test.json"), "utf-8"),
+        const client = readConfig<{ clientId: string; secret: string }>(
+            join(configFolder, "haip/clients/test.json"),
         );
         const clientId = client.clientId;
         const clientSecret = getDefaultSecret(client.secret);

@@ -4,19 +4,106 @@ export type ClientOptions = {
     baseUrl: "http://localhost:3001" | (string & {});
 };
 
+export type PreviewSchemaDto = {
+    document: {
+        [key: string]: unknown;
+    };
+    format: "dc+sd-jwt" | "mso_mdoc";
+};
+
+export type OrganisationSettingsDto = {
+    privacyPolicyUrl: string;
+    supportUrl: string;
+    intermediary: string;
+};
+
+export type OrganisationSettings = {
+    rpId: string;
+    data: OrganisationSettingsDto;
+    updatedAt: string;
+};
+
+export type ServiceDescriptionTranslationDto = {
+    lang: "en" | "de";
+    content: string;
+};
+
+export type PurposeTranslationDto = {
+    lang: "en" | "de";
+    content: string;
+};
+
+export type SelectedClaimDto = {
+    path: Array<string>;
+    label: string;
+};
+
+export type AttestationSelectionDto = {
+    schemaId: string;
+    version: string;
+    label: string;
+    format: "dc+sd-jwt" | "mso_mdoc";
+    typeIdentifier: string;
+    claims: Array<SelectedClaimDto>;
+};
+
+export type JourneyDto = {
+    role: "issuer" | "verifier";
+    name: string;
+    serviceDescriptions: Array<ServiceDescriptionTranslationDto>;
+    step: number;
+    manual: boolean;
+    purposes: Array<PurposeTranslationDto>;
+    accessCertificateId: string;
+    attestations: Array<AttestationSelectionDto>;
+};
+
+export type RegistrationJourney = {
+    id: string;
+    rpId: string;
+    data: JourneyDto;
+    revision: number;
+    certificateId: string | null;
+    updatedAt: string;
+};
+
+export type SaveJourneyDto = {
+    id: string;
+    revision: number;
+    data: JourneyDto;
+};
+
+export type CompleteJourneyDto = {
+    revision: number;
+};
+
 export type RelyingParty = {
     name: string;
+    /**
+     * ETSI EN 319 412-1 semantic identifier derived from the organisation
+     * identifier asserted by the login. Set once at creation and used verbatim
+     * in certificates and the certificate event log. Nullable only for legacy
+     * relying parties whose former identifiers could not be migrated.
+     */
+    identifier?: string;
+    /**
+     * Annex I point 11: whether the WRP is a public sector body.
+     */
+    publicBody: boolean;
+    /**
+     * Annex I point 5: a URL belonging to the WRP.
+     */
+    infoUri?: string;
+    /**
+     * Annex I points 1 and 3: the official record of name and identifier.
+     */
+    officialRecord?: {
+        [key: string]: unknown;
+    } | null;
     id: string;
     legalName?: string;
     tradeName?: string;
     country?: string;
-    EORI?: string;
-    NTR?: string;
-    LEI?: string;
-    VAT?: string;
-    EX?: string;
-    TAX?: string;
-    EUID?: string;
     supportUri?: string;
     email?: string;
     phone?: string;
@@ -24,50 +111,54 @@ export type RelyingParty = {
     createdAt: string;
 };
 
+export type OfficialRecordDto = {
+    register: string;
+    authority?: string;
+    country?: string;
+    reference?: string;
+};
+
 export type RelyingPartyRegistration = {
     legalName?: string;
     tradeName?: string;
     country?: string;
-    LEI?: string;
-    EORI?: string;
-    EUID?: string;
-    NTR?: string;
-    VAT?: string;
-    EX?: string;
-    TAX?: string;
     supportUri?: string;
     email?: string;
     phone?: string;
-    registrationStatus?: "active" | "suspended" | "cancelled";
+    /**
+     * Whether the WRP is a public sector body (Annex I point 11). Defaults to false.
+     */
+    publicBody?: boolean;
+    /**
+     * A URL belonging to the WRP (Annex I point 5).
+     */
+    infoUri?: string;
+    /**
+     * The official record that states the name and identifier (Annex I points 1 and 3).
+     */
+    officialRecord?: OfficialRecordDto;
 };
 
 export type AccessCertificate = {
     id: string;
     relyingPartyId: string;
+    displayName?: string;
     certificate: string;
-    issuanceMethod: "csr" | "legacy-public-key";
+    issuanceMethod: "csr" | "legacy-public-key" | "renewal";
     profile: "generic-wrpac" | "mdoc-reader-auth";
-    revoked: string;
+    revoked: string | null;
     createdAt: string;
 };
 
 export type AccessCertificateRegistration = {
     /**
-     * Legacy issuance method using raw public key. Kept for backward compatibility.
+     * Human-readable certificate label. Stored as registrar metadata and not included in the X.509 certificate.
      */
-    publicKey?: string;
+    displayName: string;
     /**
      * Preferred issuance method: PKCS#10 CSR signed with the RP private key to prove key possession.
      */
-    csr?: string;
-    /**
-     * The Subject Alternative Name (SAN) of the certificate
-     */
-    dns?: Array<string>;
-    /**
-     * Certificate profile. Defaults to mdoc-reader-auth to preserve existing behavior.
-     */
-    profile?: "generic-wrpac" | "mdoc-reader-auth";
+    csr: string;
     /**
      * The relying party id
      */
@@ -77,6 +168,7 @@ export type AccessCertificateRegistration = {
 export type AccessCertificateRegistrationResponse = {
     id: string;
     crt: string;
+    displayName?: string;
     revoked?: string;
 };
 
@@ -102,7 +194,7 @@ export type RegistrationCertificate = {
     intendedUse?: IntendedUse;
     providesAttestations?: Array<string>;
     relyingPartyId: string;
-    revoked: string;
+    revoked: string | null;
     credentialToRegistrationCertificates: Array<CredentialToRegistrationCertificate>;
     createdAt: string;
 };
@@ -141,14 +233,25 @@ export type RegistrationCertificateCreation = {
      */
     credentials?: Array<CredentialDef>;
     /**
-     * The relying party id of the intermediary
+     * The intermediary: its organisation identifier, or its relying party id
      */
     intermediary?: string;
+    /**
+     * Credential type identifiers provided by an issuer, such as an SD-JWT VC vct or mdoc doctype. They are not schema URLs.
+     */
     provides_attestations?: Array<string>;
     /**
      * The relying party id
      */
     rpId: string;
+    /**
+     * Id of an access certificate of the relying party. When given, it must be
+     * valid: not revoked, inside its validity period and, when mdoc credentials
+     * are requested, a reader-authentication certificate. It is linked to the
+     * registration certificate. Without it, no access certificate is checked or
+     * linked.
+     */
+    accessCertificateId?: string;
     /**
      * Either email, phone number or URL where the relying party can be contacted
      */
@@ -159,7 +262,7 @@ export type RegistrationCertificateCreation = {
     purpose?: Array<MultiLang>;
 };
 
-export type OmitTypeClass = {
+export type OmitRegistrationCertificateRevoked = {
     id: string;
     jwt: string;
     cwt: string;
@@ -172,7 +275,7 @@ export type OmitTypeClass = {
 
 export type VocabularyEntryDto = {
     /**
-     * Stable machine-readable value to submit in schema metadata category/tags fields.
+     * Stable machine-readable value to submit in schema category/tags fields.
      */
     code: string;
     /**
@@ -195,11 +298,11 @@ export type SchemaMetadataVocabulariesDto = {
      */
     version: string;
     /**
-     * Allowed category values that can be used when updating schema metadata category.
+     * Allowed category values that can be used when updating schema category.
      */
     categories: Array<VocabularyEntryDto>;
     /**
-     * Allowed tag values that can be used when updating schema metadata tags.
+     * Allowed tag values that can be used when updating schema tags.
      */
     tags: Array<VocabularyEntryDto>;
 };
@@ -208,13 +311,13 @@ export type CreateTrustAuthorityDto = {
     /**
      * Type of trust framework.
      */
-    frameworkType: "etsi_tl";
+    frameworkType: "etsi_tl" | "x509";
     /**
-     * URI or identifier for the trust list/authority.
+     * Trust list URL for etsi_tl or PEM/base64-encoded DER root CA certificate for x509. PEM input is normalized to base64 DER.
      */
     value: string;
     /**
-     * Verification method for trust list signature (for example JWK).
+     * Required for etsi_tl: PEM-encoded X.509 certificate used to verify the trust list signature.
      */
     verificationMethod?: {
         [key: string]: unknown;
@@ -236,7 +339,15 @@ export type CreateSchemaFileDescriptorDto = {
     /**
      * Index in multipart schemaFiles[] array.
      */
-    fileIndex: number;
+    fileIndex?: number;
+    /**
+     * Existing schema URI to reuse when not uploading a new schema file.
+     */
+    uri?: string;
+    /**
+     * Subresource Integrity hash for the existing schema URI.
+     */
+    integrity?: string;
     /**
      * Credential format for this schema file.
      */
@@ -245,6 +356,18 @@ export type CreateSchemaFileDescriptorDto = {
      * Schema type identifier value. Use vct for dc+sd-jwt, doctype_value for mso_mdoc.
      */
     schemaTypeIdentifier: string;
+    /**
+     * Optional portable OID4VCI credential metadata for an SD-JWT VC schema binding.
+     */
+    credentialMetadata?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Optional SD-JWT VC Type Metadata for an SD-JWT VC schema binding.
+     */
+    sdJwtVcMetadata?: {
+        [key: string]: unknown;
+    };
 };
 
 export type CreateSchemaMetadataMultipartDto = {
@@ -253,9 +376,17 @@ export type CreateSchemaMetadataMultipartDto = {
      */
     id?: string;
     /**
-     * Schema metadata version (SemVer).
+     * Schema version (SemVer).
      */
     version: string;
+    /**
+     * Existing rulebook URI to reuse when not uploading a new rulebook file.
+     */
+    rulebookURI?: string;
+    /**
+     * Subresource Integrity hash for the existing rulebook URI.
+     */
+    rulebookIntegrity?: string;
     /**
      * Level of security (LoS) of this attestation.
      */
@@ -269,13 +400,47 @@ export type CreateSchemaMetadataMultipartDto = {
      */
     bindingType: "claim" | "key" | "biometric" | "none";
     /**
-     * Trust frameworks / trust anchors applicable to this schema metadata.
+     * At least one trust list and verification key for this schema.
      */
     trustedAuthorities: Array<CreateTrustAuthorityDto>;
     /**
      * Issuer offer entries exposed to users, each with a credential-offer URL and description.
      */
     issuerOffers?: Array<CreateIssuerOfferDto>;
+    /**
+     * Domain category for filtering.
+     */
+    category?:
+        | "identity"
+        | "health"
+        | "finance"
+        | "education"
+        | "mobility"
+        | "employment"
+        | "other";
+    /**
+     * Predefined tags for filtering and search.
+     */
+    tags?: Array<
+        | "pid"
+        | "eudi"
+        | "kyc"
+        | "aml"
+        | "age-verification"
+        | "residency"
+        | "membership"
+        | "education"
+        | "employment"
+        | "mobility"
+    >;
+    /**
+     * Optional human-readable schema name for UI display and search.
+     */
+    displayName?: string;
+    /**
+     * Short catalog description. Not part of the signed attestation schema.
+     */
+    description?: string;
     /**
      * Schema descriptors mapped to multipart schemaFiles by index.
      */
@@ -290,7 +455,7 @@ export type TrustAuthority = {
     /**
      * Type of trust framework.
      */
-    frameworkType: "etsi_tl";
+    frameworkType: "etsi_tl" | "x509";
     /**
      * URI or identifier for the trust list/authority.
      */
@@ -301,7 +466,7 @@ export type TrustAuthority = {
     verificationMethod?: {
         [key: string]: unknown;
     };
-    schemaMetadata: SchemaMetadata;
+    schema: Schema;
 };
 
 export type IssuerOfferEntry = {
@@ -315,13 +480,40 @@ export type IssuerOfferEntry = {
     description: string;
 };
 
-export type SchemaMetadata = {
+export type PublisherIdentity = {
+    /**
+     * Stable registrar publisher identifier.
+     */
+    id: string;
+    /**
+     * Publisher display name.
+     */
+    displayName: string;
+    /**
+     * Best available official legal-entity identifier from the relying-party registration.
+     */
+    legalEntityIdentifier?: string;
+    status: "active" | "suspended" | "closed";
+    relyingParty?: RelyingParty;
+    relyingPartyId?: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type ReferenceVerificationCheck = {
+    code: string;
+    result: "passed" | "warning" | "failed";
+    message?: string;
+    checkedAt: string;
+};
+
+export type Schema = {
     /**
      * Stable schema identifier. For reserved catalog URLs, this stores the last path segment.
      */
     id: string;
     /**
-     * Version of this schema metadata (SemVer). Together with id, forms the unique key.
+     * Version of this schema (SemVer). Together with id, forms the unique key.
      */
     version: string;
     /**
@@ -349,17 +541,44 @@ export type SchemaMetadata = {
      */
     supportedFormats: Array<"dc+sd-jwt" | "mso_mdoc">;
     /**
-     * Format-specific schema URIs for this schema metadata.
+     * Format-specific schema URIs for this schema.
      */
     schemaURIs: Array<MetadataSchema>;
     /**
-     * Trust frameworks / trust anchors applicable to this schema metadata.
+     * Trust frameworks / trust anchors applicable to this schema.
      */
     trustedAuthorities: Array<TrustAuthority>;
     /**
-     * Issuer offer entries for this schema metadata. Each entry provides a credential offer URL and user-facing description.
+     * Issuer offer entries for this schema. Each entry provides a credential offer URL and user-facing description.
      */
     issuerOffers: Array<IssuerOfferEntry>;
+    /**
+     * Stable authenticated publisher. Legacy records may not have one until backfilled.
+     */
+    publisher?: PublisherIdentity;
+    /**
+     * Current projection of the append-only publication lifecycle.
+     */
+    publicationStatus:
+        | "published"
+        | "superseded"
+        | "withdrawn"
+        | "disputed"
+        | "suppressed";
+    /**
+     * Sequence of the original publication event.
+     */
+    publicationSequence?: string;
+    /**
+     * SHA-256 digest over the immutable signed schema.
+     */
+    payloadDigest?: string;
+    /**
+     * True when the entry predates the append-only publication model and was backfilled.
+     */
+    legacyPublication: boolean;
+    referenceVerificationStatus: "pending" | "verified" | "warning" | "failed";
+    referenceVerificationChecks: Array<ReferenceVerificationCheck>;
     /**
      * Domain category for filtering.
      */
@@ -379,6 +598,10 @@ export type SchemaMetadata = {
      * Optional human-readable schema name for UI display and filtering.
      */
     displayName?: string;
+    /**
+     * Short catalog description.
+     */
+    description?: string;
     /**
      * Whether this specific version is deprecated.
      */
@@ -404,7 +627,7 @@ export type SchemaMetadata = {
      */
     issuer: string;
     /**
-     * The access certificate used to sign this schema metadata.
+     * The access certificate used to sign this schema.
      */
     signerCertificate?: AccessCertificate;
     /**
@@ -419,6 +642,8 @@ export type SchemaMetadata = {
      * Last update timestamp.
      */
     updatedAt: string;
+    publisherId?: string;
+    referenceVerifiedAt?: string;
 };
 
 export type MetadataSchema = {
@@ -430,6 +655,14 @@ export type MetadataSchema = {
      * The credential format identifier.
      */
     formatIdentifier: "dc+sd-jwt" | "mso_mdoc";
+    /**
+     * Explicit kind of credential type identifier. Legacy rows may omit it.
+     */
+    typeIdentifierKind?: "vct" | "doctype";
+    /**
+     * Explicit credential type identifier value, such as an SD-JWT VC vct or mdoc doctype.
+     */
+    typeIdentifierValue?: string;
     /**
      * URI to the schema definition.
      */
@@ -444,16 +677,53 @@ export type MetadataSchema = {
     meta?: {
         [key: string]: unknown;
     };
-    schemaMetadata: SchemaMetadata;
+    schema: Schema;
+};
+
+export type SchemaPublicationEvent = {
+    /**
+     * Global, monotonically increasing publication position.
+     */
+    sequenceNumber: string;
+    eventType:
+        | "schema_version_published"
+        | "schema_version_superseded"
+        | "schema_version_withdrawn"
+        | "schema_version_disputed"
+        | "schema_version_suppressed";
+    eventId: string;
+    schemaId: string;
+    version: string;
+    publisherId: string;
+    payloadDigest: string;
+    previousEventHash?: string;
+    eventHash: string;
+    effectiveAt: string;
+    reason?: string;
+    replacementSchemaId?: string;
+    replacementVersion?: string;
+    eventData: {
+        [key: string]: unknown;
+    };
+    publishedAt: string;
+};
+
+export type UpdatePublisherStatusDto = {
+    status: "active" | "suspended" | "closed";
+};
+
+export type SchemaUsageParticipantDto = {
+    id: string;
+    name: string;
 };
 
 export type SchemaUsageAnalysisDto = {
     /**
-     * Schema metadata ID analyzed for usage.
+     * Schema ID analyzed for usage.
      */
     id: string;
     /**
-     * Schema metadata version analyzed for usage.
+     * Schema version analyzed for usage.
      */
     version: string;
     /**
@@ -481,6 +751,14 @@ export type SchemaUsageAnalysisDto = {
      */
     certificatesRequestingIdentifiers: number;
     /**
+     * Organisations that declare this schema in provided attestations.
+     */
+    providers: Array<SchemaUsageParticipantDto>;
+    /**
+     * Organisations that request this schema identifier.
+     */
+    consumers: Array<SchemaUsageParticipantDto>;
+    /**
      * Schema identifiers used for matching (vct/doctype_value).
      */
     matchedIdentifiers: Array<string>;
@@ -499,6 +777,17 @@ export type SetVersionDeprecationDto = {
      * Optional recommended replacement version.
      */
     supersededByVersion?: string;
+};
+
+export type CreateSchemaStatusEventDto = {
+    status: "superseded" | "withdrawn" | "disputed" | "suppressed";
+    /**
+     * When the status becomes effective. Defaults to now.
+     */
+    effectiveAt?: string;
+    reason?: string;
+    replacementSchemaId?: string;
+    replacementVersion?: string;
 };
 
 export type UpdateIssuerOfferDto = {
@@ -555,7 +844,7 @@ export type InternalSchemaMetadataDto = {
      */
     id: string;
     /**
-     * Schema metadata version (SemVer)
+     * Schema version (SemVer)
      */
     version: string;
     /**
@@ -576,294 +865,198 @@ export type InternalSchemaMetadataDto = {
     updatedAt: string;
 };
 
-export type IdentifierDto = {
-    type: string;
-    value: string;
+export type RegistrationStatusChange = {
+    /**
+     * suspended and cancelled revoke all valid certificates (reasons registration_suspended / registration_cancelled). Reinstating to active does not restore revoked certificates. cancelled is final.
+     */
+    status: "active" | "suspended" | "cancelled";
 };
 
-export type WalletRelyingPartySummaryDto = {
-    wrp_id: string;
-    display_name: string;
-    legal_name?: string;
+export type RegistryMetadataDto = {
+    registrar_id: string;
     country: string;
-    identifiers: Array<IdentifierDto>;
-    entitlements?: Array<string>;
-    status: "active" | "historic";
-    intended_use_count?: number;
-    active_intended_use_count?: number;
-    valid_access_certificate_count?: number;
-    valid_registration_certificate_count?: number;
-    links: {
+    api_base_url: string;
+    /**
+     * The register identifier: the value certificates and registration records carry as registry_uri and signed statements as iss. A client resolves <registry_uri>/.well-known/registrar-api to find this document.
+     */
+    registry_uri: string;
+    openapi_url: string;
+    /**
+     * Human-readable documentation of the API.
+     */
+    api_documentation_url: string;
+    /**
+     * The national website with the register in human-readable form (Art. 3(4), 3(5) of (EU) 2025/848), when configured.
+     */
+    human_readable_registry_url?: string;
+    /**
+     * The national registration policy (Art. 4), when configured.
+     */
+    registration_policy_url?: string;
+    api_version: string;
+    /**
+     * Publication time of the latest certificate event.
+     */
+    latest_registry_update: string;
+    certificate_event_log_uri: string;
+    /**
+     * Tree head of the event log (RFC 6962 Merkle tree); proofs are under the same path.
+     */
+    certificate_event_log_tree_head_uri: string;
+    /**
+     * Latest snapshot of the Insights API: the log position (as_of_sequence) and evaluation time of the register state it currently serves.
+     */
+    register_snapshot_uri: string;
+    /**
+     * PEM certificate of the registrar root CA, the trust anchor for monitors (with LEGACY_CA=true, the single CA). The root certifies the issuing CA, which issues access certificates and the signing certificates of registration certificates, the status list and the statements that sign application/jwt API responses (x5c[0], extended key usage id-kp-documentSigning).
+     */
+    certificate_authority_uri: string;
+    /**
+     * Values of revocation_reason in certificate_revoked events.
+     */
+    supported_revocation_reasons: Array<
+        | "unspecified"
+        | "key_compromise"
+        | "cessation_of_operation"
+        | "superseded"
+        | "registration_suspended"
+        | "registration_cancelled"
+    >;
+    supported_event_types: Array<
+        "certificate_issued" | "certificate_revoked" | "registration_recorded"
+    >;
+    /**
+     * JWS typ values: register_statement for application/jwt API responses, registration_record for the records in registration_recorded events.
+     */
+    statement_types: {
         [key: string]: string;
     };
+    certificate_event_log_id: string;
+    certificate_event_log_epoch: number;
+    /**
+     * Head of the log. Sequence numbers are gap-free, starting at 1.
+     */
+    latest_certificate_event_sequence: string;
+    supported_signing_algorithms: Array<string>;
+    supported_event_media_types: Array<string>;
+    supported_credential_formats: Array<string>;
 };
 
-export type PaginationDto = {
-    limit: number;
-    next_cursor?: string | null;
-    total_count?: number;
-};
-
-export type WalletRelyingPartySearchResponseDto = {
-    data: Array<WalletRelyingPartySummaryDto>;
-    pagination: PaginationDto;
-};
-
-export type WalletRelyingPartyDto = {
-    wrp_id: string;
-    display_name: string;
-    legal_name?: string;
-    country: string;
-    identifiers: Array<IdentifierDto>;
-    entitlements?: Array<string>;
-    status: "active" | "historic";
-    intended_use_count?: number;
-    active_intended_use_count?: number;
-    valid_access_certificate_count?: number;
-    valid_registration_certificate_count?: number;
-    links: {
-        [key: string]: string;
-    };
-    info_uri?: string;
-    support_uri?: Array<string>;
-    privacy_policy?: string;
-    service_descriptions?: Array<{
-        [key: string]: unknown;
-    }>;
-    is_public_sector_body?: boolean;
-    first_registered_at?: string;
-    last_updated_at?: string;
-};
-
-export type RequestedClaimDto = {
-    path: Array<string>;
-    normalized_path?: string;
-    claim_name?: string;
-};
-
-export type RequestedCredentialDto = {
-    format: string;
-    meta: {
-        [key: string]: unknown;
-    };
-    claims?: Array<RequestedClaimDto>;
-};
-
-export type IntendedUseSummaryDto = {
-    intended_use_id: string;
-    intended_use_fingerprint: string;
-    wrp_id: string;
-    wrp_display_name?: string;
-    purpose: Array<{
-        [key: string]: unknown;
-    }>;
-    requested_credentials: Array<RequestedCredentialDto>;
-    requested_claims?: Array<RequestedClaimDto>;
-    status: "active" | "historic";
-    first_registered_at: string;
-    last_confirmed_at?: string;
-    supporting_certificate_count?: number;
-    current_supporting_certificate_count?: number;
-    links: {
-        [key: string]: string;
-    };
-};
-
-export type IntendedUseSearchResponseDto = {
-    data: Array<IntendedUseSummaryDto>;
-    pagination: PaginationDto;
-};
-
-export type CertificateSummaryDto = {
-    certificate_id: string;
-    certificate_type: "access_certificate" | "registration_certificate";
-    wrp_id: string;
-    certificate_fingerprint: string;
-    status: "not_yet_valid" | "valid" | "expired" | "revoked";
-    issued_at: string;
-    valid_from?: string;
-    valid_until?: string;
-    revoked_at?: string | null;
-    links: {
-        [key: string]: string;
-    };
-};
-
-export type CertificateSearchResponseDto = {
-    data: Array<CertificateSummaryDto>;
-    pagination: PaginationDto;
+export type CertificateArtifactDto = {
+    media_type: "application/pkix-cert" | "application/jwt";
+    /**
+     * Base64-encoded DER for an access certificate or the exact compact JWS for a registration certificate.
+     */
+    encoded: string;
 };
 
 export type CertificateEventDto = {
     event_id: string;
     sequence_number: string;
-    event_type: "certificate_issued" | "certificate_revoked";
+    event_type:
+        | "certificate_issued"
+        | "certificate_revoked"
+        | "registration_recorded";
     effective_at?: string;
     published_at: string;
+    /**
+     * Stable Wallet-Relying Party identifier used by the wrp_id event filter.
+     */
     wrp_id: string;
-    intended_use_id?: string;
-    certificate_id: string;
-    certificate_type: "access_certificate" | "registration_certificate";
-    certificate_fingerprint: string;
-    links: {
-        [key: string]: string;
-    };
+    /**
+     * Present only for revocation events; identifies the previously issued artifact by its SHA-256 fingerprint.
+     */
+    certificate_fingerprint?: string;
+    /**
+     * Present only for revocation events. Older events without a recorded reason report unspecified.
+     */
+    revocation_reason?:
+        | "unspecified"
+        | "key_compromise"
+        | "cessation_of_operation"
+        | "superseded"
+        | "registration_suspended"
+        | "registration_cancelled";
+    /**
+     * Present only for certificate issuance events.
+     */
+    certificate?: CertificateArtifactDto;
+    /**
+     * Present only for registration_recorded events: the registration record as a compact JWS (typ wrp-registration+jwt) signed by the registrar statement key. It states the WRP-level Annex I information and the registration status; the latest record of a WRP is its current registration.
+     */
+    registration_record?: CertificateArtifactDto;
 };
 
 export type CertificateEventPaginationDto = {
     limit: number;
+    /**
+     * after_sequence of the next page (keep through_sequence). null when the range up to through_sequence is exhausted; a follower then resumes later with after_sequence = through_sequence.
+     */
     next_after_sequence?: string | null;
 };
 
 export type CertificateEventSearchResponseDto = {
     log_id: string;
+    /**
+     * Changes when existing sequence numbers change meaning; replicas then start over.
+     */
     log_epoch: number;
+    /**
+     * Upper bound of this replay. Pass it on to the following pages; every event up to it was considered.
+     */
     through_sequence: string;
     data: Array<CertificateEventDto>;
     pagination: CertificateEventPaginationDto;
 };
 
-export type StatementSummaryDto = {
-    statement_id: string;
-    statement_type: string;
-    wrp_id?: string;
-    intended_use_id?: string;
-    certificate_id?: string;
-    issued_at: string;
-    payload_hash?: string;
-    jws_serialization?: string;
-    links: {
-        [key: string]: string;
-    };
+export type LogTreeHeadDto = {
+    log_id: string;
+    log_epoch: number;
+    hash_algorithm: string;
+    /**
+     * Number of events in the tree: the events with sequence numbers 1 to tree_size.
+     */
+    tree_size: string;
+    /**
+     * Merkle tree hash (RFC 6962 section 2.1) over the events, hex. Leaf i is SHA-256(0x00 || canonical JSON of event i+1 as published, keys sorted, no whitespace); inner nodes SHA-256(0x01 || left || right).
+     */
+    root_hash: string;
+    /**
+     * Publication time of the last event in the tree.
+     */
+    timestamp?: string;
 };
 
-export type StatementSearchResponseDto = {
-    data: Array<StatementSummaryDto>;
-    pagination: PaginationDto;
+export type LogInclusionProofDto = {
+    log_id: string;
+    log_epoch: number;
+    hash_algorithm: string;
+    tree_size: string;
+    sequence_number: string;
+    /**
+     * sequence_number - 1.
+     */
+    leaf_index: number;
+    /**
+     * Leaf hash of the event, hex.
+     */
+    leaf_hash: string;
+    /**
+     * Audit path PATH(m, D[n]) of RFC 6962 section 2.1.1, hex.
+     */
+    audit_path: Array<string>;
 };
 
-export type IntendedUseDto = {
-    intended_use_id: string;
-    intended_use_fingerprint: string;
-    wrp_id: string;
-    wrp_display_name?: string;
-    purpose: Array<{
-        [key: string]: unknown;
-    }>;
-    requested_credentials: Array<RequestedCredentialDto>;
-    requested_claims?: Array<RequestedClaimDto>;
-    status: "active" | "historic";
-    first_registered_at: string;
-    last_confirmed_at?: string;
-    supporting_certificate_count?: number;
-    current_supporting_certificate_count?: number;
-    links: {
-        [key: string]: string;
-    };
-    supporting_certificate_ids?: Array<string>;
-    current_supporting_certificate_ids?: Array<string>;
-};
-
-export type RequestedCredentialSearchItemDto = {
-    wrp_id: string;
-    wrp_display_name?: string;
-    intended_use_id: string;
-    purpose?: Array<{
-        [key: string]: unknown;
-    }>;
-    requested_credential: RequestedCredentialDto;
-    links: {
-        [key: string]: string;
-    };
-};
-
-export type RequestedCredentialSearchResponseDto = {
-    data: Array<RequestedCredentialSearchItemDto>;
-    pagination: PaginationDto;
-};
-
-export type ProvidedAttestationDto = {
-    format: string;
-    meta: {
-        [key: string]: unknown;
-    };
-    schema_uri?: string;
-    provider_wrp_id?: string;
-    links?: {
-        [key: string]: string;
-    };
-};
-
-export type ProvidedAttestationSearchResponseDto = {
-    data: Array<ProvidedAttestationDto>;
-    pagination: PaginationDto;
-};
-
-export type CertificatePayloadDto = {
-    certificate_id: string;
-    certificate_type: "access_certificate" | "registration_certificate";
-    media_type: "application/pkix-cert" | "application/jwt";
-    encoded: string;
-    certificate_fingerprint: string;
-    decoded_payload?: {
-        [key: string]: unknown;
-    };
-};
-
-export type CertificateStatusEventDto = {
-    status: "not_yet_valid" | "valid" | "expired" | "revoked";
-    effective_at: string;
-    published_at: string;
-};
-
-export type CertificateStatusDetailDto = {
-    certificate_id: string;
-    status: "not_yet_valid" | "valid" | "expired" | "revoked";
-    checked_at?: string;
-    revoked_at?: string | null;
-    history?: Array<CertificateStatusEventDto>;
-};
-
-export type JwsFlattenedDto = {
-    payload: string;
-    protected: string;
-    header?: {
-        [key: string]: unknown;
-    };
-    signature: string;
-};
-
-export type StatementSignatureDto = {
-    serialization: "jws-json-flattened" | "jws-json-general";
-    jws: JwsFlattenedDto;
-};
-
-export type SignedStatementEnvelopeDto = {
-    statement_id: string;
-    statement_type: string;
-    payload: {
-        [key: string]: unknown;
-    };
-    signature: StatementSignatureDto;
-};
-
-export type StatisticsDto = {
-    generated_at?: string;
-    at?: string;
-    wrp_count?: number;
-    active_wrp_count?: number;
-    intended_use_count?: number;
-    active_intended_use_count?: number;
-    certificate_count?: number;
-    counts_by_entitlement?: {
-        [key: string]: number;
-    };
-    most_requested_credential_types?: Array<{
-        [key: string]: unknown;
-    }>;
-    most_requested_claims?: Array<{
-        [key: string]: unknown;
-    }>;
+export type LogConsistencyProofDto = {
+    log_id: string;
+    log_epoch: number;
+    hash_algorithm: string;
+    first_tree_size: string;
+    second_tree_size: string;
+    /**
+     * Consistency proof PROOF(m, D[n]) of RFC 6962 section 2.1.2, hex.
+     */
+    consistency_path: Array<string>;
 };
 
 export type HealthControllerCheckData = {
@@ -944,6 +1137,133 @@ export type PrometheusControllerIndexResponses = {
     200: unknown;
 };
 
+export type WorkspaceControllerPreviewData = {
+    body: PreviewSchemaDto;
+    path?: never;
+    query?: never;
+    url: "/workspace/schemas/preview";
+};
+
+export type WorkspaceControllerPreviewResponses = {
+    201: unknown;
+};
+
+export type WorkspaceControllerFieldsData = {
+    body?: never;
+    path: {
+        id: string;
+        version: string;
+    };
+    query: {
+        format: string;
+        typeIdentifier?: string;
+    };
+    url: "/workspace/schemas/{id}/versions/{version}/fields";
+};
+
+export type WorkspaceControllerFieldsResponses = {
+    200: unknown;
+};
+
+export type WorkspaceControllerSettingsData = {
+    body?: never;
+    path: {
+        rpId: string;
+    };
+    query?: never;
+    url: "/workspace/{rpId}/settings";
+};
+
+export type WorkspaceControllerSettingsResponses = {
+    200: OrganisationSettings;
+};
+
+export type WorkspaceControllerSettingsResponse =
+    WorkspaceControllerSettingsResponses[keyof WorkspaceControllerSettingsResponses];
+
+export type WorkspaceControllerSaveSettingsData = {
+    body: OrganisationSettingsDto;
+    path: {
+        rpId: string;
+    };
+    query?: never;
+    url: "/workspace/{rpId}/settings";
+};
+
+export type WorkspaceControllerSaveSettingsResponses = {
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type WorkspaceControllerSaveSettingsResponse =
+    WorkspaceControllerSaveSettingsResponses[keyof WorkspaceControllerSaveSettingsResponses];
+
+export type WorkspaceControllerListData = {
+    body?: never;
+    path: {
+        rpId: string;
+    };
+    query?: never;
+    url: "/workspace/{rpId}/journeys";
+};
+
+export type WorkspaceControllerListResponses = {
+    200: Array<RegistrationJourney>;
+};
+
+export type WorkspaceControllerListResponse =
+    WorkspaceControllerListResponses[keyof WorkspaceControllerListResponses];
+
+export type WorkspaceControllerSaveData = {
+    body: SaveJourneyDto;
+    path: {
+        rpId: string;
+    };
+    query?: never;
+    url: "/workspace/{rpId}/journeys";
+};
+
+export type WorkspaceControllerSaveResponses = {
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type WorkspaceControllerSaveResponse =
+    WorkspaceControllerSaveResponses[keyof WorkspaceControllerSaveResponses];
+
+export type WorkspaceControllerRemoveData = {
+    body?: never;
+    path: {
+        rpId: string;
+        id: string;
+    };
+    query?: never;
+    url: "/workspace/{rpId}/journeys/{id}";
+};
+
+export type WorkspaceControllerRemoveResponses = {
+    200: unknown;
+};
+
+export type WorkspaceControllerCompleteData = {
+    body: CompleteJourneyDto;
+    path: {
+        rpId: string;
+        id: string;
+    };
+    query?: never;
+    url: "/workspace/{rpId}/journeys/{id}/complete";
+};
+
+export type WorkspaceControllerCompleteResponses = {
+    201: RegistrationJourney;
+};
+
+export type WorkspaceControllerCompleteResponse =
+    WorkspaceControllerCompleteResponses[keyof WorkspaceControllerCompleteResponses];
+
 export type RelyingPartyControllerFindAllData = {
     body?: never;
     path?: never;
@@ -1002,6 +1322,89 @@ export type CryptoControllerOwnCertResponses = {
 export type CryptoControllerOwnCertResponse =
     CryptoControllerOwnCertResponses[keyof CryptoControllerOwnCertResponses];
 
+export type CryptoControllerOwnCertDerData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: "/ca.der";
+};
+
+export type CryptoControllerOwnCertDerResponses = {
+    /**
+     * The CA certificate file in DER format
+     */
+    200: Blob | File;
+};
+
+export type CryptoControllerOwnCertDerResponse =
+    CryptoControllerOwnCertDerResponses[keyof CryptoControllerOwnCertDerResponses];
+
+export type CryptoControllerRootCertData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: "/pki/root.crt";
+};
+
+export type CryptoControllerRootCertResponses = {
+    200: string;
+};
+
+export type CryptoControllerRootCertResponse =
+    CryptoControllerRootCertResponses[keyof CryptoControllerRootCertResponses];
+
+export type CryptoControllerRootCertDerData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: "/pki/root.der";
+};
+
+export type CryptoControllerRootCertDerResponses = {
+    200: unknown;
+};
+
+export type CryptoControllerRootCrlData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: "/pki/root.crl";
+};
+
+export type CryptoControllerRootCrlResponses = {
+    200: unknown;
+};
+
+export type CryptoControllerIssuingData = {
+    body?: never;
+    path: {
+        file: string;
+    };
+    query?: never;
+    url: "/pki/issuing/{file}";
+};
+
+export type CryptoControllerIssuingResponses = {
+    200: unknown;
+};
+
+export type CryptoControllerCpsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: "/cps";
+};
+
+export type CryptoControllerCpsResponses = {
+    /**
+     * The certificate practice statement for the registrar
+     */
+    200: string;
+};
+
+export type CryptoControllerCpsResponse =
+    CryptoControllerCpsResponses[keyof CryptoControllerCpsResponses];
+
 export type AccessCertificateControllerAccessCertificatesData = {
     body?: never;
     path?: never;
@@ -1040,7 +1443,12 @@ export type AccessCertificateControllerDeleteData = {
     path: {
         id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Published as revocation_reason in the certificate event log. Defaults to cessation_of_operation.
+         */
+        reason?: "cessation_of_operation" | "key_compromise";
+    };
     url: "/access-certificates/{id}";
 };
 
@@ -1091,7 +1499,7 @@ export type RegistrationCertificateControllerRegisterData = {
 };
 
 export type RegistrationCertificateControllerRegisterResponses = {
-    201: OmitTypeClass;
+    201: OmitRegistrationCertificateRevoked;
 };
 
 export type RegistrationCertificateControllerRegisterResponse =
@@ -1102,7 +1510,12 @@ export type RegistrationCertificateControllerDeleteData = {
     path: {
         id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Published as revocation_reason in the certificate event log. Defaults to cessation_of_operation.
+         */
+        reason?: "cessation_of_operation" | "key_compromise";
+    };
     url: "/registration-certificates/{id}";
 };
 
@@ -1140,6 +1553,22 @@ export type StatusListControllerGetListResponses = {
 export type StatusListControllerGetListResponse =
     StatusListControllerGetListResponses[keyof StatusListControllerGetListResponses];
 
+export type StatusListControllerGetListByIdData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: "/status-management/status-lists/{id}";
+};
+
+export type StatusListControllerGetListByIdResponses = {
+    200: string;
+};
+
+export type StatusListControllerGetListByIdResponse =
+    StatusListControllerGetListByIdResponses[keyof StatusListControllerGetListByIdResponses];
+
 export type StatusListControllerCrlFileData = {
     body?: never;
     path?: never;
@@ -1161,7 +1590,7 @@ export type SchemaMetadataControllerGetVocabulariesData = {
     body?: never;
     path?: never;
     query?: never;
-    url: "/schema-metadata/vocabularies";
+    url: "/schemas/vocabularies";
 };
 
 export type SchemaMetadataControllerGetVocabulariesResponses = {
@@ -1183,38 +1612,42 @@ export type SchemaMetadataControllerFindAllData = {
          */
         id?: string;
         /**
-         * Filter by schema metadata version
+         * Filter by schema version
          */
         version?: string;
     };
-    url: "/schema-metadata";
+    url: "/schemas";
 };
 
 export type SchemaMetadataControllerFindAllResponses = {
     /**
-     * List of all schema metadata.
+     * List of all schema.
      */
-    200: Array<SchemaMetadata>;
+    200: Array<Schema>;
 };
 
 export type SchemaMetadataControllerFindAllResponse =
     SchemaMetadataControllerFindAllResponses[keyof SchemaMetadataControllerFindAllResponses];
 
-export type SchemaMetadataControllerCreateSchemaMetadataData = {
+export type SchemaMetadataControllerCreateSchemaData = {
     body: {
         /**
          * JSON string matching the schema of #/components/schemas/CreateSchemaMetadataMultipartDto
          */
-        metadata: string;
+        schema: string;
         rulebookFile: Blob | File;
+        /**
+         * PEM-encoded X.509 certificate used to verify the trust-list signature.
+         */
+        trustListCertificateFile: Blob | File;
         schemaFiles: Array<Blob | File>;
     };
     path?: never;
     query?: never;
-    url: "/schema-metadata";
+    url: "/schemas";
 };
 
-export type SchemaMetadataControllerCreateSchemaMetadataErrors = {
+export type SchemaMetadataControllerCreateSchemaErrors = {
     /**
      * Invalid multipart payload, metadata JSON, or file mapping.
      */
@@ -1224,20 +1657,20 @@ export type SchemaMetadataControllerCreateSchemaMetadataErrors = {
      */
     403: unknown;
     /**
-     * Schema metadata with same id and version already exists.
+     * Schema with same id and version already exists.
      */
     409: unknown;
 };
 
-export type SchemaMetadataControllerCreateSchemaMetadataResponses = {
+export type SchemaMetadataControllerCreateSchemaResponses = {
     /**
-     * The schema metadata has been successfully created.
+     * The schema has been successfully created.
      */
-    201: SchemaMetadata;
+    201: Schema;
 };
 
-export type SchemaMetadataControllerCreateSchemaMetadataResponse =
-    SchemaMetadataControllerCreateSchemaMetadataResponses[keyof SchemaMetadataControllerCreateSchemaMetadataResponses];
+export type SchemaMetadataControllerCreateSchemaResponse =
+    SchemaMetadataControllerCreateSchemaResponses[keyof SchemaMetadataControllerCreateSchemaResponses];
 
 export type SchemaMetadataControllerGetUploadedAssetData = {
     body?: never;
@@ -1252,7 +1685,7 @@ export type SchemaMetadataControllerGetUploadedAssetData = {
         fileName: string;
     };
     query?: never;
-    url: "/schema-metadata/assets/{type}/{fileName}";
+    url: "/schemas/assets/{type}/{fileName}";
 };
 
 export type SchemaMetadataControllerGetUploadedAssetErrors = {
@@ -1272,6 +1705,84 @@ export type SchemaMetadataControllerGetUploadedAssetResponses = {
 export type SchemaMetadataControllerGetUploadedAssetResponse =
     SchemaMetadataControllerGetUploadedAssetResponses[keyof SchemaMetadataControllerGetUploadedAssetResponses];
 
+export type SchemaMetadataControllerListPublicationEventsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Exclusive event sequence cursor
+         */
+        after?: string;
+        /**
+         * Page size (1-500)
+         */
+        limit?: string;
+        schemaId?: string;
+        publisherId?: string;
+    };
+    url: "/schemas/events";
+};
+
+export type SchemaMetadataControllerListPublicationEventsResponses = {
+    200: unknown;
+};
+
+export type SchemaMetadataControllerGetPublicationEventData = {
+    body?: never;
+    path: {
+        sequence: string;
+    };
+    query?: never;
+    url: "/schemas/events/{sequence}";
+};
+
+export type SchemaMetadataControllerGetPublicationEventResponses = {
+    200: SchemaPublicationEvent;
+};
+
+export type SchemaMetadataControllerGetPublicationEventResponse =
+    SchemaMetadataControllerGetPublicationEventResponses[keyof SchemaMetadataControllerGetPublicationEventResponses];
+
+export type SchemaMetadataControllerGetStatusSemanticsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: "/schemas/status-semantics";
+};
+
+export type SchemaMetadataControllerGetStatusSemanticsResponses = {
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type SchemaMetadataControllerGetStatusSemanticsResponse =
+    SchemaMetadataControllerGetStatusSemanticsResponses[keyof SchemaMetadataControllerGetStatusSemanticsResponses];
+
+export type SchemaMetadataControllerListPublishersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: "/schemas/publishers";
+};
+
+export type SchemaMetadataControllerListPublishersResponses = {
+    200: unknown;
+};
+
+export type SchemaMetadataControllerUpdatePublisherStatusData = {
+    body: UpdatePublisherStatusDto;
+    path: {
+        publisherId: string;
+    };
+    query?: never;
+    url: "/schemas/publishers/{publisherId}/status";
+};
+
+export type SchemaMetadataControllerUpdatePublisherStatusResponses = {
+    200: unknown;
+};
+
 export type SchemaMetadataControllerFindAllByRelyingPartyData = {
     body?: never;
     path: {
@@ -1281,14 +1792,14 @@ export type SchemaMetadataControllerFindAllByRelyingPartyData = {
         rpId: string;
     };
     query?: never;
-    url: "/schema-metadata/relying-parties/{rpId}";
+    url: "/schemas/relying-parties/{rpId}";
 };
 
 export type SchemaMetadataControllerFindAllByRelyingPartyResponses = {
     /**
-     * List of schema metadata belonging to the relying party.
+     * List of schema belonging to the relying party.
      */
-    200: Array<SchemaMetadata>;
+    200: Array<Schema>;
 };
 
 export type SchemaMetadataControllerFindAllByRelyingPartyResponse =
@@ -1303,12 +1814,12 @@ export type SchemaMetadataControllerGetLatestVersionInfoData = {
         id: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/latest";
+    url: "/schemas/{id}/latest";
 };
 
 export type SchemaMetadataControllerGetLatestVersionInfoErrors = {
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
@@ -1329,12 +1840,12 @@ export type SchemaMetadataControllerListVersionsData = {
         id: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/versions";
+    url: "/schemas/{id}/versions";
 };
 
 export type SchemaMetadataControllerListVersionsErrors = {
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
@@ -1355,12 +1866,12 @@ export type SchemaMetadataControllerGetUsageAnalysisData = {
         id: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/usage";
+    url: "/schemas/{id}/usage";
 };
 
 export type SchemaMetadataControllerGetUsageAnalysisErrors = {
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
@@ -1383,17 +1894,17 @@ export type SchemaMetadataControllerGetUsageAnalysisByVersionData = {
          */
         id: string;
         /**
-         * Schema metadata version (SemVer)
+         * Schema version (SemVer)
          */
         version: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/versions/{version}/usage";
+    url: "/schemas/{id}/versions/{version}/usage";
 };
 
 export type SchemaMetadataControllerGetUsageAnalysisByVersionErrors = {
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
@@ -1416,12 +1927,12 @@ export type SchemaMetadataControllerSetVersionDeprecationData = {
          */
         id: string;
         /**
-         * Schema metadata version (SemVer)
+         * Schema version (SemVer)
          */
         version: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/versions/{version}/deprecation";
+    url: "/schemas/{id}/versions/{version}/deprecation";
 };
 
 export type SchemaMetadataControllerSetVersionDeprecationErrors = {
@@ -1430,7 +1941,7 @@ export type SchemaMetadataControllerSetVersionDeprecationErrors = {
      */
     403: unknown;
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
@@ -1439,11 +1950,28 @@ export type SchemaMetadataControllerSetVersionDeprecationResponses = {
     /**
      * Deprecation status updated successfully.
      */
-    200: SchemaMetadata;
+    200: Schema;
 };
 
 export type SchemaMetadataControllerSetVersionDeprecationResponse =
     SchemaMetadataControllerSetVersionDeprecationResponses[keyof SchemaMetadataControllerSetVersionDeprecationResponses];
+
+export type SchemaMetadataControllerCreateStatusEventData = {
+    body: CreateSchemaStatusEventDto;
+    path: {
+        id: string;
+        version: string;
+    };
+    query?: never;
+    url: "/schemas/{id}/versions/{version}/status-events";
+};
+
+export type SchemaMetadataControllerCreateStatusEventResponses = {
+    201: Schema;
+};
+
+export type SchemaMetadataControllerCreateStatusEventResponse =
+    SchemaMetadataControllerCreateStatusEventResponses[keyof SchemaMetadataControllerCreateStatusEventResponses];
 
 export type SchemaMetadataControllerFindOneData = {
     body?: never;
@@ -1454,21 +1982,21 @@ export type SchemaMetadataControllerFindOneData = {
         id: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}";
+    url: "/schemas/{id}";
 };
 
 export type SchemaMetadataControllerFindOneErrors = {
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
 
 export type SchemaMetadataControllerFindOneResponses = {
     /**
-     * The schema metadata details.
+     * The schema details.
      */
-    200: SchemaMetadata;
+    200: Schema;
 };
 
 export type SchemaMetadataControllerFindOneResponse =
@@ -1482,33 +2010,36 @@ export type SchemaMetadataControllerRemoveData = {
          */
         id: string;
         /**
-         * Schema metadata version (SemVer)
+         * Schema version (SemVer)
          */
         version: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/versions/{version}";
+    url: "/schemas/{id}/versions/{version}";
 };
 
 export type SchemaMetadataControllerRemoveErrors = {
     /**
-     * You can only delete schema metadata that you uploaded.
+     * You can only delete schema that you uploaded.
      */
     403: unknown;
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
 
 export type SchemaMetadataControllerRemoveResponses = {
     /**
-     * The schema metadata has been successfully deleted.
+     * The schema has been withdrawn.
      */
-    200: unknown;
+    200: Schema;
 };
 
-export type SchemaMetadataControllerUpdateMetadataData = {
+export type SchemaMetadataControllerRemoveResponse =
+    SchemaMetadataControllerRemoveResponses[keyof SchemaMetadataControllerRemoveResponses];
+
+export type SchemaMetadataControllerUpdateSchemaData = {
     body: UpdateSchemaMetadataDto;
     path: {
         /**
@@ -1516,30 +2047,30 @@ export type SchemaMetadataControllerUpdateMetadataData = {
          */
         id: string;
         /**
-         * Schema metadata version (SemVer)
+         * Schema version (SemVer)
          */
         version: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/versions/{version}";
+    url: "/schemas/{id}/versions/{version}";
 };
 
-export type SchemaMetadataControllerUpdateMetadataErrors = {
+export type SchemaMetadataControllerUpdateSchemaErrors = {
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
 
-export type SchemaMetadataControllerUpdateMetadataResponses = {
+export type SchemaMetadataControllerUpdateSchemaResponses = {
     /**
-     * The schema metadata has been successfully updated.
+     * The schema has been successfully updated.
      */
-    200: SchemaMetadata;
+    200: Schema;
 };
 
-export type SchemaMetadataControllerUpdateMetadataResponse =
-    SchemaMetadataControllerUpdateMetadataResponses[keyof SchemaMetadataControllerUpdateMetadataResponses];
+export type SchemaMetadataControllerUpdateSchemaResponse =
+    SchemaMetadataControllerUpdateSchemaResponses[keyof SchemaMetadataControllerUpdateSchemaResponses];
 
 export type SchemaMetadataControllerGetSignedJwtData = {
     body?: never;
@@ -1549,17 +2080,17 @@ export type SchemaMetadataControllerGetSignedJwtData = {
          */
         id: string;
         /**
-         * Schema metadata version (SemVer)
+         * Schema version (SemVer)
          */
         version: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/versions/{version}/jwt";
+    url: "/schemas/{id}/versions/{version}/jwt";
 };
 
 export type SchemaMetadataControllerGetSignedJwtErrors = {
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
@@ -1582,12 +2113,12 @@ export type SchemaMetadataControllerGetInternalMetadataData = {
          */
         id: string;
         /**
-         * Schema metadata version (SemVer)
+         * Schema version (SemVer)
          */
         version: string;
     };
     query?: never;
-    url: "/schema-metadata/{id}/versions/{version}/internal";
+    url: "/schemas/{id}/versions/{version}/internal";
 };
 
 export type SchemaMetadataControllerGetInternalMetadataErrors = {
@@ -1596,7 +2127,7 @@ export type SchemaMetadataControllerGetInternalMetadataErrors = {
      */
     403: unknown;
     /**
-     * Schema metadata not found.
+     * Schema not found.
      */
     404: unknown;
 };
@@ -1611,271 +2142,83 @@ export type SchemaMetadataControllerGetInternalMetadataResponses = {
 export type SchemaMetadataControllerGetInternalMetadataResponse =
     SchemaMetadataControllerGetInternalMetadataResponses[keyof SchemaMetadataControllerGetInternalMetadataResponses];
 
-export type WrpReadControllerSearchWalletRelyingPartiesData = {
+export type CertificateLifecycleControllerChangeRegistrationStatusData = {
+    body: RegistrationStatusChange;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: "/relying-parties/{id}/registration-status";
+};
+
+export type CertificateLifecycleControllerChangeRegistrationStatusResponses = {
+    200: RelyingParty;
+};
+
+export type CertificateLifecycleControllerChangeRegistrationStatusResponse =
+    CertificateLifecycleControllerChangeRegistrationStatusResponses[keyof CertificateLifecycleControllerChangeRegistrationStatusResponses];
+
+export type MetadataReadControllerGetMetadataData = {
     body?: never;
     path?: never;
     query?: never;
-    url: "/wrps";
+    url: "/.well-known/registrar-api";
 };
 
-export type WrpReadControllerSearchWalletRelyingPartiesResponses = {
-    200: WalletRelyingPartySearchResponseDto;
+export type MetadataReadControllerGetMetadataResponses = {
+    200: RegistryMetadataDto;
 };
 
-export type WrpReadControllerSearchWalletRelyingPartiesResponse =
-    WrpReadControllerSearchWalletRelyingPartiesResponses[keyof WrpReadControllerSearchWalletRelyingPartiesResponses];
+export type MetadataReadControllerGetMetadataResponse =
+    MetadataReadControllerGetMetadataResponses[keyof MetadataReadControllerGetMetadataResponses];
 
-export type WrpReadControllerGetWalletRelyingPartyData = {
+export type CertificateEventReadControllerSearchCertificateEventsData = {
     body?: never;
-    path: {
-        wrp_id: string;
-    };
+    path?: never;
     query?: {
-        include?: string;
+        /**
+         * Return events with sequence_number greater than this value.
+         */
+        after_sequence?: string;
+        /**
+         * Upper sequence boundary captured from the first page and reused for snapshot-stable pagination.
+         */
+        through_sequence?: string;
+        /**
+         * Maximum number of entries to return in this page.
+         */
+        limit?: string;
+        /**
+         * Filter to one Wallet Relying Party identifier.
+         */
+        wrp_id?: string;
+        certificate_type?: "access_certificate" | "registration_certificate";
+        event_type?:
+            | "certificate_issued"
+            | "certificate_revoked"
+            | "registration_recorded";
     };
-    url: "/wrps/{wrp_id}";
-};
-
-export type WrpReadControllerGetWalletRelyingPartyResponses = {
-    200: WalletRelyingPartyDto;
-};
-
-export type WrpReadControllerGetWalletRelyingPartyResponse =
-    WrpReadControllerGetWalletRelyingPartyResponses[keyof WrpReadControllerGetWalletRelyingPartyResponses];
-
-export type WrpReadControllerListWalletRelyingPartyIntendedUsesData = {
-    body?: never;
-    path: {
-        wrp_id: string;
-    };
-    query?: never;
-    url: "/wrps/{wrp_id}/intended-uses";
-};
-
-export type WrpReadControllerListWalletRelyingPartyIntendedUsesResponses = {
-    200: IntendedUseSearchResponseDto;
-};
-
-export type WrpReadControllerListWalletRelyingPartyIntendedUsesResponse =
-    WrpReadControllerListWalletRelyingPartyIntendedUsesResponses[keyof WrpReadControllerListWalletRelyingPartyIntendedUsesResponses];
-
-export type WrpReadControllerListWalletRelyingPartyCertificatesData = {
-    body?: never;
-    path: {
-        wrp_id: string;
-    };
-    query?: never;
-    url: "/wrps/{wrp_id}/certificates";
-};
-
-export type WrpReadControllerListWalletRelyingPartyCertificatesResponses = {
-    200: CertificateSearchResponseDto;
-};
-
-export type WrpReadControllerListWalletRelyingPartyCertificatesResponse =
-    WrpReadControllerListWalletRelyingPartyCertificatesResponses[keyof WrpReadControllerListWalletRelyingPartyCertificatesResponses];
-
-export type WrpReadControllerListWalletRelyingPartyCertificateEventsData = {
-    body?: never;
-    path: {
-        wrp_id: string;
-    };
-    query?: never;
-    url: "/wrps/{wrp_id}/certificate-events";
-};
-
-export type WrpReadControllerListWalletRelyingPartyCertificateEventsResponses =
-    {
-        200: CertificateEventSearchResponseDto;
-    };
-
-export type WrpReadControllerListWalletRelyingPartyCertificateEventsResponse =
-    WrpReadControllerListWalletRelyingPartyCertificateEventsResponses[keyof WrpReadControllerListWalletRelyingPartyCertificateEventsResponses];
-
-export type WrpReadControllerListWalletRelyingPartyStatementsData = {
-    body?: never;
-    path: {
-        wrp_id: string;
-    };
-    query?: never;
-    url: "/wrps/{wrp_id}/statements";
-};
-
-export type WrpReadControllerListWalletRelyingPartyStatementsResponses = {
-    200: StatementSearchResponseDto;
-};
-
-export type WrpReadControllerListWalletRelyingPartyStatementsResponse =
-    WrpReadControllerListWalletRelyingPartyStatementsResponses[keyof WrpReadControllerListWalletRelyingPartyStatementsResponses];
-
-export type IntendedUseReadControllerSearchIntendedUsesData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: "/intended-uses";
-};
-
-export type IntendedUseReadControllerSearchIntendedUsesResponses = {
-    200: IntendedUseSearchResponseDto;
-};
-
-export type IntendedUseReadControllerSearchIntendedUsesResponse =
-    IntendedUseReadControllerSearchIntendedUsesResponses[keyof IntendedUseReadControllerSearchIntendedUsesResponses];
-
-export type IntendedUseReadControllerGetIntendedUseData = {
-    body?: never;
-    path: {
-        intended_use_id: string;
-    };
-    query?: never;
-    url: "/intended-uses/{intended_use_id}";
-};
-
-export type IntendedUseReadControllerGetIntendedUseResponses = {
-    200: IntendedUseDto;
-};
-
-export type IntendedUseReadControllerGetIntendedUseResponse =
-    IntendedUseReadControllerGetIntendedUseResponses[keyof IntendedUseReadControllerGetIntendedUseResponses];
-
-export type IntendedUseReadControllerListIntendedUseCertificatesData = {
-    body?: never;
-    path: {
-        intended_use_id: string;
-    };
-    query?: never;
-    url: "/intended-uses/{intended_use_id}/certificates";
-};
-
-export type IntendedUseReadControllerListIntendedUseCertificatesResponses = {
-    200: CertificateSearchResponseDto;
-};
-
-export type IntendedUseReadControllerListIntendedUseCertificatesResponse =
-    IntendedUseReadControllerListIntendedUseCertificatesResponses[keyof IntendedUseReadControllerListIntendedUseCertificatesResponses];
-
-export type IntendedUseReadControllerListIntendedUseCertificateEventsData = {
-    body?: never;
-    path: {
-        intended_use_id: string;
-    };
-    query?: never;
-    url: "/intended-uses/{intended_use_id}/certificate-events";
-};
-
-export type IntendedUseReadControllerListIntendedUseCertificateEventsResponses =
-    {
-        200: CertificateEventSearchResponseDto;
-    };
-
-export type IntendedUseReadControllerListIntendedUseCertificateEventsResponse =
-    IntendedUseReadControllerListIntendedUseCertificateEventsResponses[keyof IntendedUseReadControllerListIntendedUseCertificateEventsResponses];
-
-export type IntendedUseReadControllerSearchRequestedCredentialsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: "/requested-credentials";
-};
-
-export type IntendedUseReadControllerSearchRequestedCredentialsResponses = {
-    200: RequestedCredentialSearchResponseDto;
-};
-
-export type IntendedUseReadControllerSearchRequestedCredentialsResponse =
-    IntendedUseReadControllerSearchRequestedCredentialsResponses[keyof IntendedUseReadControllerSearchRequestedCredentialsResponses];
-
-export type IntendedUseReadControllerSearchProvidedAttestationsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: "/provided-attestations";
-};
-
-export type IntendedUseReadControllerSearchProvidedAttestationsResponses = {
-    200: ProvidedAttestationSearchResponseDto;
-};
-
-export type IntendedUseReadControllerSearchProvidedAttestationsResponse =
-    IntendedUseReadControllerSearchProvidedAttestationsResponses[keyof IntendedUseReadControllerSearchProvidedAttestationsResponses];
-
-export type CertificateReadControllerSearchCertificatesData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: "/certificates";
-};
-
-export type CertificateReadControllerSearchCertificatesResponses = {
-    200: CertificateSearchResponseDto;
-};
-
-export type CertificateReadControllerSearchCertificatesResponse =
-    CertificateReadControllerSearchCertificatesResponses[keyof CertificateReadControllerSearchCertificatesResponses];
-
-export type CertificateReadControllerGetCertificateData = {
-    body?: never;
-    path: {
-        certificate_id: string;
-    };
-    query?: never;
-    url: "/certificates/{certificate_id}";
-};
-
-export type CertificateReadControllerGetCertificateResponses = {
-    200: CertificateSummaryDto;
-};
-
-export type CertificateReadControllerGetCertificateResponse =
-    CertificateReadControllerGetCertificateResponses[keyof CertificateReadControllerGetCertificateResponses];
-
-export type CertificateReadControllerGetCertificatePayloadData = {
-    body?: never;
-    path: {
-        certificate_id: string;
-    };
-    query?: never;
-    url: "/certificates/{certificate_id}/payload";
-};
-
-export type CertificateReadControllerGetCertificatePayloadResponses = {
-    200: CertificatePayloadDto;
-};
-
-export type CertificateReadControllerGetCertificatePayloadResponse =
-    CertificateReadControllerGetCertificatePayloadResponses[keyof CertificateReadControllerGetCertificatePayloadResponses];
-
-export type CertificateReadControllerGetCertificateStatusData = {
-    body?: never;
-    path: {
-        certificate_id: string;
-    };
-    query?: never;
-    url: "/certificates/{certificate_id}/status";
-};
-
-export type CertificateReadControllerGetCertificateStatusResponses = {
-    200: CertificateStatusDetailDto;
-};
-
-export type CertificateReadControllerGetCertificateStatusResponse =
-    CertificateReadControllerGetCertificateStatusResponses[keyof CertificateReadControllerGetCertificateStatusResponses];
-
-export type CertificateReadControllerSearchCertificateEventsData = {
-    body?: never;
-    path?: never;
-    query?: never;
     url: "/certificate-events";
 };
 
-export type CertificateReadControllerSearchCertificateEventsResponses = {
+export type CertificateEventReadControllerSearchCertificateEventsErrors = {
+    /**
+     * The requested representation is not supported.
+     */
+    406: unknown;
+};
+
+export type CertificateEventReadControllerSearchCertificateEventsResponses = {
+    /**
+     * The requested certificate-event page representation.
+     */
     200: CertificateEventSearchResponseDto;
 };
 
-export type CertificateReadControllerSearchCertificateEventsResponse =
-    CertificateReadControllerSearchCertificateEventsResponses[keyof CertificateReadControllerSearchCertificateEventsResponses];
+export type CertificateEventReadControllerSearchCertificateEventsResponse =
+    CertificateEventReadControllerSearchCertificateEventsResponses[keyof CertificateEventReadControllerSearchCertificateEventsResponses];
 
-export type CertificateReadControllerGetCertificateEventData = {
+export type CertificateEventReadControllerGetCertificateEventData = {
     body?: never;
     path: {
         event_id: string;
@@ -1884,69 +2227,99 @@ export type CertificateReadControllerGetCertificateEventData = {
     url: "/certificate-events/{event_id}";
 };
 
-export type CertificateReadControllerGetCertificateEventResponses = {
+export type CertificateEventReadControllerGetCertificateEventErrors = {
+    /**
+     * The requested representation is not supported.
+     */
+    406: unknown;
+};
+
+export type CertificateEventReadControllerGetCertificateEventResponses = {
+    /**
+     * The requested certificate-event representation.
+     */
     200: CertificateEventDto;
 };
 
-export type CertificateReadControllerGetCertificateEventResponse =
-    CertificateReadControllerGetCertificateEventResponses[keyof CertificateReadControllerGetCertificateEventResponses];
+export type CertificateEventReadControllerGetCertificateEventResponse =
+    CertificateEventReadControllerGetCertificateEventResponses[keyof CertificateEventReadControllerGetCertificateEventResponses];
 
-export type StatementReadControllerSearchStatementsData = {
+export type LogTreeControllerTreeHeadData = {
     body?: never;
     path?: never;
-    query?: never;
-    url: "/statements";
-};
-
-export type StatementReadControllerSearchStatementsResponses = {
-    200: StatementSearchResponseDto;
-};
-
-export type StatementReadControllerSearchStatementsResponse =
-    StatementReadControllerSearchStatementsResponses[keyof StatementReadControllerSearchStatementsResponses];
-
-export type StatementReadControllerGetStatementData = {
-    body?: never;
-    path: {
-        statement_id: string;
+    query?: {
+        tree_size?: string;
     };
-    query?: never;
-    url: "/statements/{statement_id}";
+    url: "/logs/public-certificates/tree-head";
 };
 
-export type StatementReadControllerGetStatementResponses = {
-    200: SignedStatementEnvelopeDto;
+export type LogTreeControllerTreeHeadErrors = {
+    /**
+     * The requested representation is not supported.
+     */
+    406: unknown;
 };
 
-export type StatementReadControllerGetStatementResponse =
-    StatementReadControllerGetStatementResponses[keyof StatementReadControllerGetStatementResponses];
-
-export type StatementReadControllerGetStatementJwsData = {
-    body?: never;
-    path: {
-        statement_id: string;
-    };
-    query?: never;
-    url: "/statements/{statement_id}/jws";
+export type LogTreeControllerTreeHeadResponses = {
+    /**
+     * The tree head. As JSON, or as a JWS-signed statement with Accept: application/jwt; the requester chooses.
+     */
+    200: LogTreeHeadDto;
 };
 
-export type StatementReadControllerGetStatementJwsResponses = {
-    200: JwsFlattenedDto;
-};
+export type LogTreeControllerTreeHeadResponse =
+    LogTreeControllerTreeHeadResponses[keyof LogTreeControllerTreeHeadResponses];
 
-export type StatementReadControllerGetStatementJwsResponse =
-    StatementReadControllerGetStatementJwsResponses[keyof StatementReadControllerGetStatementJwsResponses];
-
-export type StatisticsReadControllerGetStatisticsData = {
+export type LogTreeControllerInclusionData = {
     body?: never;
     path?: never;
-    query?: never;
-    url: "/statistics";
+    query: {
+        sequence_number: string;
+        tree_size?: string;
+    };
+    url: "/logs/public-certificates/proofs/inclusion";
 };
 
-export type StatisticsReadControllerGetStatisticsResponses = {
-    200: StatisticsDto;
+export type LogTreeControllerInclusionErrors = {
+    /**
+     * The requested representation is not supported.
+     */
+    406: unknown;
 };
 
-export type StatisticsReadControllerGetStatisticsResponse =
-    StatisticsReadControllerGetStatisticsResponses[keyof StatisticsReadControllerGetStatisticsResponses];
+export type LogTreeControllerInclusionResponses = {
+    /**
+     * The inclusion proof. As JSON, or as a JWS-signed statement with Accept: application/jwt; the requester chooses.
+     */
+    200: LogInclusionProofDto;
+};
+
+export type LogTreeControllerInclusionResponse =
+    LogTreeControllerInclusionResponses[keyof LogTreeControllerInclusionResponses];
+
+export type LogTreeControllerConsistencyData = {
+    body?: never;
+    path?: never;
+    query: {
+        first_tree_size: string;
+        second_tree_size?: string;
+    };
+    url: "/logs/public-certificates/proofs/consistency";
+};
+
+export type LogTreeControllerConsistencyErrors = {
+    /**
+     * The requested representation is not supported.
+     */
+    406: unknown;
+};
+
+export type LogTreeControllerConsistencyResponses = {
+    /**
+     * The consistency proof. As JSON, or as a JWS-signed statement with Accept: application/jwt; the requester chooses.
+     */
+    200: LogConsistencyProofDto;
+};
+
+export type LogTreeControllerConsistencyResponse =
+    LogTreeControllerConsistencyResponses[keyof LogTreeControllerConsistencyResponses];

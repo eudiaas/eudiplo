@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
+import * as x509 from "@peculiar/x509";
 import type { Signer } from "@sd-jwt/core";
 import {
     exportSPKI,
@@ -10,9 +11,17 @@ import {
 } from "jose";
 import { Span } from "nestjs-otel";
 import { Repository } from "typeorm";
-import { KeyChainEntity, KeyUsage } from "./entities/key-chain.entity";
-import type { KmsAdapter, KmsKeyRef, KmsSigningAlg } from "./kms/kms-adapter";
-import { KmsProviderRegistry } from "./kms/kms-provider.registry";
+import { KeyChainEntity, KeyUsage } from "./entities/key-chain.entity.js";
+import type {
+    KmsAdapter,
+    KmsKeyRef,
+    KmsSigningAlg,
+} from "./kms/kms-adapter.js";
+import {
+    importPublicCryptoKey,
+    makeKmsSigningKey,
+} from "./kms/kms-crypto-provider.js";
+import { KmsProviderRegistry } from "./kms/kms-provider.registry.js";
 
 function base64url(input: string): string {
     return Buffer.from(input, "utf8").toString("base64url");
@@ -105,6 +114,31 @@ export class KeyChainSigningService {
         const ref = this.refFromEntity(keyChain);
 
         return adapter.sign(ref, data, alg);
+    }
+
+    async createCertificateSigningRequest(
+        tenantId: string,
+        keyId: string,
+    ): Promise<string> {
+        const keyChain = await this.getKeyChain(tenantId, keyId);
+        const adapter = this.kmsRegistry.resolve(
+            keyChain.kmsProvider,
+            keyChain.tenantId,
+        );
+        const ref = this.refFromEntity(keyChain);
+        const publicKey = await importPublicCryptoKey(ref.publicJwk, ref.alg);
+        const signingKey = makeKmsSigningKey(adapter, ref, ref.alg);
+
+        const csr = await x509.Pkcs10CertificateRequestGenerator.create({
+            name: `CN=${keyChain.id}`,
+            keys: { publicKey, privateKey: signingKey },
+            signingAlgorithm: {
+                name: "ECDSA",
+                hash: "SHA-256",
+            },
+        });
+
+        return csr.toString("pem");
     }
 
     getPublicKey(type: "jwk", tenantId: string, keyId?: string): Promise<JWK>;

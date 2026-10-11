@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wuaStatusEntry, wuaStatusEntryFromPayload } from "./wua-status";
+import { wuaStatusEntry, wuaStatusEntryFromPayload } from "./wua-status.js";
 
 /**
  * EUDI TS3 v1.5 moved the status list reference of Wallet Unit Attestations

@@ -11,30 +11,28 @@ import {
 import * as x509 from "@peculiar/x509";
 import { Span } from "nestjs-otel";
 import { PinoLogger } from "nestjs-pino";
+import { VerificationProvenance } from "../../../../session/domain/session-outcome.js";
 import {
-    SessionOutcomeWarning,
-    VerificationProvenance,
-} from "../../../../session/entities/session-outcome";
-import { VerifierOptions } from "../../../../trust/types";
-import {
-    isStatusListUnavailableError,
+    RevocationListUnavailableError,
     resolveRevocationPolicy,
-} from "../../../../trust/revocation-policy.util";
-import { mdocContext } from "../../mdoc-context";
+} from "../../../../trust/revocation-policy.util.js";
+import { StatusListVerifierService } from "../../../../trust/status-list-verifier.service.js";
+import { VerifierOptions } from "../../../../trust/types.js";
+import { mdocContext, withFetch } from "../../mdoc-context.js";
 import {
     ChainValidationResult,
     CredentialChainValidationService,
-} from "../credential-chain-validation.service";
+} from "../credential-chain-validation.service.js";
 import {
     mapChainErrorToFailureType,
     type VerificationFailureType,
-} from "../verification-failure";
-import { toProvenance } from "../verification-provenance";
+} from "../verification-failure.js";
+import { toProvenance } from "../verification-provenance.js";
 
 /**
  * Session data for the standard OID4VP flow (direct_post or direct_post.jwt).
  */
-export type MdocSessionDataOid4vp = {
+type MdocSessionDataOid4vp = {
     protocol: "openid4vp";
     nonce: string;
     responseMode: string;
@@ -48,7 +46,7 @@ export type MdocSessionDataOid4vp = {
  * Session data for OID4VP via DC API (openid4vp-v1-unsigned, response_mode=dc_api.jwt).
  * Uses OID4VPDCAPIHandover transcript: SHA256(CBOR([origin, nonce, jwkThumbprint?])).
  */
-export type MdocSessionDataDcApi = {
+type MdocSessionDataDcApi = {
     protocol: "dc_api";
     nonce: string;
     origin: string;
@@ -81,8 +79,6 @@ export type MdocVerificationResult = {
     failureReason?: string;
     /** Trust provenance for a successful verification. */
     provenance?: VerificationProvenance;
-    /** Non-fatal conditions observed during a successful verification. */
-    warnings?: SessionOutcomeWarning[];
 };
 
 /**
@@ -100,6 +96,7 @@ interface MdocErrorDetails {
 export class MdocverifierService {
     constructor(
         private readonly chainValidation: CredentialChainValidationService,
+        private readonly statusListVerifier: StatusListVerifierService,
         private readonly logger: PinoLogger,
     ) {
         this.logger.setContext(MdocverifierService.name);
@@ -247,6 +244,24 @@ export class MdocverifierService {
             // is present in the credential. We attach status anchors unconditionally and
             // use revocation policy only to control fail-open/fail-closed behavior.
             const includeStatusCheck = revocationPolicy.enabled;
+
+            // Status lists and identifier lists named in the presented MSO are
+            // fetched under the outbound URL policy, not with the global
+            // `fetch`. @owf/mdoc reports a failed status check only by its
+            // message, which for a revoked identifier list contains the list's
+            // URI, so an unavailable list is recorded here instead of being
+            // recognised by the message.
+            let revocationListUnavailable = false;
+            const verificationContext = withFetch(async (input, init) => {
+                try {
+                    return await this.statusListVerifier.mdocFetch(input, init);
+                } catch (error) {
+                    if (error instanceof RevocationListUnavailableError) {
+                        revocationListUnavailable = true;
+                    }
+                    throw error;
+                }
+            });
             const attachStatusAnchorsForMdoc = true;
             let trustedCertificates = buildTrustedCertificates(
                 attachStatusAnchorsForMdoc,
@@ -280,13 +295,13 @@ export class MdocverifierService {
                         trustedCertificates,
                         disableStatusValidation: !includeStatusCheck,
                     },
-                    mdocContext,
+                    verificationContext,
                 );
             } catch (error) {
                 if (
                     !includeStatusCheck ||
                     revocationPolicy.failClosed ||
-                    !isStatusListUnavailableError(error)
+                    !revocationListUnavailable
                 ) {
                     throw error;
                 }
@@ -298,7 +313,7 @@ export class MdocverifierService {
                                 ? error.message
                                 : String(error),
                     },
-                    "Status list unavailable in best-effort mode, retrying mDOC verification without status check",
+                    "Status list or identifier list unavailable in best-effort mode, retrying mDOC verification without status check",
                 );
 
                 trustedCertificates = buildTrustedCertificates(false);
@@ -310,7 +325,7 @@ export class MdocverifierService {
                         trustedCertificates,
                         disableStatusValidation: true,
                     },
-                    mdocContext,
+                    verificationContext,
                 );
             }
 
@@ -356,9 +371,6 @@ export class MdocverifierService {
                 payload: vp,
                 docType,
                 provenance: toProvenance(chainResult.matchedEntity),
-                ...(chainResult.warnings?.length
-                    ? { warnings: chainResult.warnings }
-                    : {}),
             };
         } catch (error: any) {
             return this.handleVerificationError(vp, error, options);

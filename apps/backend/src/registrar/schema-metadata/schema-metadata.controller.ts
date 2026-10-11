@@ -4,28 +4,28 @@ import {
     Delete,
     Get,
     Header,
+    HttpCode,
     Param,
     Patch,
     Post,
     Query,
-    HttpCode,
 } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Role } from "../../auth/roles/role.enum";
-import { Secured } from "../../auth/secure.decorator";
-import { Token, TokenPayload } from "../../auth/token.decorator";
+import { Role } from "../../auth/roles/role.enum.js";
+import { Secured } from "../../auth/secure.decorator.js";
+import { Token, TokenPayload } from "../../auth/token.decorator.js";
 import {
     SignSchemaMetaConfigDto,
     SignVersionSchemaMetaConfigDto,
-} from "../../issuer/configuration/credentials/dto/schema-meta-config.dto";
-import { SchemaMetadataSubmissionService } from "./schema-metadata-submission.service";
+} from "../../issuer/configuration/credentials/dto/schema-meta-config.dto.js";
 import {
     DeprecateSchemaMetadataDto,
     SchemaMetadataResponseDto,
     SchemaMetadataVocabulariesDto,
     UpdateSchemaMetadataDto,
-} from "./dto/schema-metadata.dto";
-import { SchemaMetadataService } from "./schema-metadata.service";
+} from "./dto/schema-metadata.dto.js";
+import { SchemaMetadataService } from "./schema-metadata.service.js";
+import { SchemaMetadataSubmissionService } from "./schema-metadata-submission.service.js";
 
 /**
  * Controller for managing TS11 schema metadata at the configured registrar /
@@ -82,30 +82,6 @@ export class SchemaMetadataController {
         );
     }
 
-    @Post("sign")
-    @Secured([Role.Issuances])
-    @ApiOperation({
-        summary: "Deprecated alias for publish endpoint",
-        description: "Deprecated. Use POST /schema-metadata/publish instead.",
-        deprecated: true,
-    })
-    @ApiResponse({
-        status: 201,
-        description:
-            "Registrar metadata entry for the freshly submitted schema metadata.",
-        type: SchemaMetadataResponseDto,
-    })
-    @ApiBody({ type: SignSchemaMetaConfigDto })
-    async signSchemaMetaConfig(
-        @Token() user: TokenPayload,
-        @Body() body: SignSchemaMetaConfigDto,
-    ) {
-        return this.schemaMetadataSubmissionService.submitSchemaMetadata(
-            user.entity!.id,
-            body,
-        );
-    }
-
     /**
      * Submits new-version schema metadata input values for an existing schema.
      * The registrar builds and signs the new version.
@@ -131,31 +107,6 @@ export class SchemaMetadataController {
     })
     @ApiBody({ type: SignVersionSchemaMetaConfigDto })
     async publishSchemaMetadataVersion(
-        @Token() user: TokenPayload,
-        @Body() body: SignVersionSchemaMetaConfigDto,
-    ) {
-        return this.schemaMetadataSubmissionService.submitSchemaMetadataVersion(
-            user.entity!.id,
-            body,
-        );
-    }
-
-    @Post("sign-version")
-    @Secured([Role.Issuances])
-    @ApiOperation({
-        summary: "Deprecated alias for publish-version endpoint",
-        description:
-            "Deprecated. Use POST /schema-metadata/publish-version instead.",
-        deprecated: true,
-    })
-    @ApiResponse({
-        status: 201,
-        description:
-            "Registrar metadata entry for the newly submitted version.",
-        type: SchemaMetadataResponseDto,
-    })
-    @ApiBody({ type: SignVersionSchemaMetaConfigDto })
-    async signVersionSchemaMetaConfig(
         @Token() user: TokenPayload,
         @Body() body: SignVersionSchemaMetaConfigDto,
     ) {

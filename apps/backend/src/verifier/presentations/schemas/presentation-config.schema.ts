@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RegistrationCertificateRequestSchema } from "../dto/vp-request.dto";
+import { RegistrationCertificateRequestSchema } from "../dto/vp-request.dto.js";
 
 const CredentialIdSchema = z
     .string()
@@ -44,7 +44,9 @@ const TrustListRefSchema = z
         serviceTypeMap: z
             .record(z.string(), z.string())
             .optional()
-            .describe("etsi-xml only: map source service-type URIs to internal ones."),
+            .describe(
+                "etsi-xml only: map source service-type URIs to internal ones.",
+            ),
         acceptedServiceStatus: z
             .array(z.string())
             .optional()
@@ -88,9 +90,12 @@ const ClaimsQuerySchema = z
             .array(z.union([z.string(), z.number()]))
             .describe("Path to the claim value in presented credentials."),
         values: z
-            .array(z.string())
+            .array(z.union([z.string(), z.number().int(), z.boolean()]))
+            .min(1)
             .optional()
-            .describe("Optional allowed values for the claim."),
+            .describe(
+                "Optional allowed values for the claim. A disclosed value must equal one of them in type and value.",
+            ),
     })
     .describe("Claim query constraint.")
     .strict();
@@ -255,7 +260,7 @@ export const DCQLSchema = z
             const firstIndex = seen.get(credential.id);
             if (firstIndex !== undefined) {
                 ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
+                    code: "custom",
                     path: ["credentials", index, "id"],
                     message: `Duplicate credential id '${credential.id}' already used at credentials[${firstIndex}]`,
                 });
@@ -272,9 +277,117 @@ export const TransactionDataSchema = z
         credential_ids: z
             .array(z.string())
             .describe("Credential query ids this transaction data applies to."),
+        payload: z
+            .unknown()
+            .optional()
+            .describe(
+                "Transaction details. Required for TS12 SCA transaction data.",
+            ),
     })
     .describe("Transaction data request descriptor.")
-    .catchall(z.unknown());
+    .catchall(z.unknown())
+    .superRefine((transactionData, ctx) => {
+        if (!transactionData.type.startsWith("urn:eudi:sca:")) {
+            return;
+        }
+
+        if (!isTs12TransactionDataType(transactionData.type)) {
+            ctx.addIssue({
+                code: "custom",
+                path: ["type"],
+                message: "Unsupported TS12 transaction data type.",
+            });
+        }
+
+        validateTs12TransactionPayload(transactionData, ctx);
+    });
+
+function validateTs12TransactionPayload(
+    transactionData: Record<string, unknown>,
+    ctx: z.RefinementCtx,
+): void {
+    if (
+        !transactionData.payload ||
+        typeof transactionData.payload !== "object" ||
+        Array.isArray(transactionData.payload)
+    ) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["payload"],
+            message: "TS12 transaction data requires an object payload.",
+        });
+        return;
+    }
+
+    const payload = transactionData.payload as Record<string, unknown>;
+    const requireString = (field: string) => {
+        if (typeof payload[field] !== "string" || !payload[field]) {
+            ctx.addIssue({
+                code: "custom",
+                path: ["payload", field],
+                message: `TS12 ${transactionData.type} requires payload.${field}.`,
+            });
+        }
+    };
+
+    requireString("transaction_id");
+
+    if (transactionData.type === "urn:eudi:sca:payment:1") {
+        validateTs12PaymentPayload(payload, ctx);
+    }
+
+    if (transactionData.type === "urn:eudi:sca:login_risk_transaction:1") {
+        requireString("action");
+    }
+}
+
+function validateTs12PaymentPayload(
+    payload: Record<string, unknown>,
+    ctx: z.RefinementCtx,
+): void {
+    const payee = payload.payee;
+    if (!payee || typeof payee !== "object" || Array.isArray(payee)) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["payload", "payee"],
+            message: "TS12 payment requires a payee object.",
+        });
+    } else {
+        const payeeRecord = payee as Record<string, unknown>;
+        for (const field of ["name", "id"]) {
+            if (typeof payeeRecord[field] !== "string" || !payeeRecord[field]) {
+                ctx.addIssue({
+                    code: "custom",
+                    path: ["payload", "payee", field],
+                    message: `TS12 payment requires payee.${field}.`,
+                });
+            }
+        }
+    }
+    if (!/^[A-Z]{3}$/.test(String(payload.currency ?? ""))) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["payload", "currency"],
+            message: "TS12 payment requires a three-letter uppercase currency.",
+        });
+    }
+    if (typeof payload.amount !== "number") {
+        ctx.addIssue({
+            code: "custom",
+            path: ["payload", "amount"],
+            message: "TS12 payment requires a numeric amount.",
+        });
+    }
+}
+
+function isTs12TransactionDataType(type: string): boolean {
+    return [
+        "urn:eudi:sca:payment:1",
+        "urn:eudi:sca:login_risk_transaction:1",
+        "urn:eudi:sca:account_access:1",
+        "urn:eudi:sca:emandate:1",
+    ].includes(type);
+}
 
 const PresentationAttachmentSchema = z
     .object({
@@ -288,6 +401,14 @@ const PresentationAttachmentSchema = z
             ),
     })
     .describe("Additional presentation attachment.")
+    .strict();
+
+const RegistrationCertificateFormPurposeSchema = z
+    .object({
+        lang: z.string().optional(),
+        content: z.string().optional(),
+    })
+    .describe("Registration certificate purpose entry from the management UI.")
     .strict();
 
 export const PresentationConfigCreateSchema = z
@@ -318,26 +439,59 @@ export const PresentationConfigCreateSchema = z
             .optional()
             .describe("Revocation/status check mode."),
         // espuni fork — not upstream. Selects how the authorization request is
-        // built: signed JAR by reference (x509_hash, default) vs unsigned by
-        // value with unencrypted direct_post (redirect_uri), the EU AV
-        // QR/deeplink fallback of Annex A §A.6.
+        // built: signed JAR by reference (x509_hash, default, or x509_san_dns)
+        // vs unsigned by value with unencrypted direct_post (redirect_uri), the
+        // EU AV QR/deeplink fallback of Annex A §A.6. Same values as
+        // ClientIdScheme in presentation-request.dto.ts, spelled out because
+        // that module imports this one. A per-request clientIdScheme wins.
         clientIdScheme: z
-            .enum(["x509_hash", "redirect_uri"])
+            .enum(["x509_hash", "x509_san_dns", "redirect_uri"])
             .nullable()
             .optional()
             .describe(
-                "OID4VP client identifier scheme used to build the authorization request.",
+                "Default OID4VP client identifier scheme for requests built from this configuration; a per-request clientIdScheme overrides it.",
             ),
         dcql_query: DCQLSchema.describe(
             "DCQL query defining requested credentials and claims.",
         ),
         transaction_data: z
             .array(TransactionDataSchema)
+            .nullable()
             .optional()
             .describe("Optional transaction data descriptors."),
         registration_cert: RegistrationCertificateRequestSchema.nullable()
             .optional()
             .describe("Optional registration certificate request settings."),
+        registrationCertImportJwt: z
+            .string()
+            .nullable()
+            .optional()
+            .describe("Optional imported registration certificate JWT."),
+        registrationCertImportId: z
+            .string()
+            .nullable()
+            .optional()
+            .describe("Optional registrar-side registration certificate id."),
+        registrationCertBodyPrivacyPolicy: z
+            .string()
+            .nullable()
+            .optional()
+            .describe("Optional registration certificate privacy policy URI."),
+        registrationCertBodySupportUri: z
+            .string()
+            .nullable()
+            .optional()
+            .describe("Optional registration certificate support URI."),
+        registrationCertBodyIntermediary: z
+            .string()
+            .nullable()
+            .optional()
+            .describe("Optional registration certificate intermediary."),
+        registrationCertBodyPurpose: z
+            .array(RegistrationCertificateFormPurposeSchema)
+            .nullable()
+            .optional()
+            .describe("Optional registration certificate purpose entries."),
         webhookEndpointId: z
             .string()
             .nullable()

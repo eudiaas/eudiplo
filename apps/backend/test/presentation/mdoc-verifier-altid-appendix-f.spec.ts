@@ -3,7 +3,7 @@ import { join } from "node:path";
 import "reflect-metadata";
 import { DeviceResponse, SessionTranscript, Verifier } from "@owf/mdoc";
 import { describe, expect, test } from "vitest";
-import { mdocContext } from "../../src/verifier/presentations/mdoc-context";
+import { mdocContext } from "../../src/verifier/presentations/mdoc-context.js";
 
 /**
  * Real, byte-for-byte AV vp_token reproduced from AltID's own published
@@ -13,7 +13,7 @@ import { mdocContext } from "../../src/verifier/presentations/mdoc-context";
  * since elapsed relative to wall-clock time), and why device-binding
  * replay is out of scope here (documented in the last test below).
  */
-const FIXTURE_DIR = join(__dirname, "../fixtures/av/appendix-f");
+const FIXTURE_DIR = join(import.meta.dirname, "../fixtures/av/appendix-f");
 
 const ALTID_NONCE = "0493288b-478e-4aef-beb2-f71931fc2603";
 const ALTID_RESPONSE_URI =

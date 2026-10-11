@@ -8,41 +8,57 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
     BadRequestException,
+    Inject,
     Injectable,
     NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { InjectRepository } from "@nestjs/typeorm";
 import type { ItemsRequest, ReaderAuth } from "@owf/mdoc";
 import { X509Certificate } from "@peculiar/x509";
 import { exportJWK } from "jose";
-import { InjectRepository } from "@nestjs/typeorm";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
 import { Repository } from "typeorm";
-import { EncryptionService } from "../../crypto/encryption/encryption.service";
-import { CertService } from "../../crypto/key/cert/cert.service";
-import { KeyUsageType } from "../../crypto/key/types/key-usage-type";
-import { KeyChainService } from "../../crypto/key/key-chain.service";
-import { WebhookEndpointEntity } from "../../issuer/configuration/webhook-endpoint/entities/webhook-endpoint.entity";
-import { ServiceTypeIdentifier } from "../../issuer/trust-list/trustlist.service";
-import { SessionStatus } from "../../session/entities/session.entity";
-import { SessionService } from "../../session/session.service";
-import { revocationModeToPolicy } from "../../trust/revocation-policy.util";
+import { EncryptionService } from "../../crypto/encryption/encryption.service.js";
+import { CertService } from "../../crypto/key/cert/cert.service.js";
+import { KeyChainService } from "../../crypto/key/key-chain.service.js";
+import { KeyUsageType } from "../../crypto/key/types/key-usage-type.js";
+import { WebhookEndpointEntity } from "../../issuer/configuration/webhook-endpoint/entities/webhook-endpoint.entity.js";
+import { ChangeSessionState } from "../../session/application/change-session-state.js";
+import { CreateSession } from "../../session/application/create-session.js";
+import { SessionStore } from "../../session/application/session-store.js";
+import type {
+    SessionData,
+    SessionUpdate,
+} from "../../session/domain/session-data.js";
+import type { SessionOutcome } from "../../session/domain/session-outcome.js";
+import { SessionStatus } from "../../session/domain/session-state.js";
+import {
+    assertSessionUsable,
+    SessionNotUsable,
+} from "../../session/domain/session-usability.js";
+import { SessionAuditService } from "../../session/logging/session-audit.service.js";
 import {
     DEFAULT_VERIFIER_SKEW_SECONDS,
     RevocationCheckMode,
     VerifierOptions,
-} from "../../trust/types";
-import { SessionAuditService } from "../../session/logging/session-audit.service";
-import { WebhookConfig } from "../../webhook/webhook.dto";
-import { WebhookService } from "../../webhook/webhook.service";
-import { MdocverifierService } from "../presentations/credential/mdocverifier/mdocverifier.service";
+} from "../../trust/types.js";
 import {
-    TrustedAuthorityQueryEtsiTl,
-    TrustedAuthorityQueryOpenIdFederation,
-    TrustedAuthorityType,
-} from "../presentations/entities/presentation-config.entity";
-import { shortVerificationMessage } from "../presentations/credential/verification-failure";
-import { PresentationsService } from "../presentations/presentations.service";
+    PRESENTATION_RESULT_PUBLISHER,
+    type PresentationResult,
+    type PresentationResultPublisher,
+    type PresentationResultReport,
+} from "../../webhook/ports/presentation-result-publisher.js";
+import { WebhookConfig } from "../../webhook/webhook.dto.js";
+import { CredentialVerifierFormatRegistry } from "../presentations/application/credential-verifier-format-registry.js";
+import { PresentationConfigService } from "../presentations/configuration/presentation-config.service.js";
+import { verificationFailureDetails } from "../presentations/credential/verification-failure.js";
+import {
+    trustListAuthorities,
+    verifierTrustOptions,
+} from "../presentations/domain/verifier-trust-options.js";
+import { InvalidTrustedAuthoritiesError } from "../presentations/ports/trust-list-ref-resolver.js";
+import { TrustedAuthoritiesService } from "../presentations/trusted-authorities.service.js";
 import {
     buildDeviceRequestCbor,
     buildEncryptionInfo,
@@ -50,8 +66,8 @@ import {
     buildItemsRequest,
     buildReaderAuth,
     parseEncryptedResponse,
-} from "./cbor-request";
-import { hpkeOpen } from "./hpke";
+} from "./cbor-request.js";
+import { hpkeOpen } from "./hpke.js";
 
 export interface Iso18013Offer {
     session: string;
@@ -66,11 +82,13 @@ export interface Iso18013Offer {
 @Injectable()
 export class Iso18013Service {
     constructor(
-        private readonly presentationsService: PresentationsService,
-        private readonly sessionService: SessionService,
+        private readonly presentationConfigService: PresentationConfigService,
+        private readonly createSession: CreateSession,
+        private readonly sessionStore: SessionStore,
         private readonly encryptionService: EncryptionService,
-        private readonly mdocverifierService: MdocverifierService,
-        private readonly webhookService: WebhookService,
+        private readonly credentialVerifierFormats: CredentialVerifierFormatRegistry,
+        @Inject(PRESENTATION_RESULT_PUBLISHER)
+        private readonly presentationResultPublisher: PresentationResultPublisher,
         private readonly auditLogService: SessionAuditService,
         private readonly configService: ConfigService,
         private readonly certService: CertService,
@@ -79,7 +97,82 @@ export class Iso18013Service {
         private readonly webhookEndpointRepo: Repository<WebhookEndpointEntity>,
         @InjectPinoLogger(Iso18013Service.name)
         private readonly logger: PinoLogger,
+        private readonly trustedAuthoritiesService: TrustedAuthoritiesService,
+        private readonly changeSessionState: ChangeSessionState,
     ) {}
+
+    /**
+     * Persists a failed outcome, announces the terminal transition and
+     * reports the failure to the presentation webhook.
+     */
+    private async failSession(
+        session: SessionData,
+        update: Omit<SessionUpdate, "status" | "outcome"> & {
+            outcome: SessionOutcome;
+        },
+    ): Promise<void> {
+        // Conditional, so a completed or expired session keeps its state.
+        const updated = await this.sessionStore.updateIfUnconsumed(
+            session.tenantId,
+            session.id,
+            { ...update, status: SessionStatus.Failed },
+        );
+        if (!updated) {
+            return;
+        }
+        this.changeSessionState.announce(session, SessionStatus.Failed);
+
+        // Failures are answered without a redirect, so a redirectUri the
+        // webhook returns is not used here.
+        const webhook = await this.resolveSessionWebhook(session).catch(
+            (err: any) => {
+                this.logger.warn(
+                    { sessionId: session.id },
+                    `Webhook lookup failed: ${err?.message ?? err}`,
+                );
+                return undefined;
+            },
+        );
+        if (webhook) {
+            await this.publishResult(webhook, session, {
+                status: SessionStatus.Failed,
+                outcome: update.outcome,
+            });
+        }
+    }
+
+    /** The request's inline webhook, else the configured webhook endpoint. */
+    private async resolveSessionWebhook(
+        session: SessionData,
+    ): Promise<WebhookConfig | undefined> {
+        return (
+            session.parsedWebhook ??
+            (await this.resolveWebhookFromEndpoint(
+                session.webhookEndpointId,
+                session.tenantId,
+            ))
+        );
+    }
+
+    /**
+     * Sends the presentation result to the webhook. Best effort: a failed
+     * delivery never changes the session result.
+     */
+    private publishResult(
+        webhook: WebhookConfig,
+        session: SessionData,
+        result: PresentationResultReport,
+    ): Promise<PresentationResult | undefined> {
+        return this.presentationResultPublisher
+            .publish({ webhook, session, ...result })
+            .catch((err: any) => {
+                this.logger.warn(
+                    { sessionId: session.id },
+                    `Webhook delivery failed: ${err?.message ?? err}`,
+                );
+                return undefined;
+            });
+    }
 
     private async resolveWebhookFromEndpoint(
         webhookEndpointId: string | null | undefined,
@@ -117,11 +210,13 @@ export class Iso18013Service {
         origin: string,
         skewSeconds?: number,
         webhook?: WebhookConfig,
+        reference?: string,
     ): Promise<Iso18013Offer> {
-        const config = await this.presentationsService.getPresentationConfig(
-            requestId,
-            tenantId,
-        );
+        const config =
+            await this.presentationConfigService.getPresentationConfig(
+                requestId,
+                tenantId,
+            );
 
         const pubJwk =
             await this.encryptionService.getEncryptionPublicKey(tenantId);
@@ -138,22 +233,15 @@ export class Iso18013Service {
             );
         }
 
-        // Read `doctype_value`: the field the OpenID4VP DCQL spec defines for
+        // `doctype_value` is the field the OpenID4VP DCQL spec defines for
         // mso_mdoc `meta`, and the only one CredentialQueryMsoMdocSchema
-        // accepts — it is .strict() and marks doctype_value required.
+        // accepts: it is .strict() and marks doctype_value required.
         //
-        // Reading `doctype` here made v7 self-contradictory: a config carrying
-        // it is rejected on write, and a config without it fails every ISO
-        // 18013-7 offer, so no config could both save and serve this flow.
-        //
-        // No compatibility fallback on purpose. Every config writable under v7
-        // has doctype_value by schema, and v7 handled its other config format
-        // breaks (trusted_authorities, walletProviderTrustLists, webhook) with
-        // a migration guide rather than dual acceptance — this follows that.
-        //
-        // espuni fork — candidate upstream fix. The rest of the codebase
-        // already treats doctype_value as authoritative (see
-        // schema-metadata-submission.service.ts, which only ever writes it).
+        // Reading the non-spec `doctype` here left no valid configuration: one
+        // carrying it is rejected on write by the strict schema, and one
+        // without it fails every ISO 18013-7 offer. The rest of the codebase
+        // already treats doctype_value as authoritative — see
+        // schema-metadata-submission.service.ts, which only ever writes it.
         const docType = (mdocCred.meta as { doctype_value?: string })
             ?.doctype_value;
         if (!docType) {
@@ -211,10 +299,11 @@ export class Iso18013Service {
         );
         const resolvedWebhook = webhook ?? endpointWebhook;
 
-        await this.sessionService.create({
+        await this.createSession.execute({
             id: sessionId,
             tenantId,
             requestId,
+            reference,
             useDcApi: true,
             dcApiProtocol: "iso-18013-7",
             browserOrigin: origin,
@@ -268,7 +357,7 @@ export class Iso18013Service {
         const cert = await this.certService.find({
             tenantId,
             type: KeyUsageType.Access,
-            certId: accessKeyChainId,
+            keyId: accessKeyChainId,
         });
 
         const keyChain = await this.keyChainService.getEntity(
@@ -309,10 +398,7 @@ export class Iso18013Service {
     ): Promise<Record<string, unknown>> {
         let session;
         try {
-            session = await this.sessionService.getBy({
-                id: sessionId,
-                dcApiProtocol: "iso-18013-7",
-            });
+            session = await this.sessionStore.getIso18013(sessionId);
         } catch {
             throw new NotFoundException("ISO 18013-7 session not found");
         }
@@ -321,6 +407,14 @@ export class Iso18013Service {
             throw new BadRequestException(
                 "The presentation offer has already been used",
             );
+        }
+        try {
+            assertSessionUsable(session, new Date());
+        } catch (error) {
+            if (error instanceof SessionNotUsable) {
+                throw new BadRequestException(error.message);
+            }
+            throw error;
         }
 
         const logContext = {
@@ -379,9 +473,12 @@ export class Iso18013Service {
         } catch (err: any) {
             const reason = `HPKE decryption failed: ${err?.message ?? err}`;
             this.logger.warn({ sessionId }, reason);
-            await this.sessionService.add(session.id, {
-                status: SessionStatus.Failed,
+            await this.failSession(session, {
                 errorReason: reason,
+                outcome: {
+                    result: "failed",
+                    message: "HPKE decryption failed",
+                },
             });
             this.auditLogService.logFlowError(logContext, err as Error, {
                 stage: "hpke_decryption",
@@ -389,10 +486,11 @@ export class Iso18013Service {
             throw new BadRequestException("HPKE decryption failed");
         }
 
-        const config = await this.presentationsService.getPresentationConfig(
-            session.requestId!,
-            session.tenantId,
-        );
+        const config =
+            await this.presentationConfigService.getPresentationConfig(
+                session.requestId!,
+                session.tenantId,
+            );
 
         const mdocCred = config.dcql_query.credentials.find(
             (c) => c.format === "mso_mdoc",
@@ -406,69 +504,43 @@ export class Iso18013Service {
         const host = this.configService.getOrThrow<string>("PUBLIC_URL");
         const tenantHost = `${host}/issuers/${session.tenantId}`;
 
-        const loteAuthorities = mdocCred.trusted_authorities?.find(
-            (auth): auth is TrustedAuthorityQueryEtsiTl =>
-                auth.type === TrustedAuthorityType.ETSI_TL,
-        );
-        const federationAuthorities = mdocCred.trusted_authorities?.find(
-            (auth): auth is TrustedAuthorityQueryOpenIdFederation =>
-                auth.type === TrustedAuthorityType.OPENID_FEDERATION,
-        );
-
-        const resolvedLoteAuthorities =
-            await this.presentationsService.resolveTrustListRefsForTenant(
-                loteAuthorities?.values,
+        const resolvedLoteAuthorities = await this.trustedAuthoritiesService
+            .resolveTrustListRefsForTenant(
+                trustListAuthorities(mdocCred.trusted_authorities),
                 session.tenantId,
                 tenantHost,
-            );
+            )
+            .catch((error: unknown) => {
+                if (error instanceof InvalidTrustedAuthoritiesError) {
+                    throw new BadRequestException(error.message);
+                }
+                throw error;
+            });
 
-        const verifyOptions: VerifierOptions = {
-            trustListSource: {
-                lotes: resolvedLoteAuthorities,
-                acceptedServiceTypes: [
-                    ServiceTypeIdentifier.EaaIssuance,
-                    ServiceTypeIdentifier.PIDIssuance,
-                    // espuni fork: same set as the SD-JWT path in
-                    // presentations.service.ts — a Pub-EAA issuer must be
-                    // accepted whichever format its attestation uses.
-                    ServiceTypeIdentifier.PubEAAIssuance,
-                ],
-            },
-            federationTrustSource: federationAuthorities?.values.length
-                ? {
-                      mode: "hybrid",
-                      trustAnchors: federationAuthorities.values.map(
-                          (value) => ({
-                              entityId: value,
-                              entityConfigurationUri: `${value.replace(/\/$/, "")}/.well-known/openid-federation`,
-                          }),
-                      ),
-                  }
-                : undefined,
-            policy: {
-                requireX5c: true,
-                revocation: revocationModeToPolicy(
-                    config.statusCheckMode ?? RevocationCheckMode.Strict,
-                ),
-            },
-            skewSeconds:
-                session.skewSeconds ??
-                config.skewSeconds ??
-                DEFAULT_VERIFIER_SKEW_SECONDS,
-        };
+        const verifyOptions: VerifierOptions = verifierTrustOptions({
+            trustLists: resolvedLoteAuthorities,
+            authorities: mdocCred.trusted_authorities,
+            statusCheckMode:
+                config.statusCheckMode ?? RevocationCheckMode.Strict,
+            skewSeconds: session.skewSeconds ?? config.skewSeconds,
+        });
 
         const deviceResponseB64 = deviceResponseCbor.toString("base64url");
 
-        // Verify the mDOC using the pre-built DCAPIHandover transcript
-        const verifyResult = await this.mdocverifierService.verify(
-            deviceResponseB64,
-            {
-                protocol: "iso-18013-7",
-                sessionTranscript: transcript.sessionTranscript,
-            },
-            verifyOptions,
-            mdocCred.claims?.map((c) => c.path),
-        );
+        // Verify the mDOC using the pre-built DCAPIHandover transcript. The
+        // requested elements are part of the DeviceRequest; a missing
+        // element is not rejected separately in this flow.
+        const verifyResult = await this.credentialVerifierFormats
+            .resolve("mso_mdoc")
+            .verify(deviceResponseB64, {
+                credentialId: mdocCred.id,
+                binding: {
+                    protocol: "iso-18013-7",
+                    sessionTranscript: transcript.sessionTranscript,
+                },
+                options: verifyOptions,
+                claims: mdocCred.claims,
+            });
 
         this.auditLogService.logCredentialVerification(
             logContext,
@@ -480,60 +552,35 @@ export class Iso18013Service {
             // Machine-readable code + short message for the caller/UI; the
             // verbose failureReason (certificate subjects, thumbprints,
             // configured lists) is kept to logs/audit only.
-            const errorCode = verifyResult.failureType ?? "verification_error";
-            const shortMessage = shortVerificationMessage(
-                verifyResult.failureType,
-            );
+            const { code: errorCode, message: shortMessage } =
+                verificationFailureDetails(verifyResult.failure.type);
             const verboseReason =
-                verifyResult.failureReason ?? "mDOC verification failed";
+                verifyResult.failure.reason ?? "mDOC verification failed";
 
-            const failureOutcome = {
-                result: "failed" as const,
-                error: errorCode,
-                message: shortMessage,
-                credentials: [
-                    {
-                        id: mdocCred.id,
-                        format: "mso_mdoc",
-                        docType: verifyResult.docType,
-                        verified: false,
-                        error: errorCode,
-                        message: shortMessage,
-                    },
-                ],
-            };
-
-            await this.sessionService.add(session.id, {
-                status: SessionStatus.Failed,
+            await this.failSession(session, {
                 errorReason: shortMessage,
                 failureCode: errorCode,
-                outcome: failureOutcome,
+                outcome: {
+                    result: "failed",
+                    error: errorCode,
+                    message: shortMessage,
+                    credentials: [
+                        {
+                            id: mdocCred.id,
+                            format: "mso_mdoc",
+                            docType: verifyResult.docType,
+                            verified: false,
+                            error: errorCode,
+                            message: shortMessage,
+                        },
+                    ],
+                },
             });
             this.auditLogService.logFlowError(
                 logContext,
                 new Error(verboseReason),
                 { stage: "mdoc_verification", errorCode },
             );
-
-            // Opt-in failure webhook so the relying party learns why (structured
-            // code + short message), not only on success.
-            //
-            // session.parsedWebhook is resolved at offer time from the
-            // per-request webhook or the config's webhookEndpointId, so it
-            // already covers both sources — there is no separate config-level
-            // webhook to fall back to any more.
-            const failureWebhook = session.parsedWebhook;
-            if (failureWebhook) {
-                session.status = SessionStatus.Failed;
-                session.errorReason = shortMessage;
-                session.failureCode = errorCode;
-                session.outcome = failureOutcome;
-                await this.webhookService.sendFailureWebhook({
-                    webhook: failureWebhook,
-                    session,
-                });
-            }
-
             throw new BadRequestException({
                 error: errorCode,
                 message: shortMessage,
@@ -550,51 +597,47 @@ export class Iso18013Service {
         ];
 
         const responseCode = randomUUID();
+        const outcome: SessionOutcome = {
+            result: "success",
+            credentials: [
+                {
+                    id: mdocCred.id,
+                    format: "mso_mdoc",
+                    docType: verifyResult.docType,
+                    verified: true,
+                    trust: verifyResult.provenance,
+                },
+            ],
+        };
 
-        await this.sessionService.add(session.id, {
-            credentials: credentials as any,
-            status: SessionStatus.Completed,
-            responseCode,
-            consumed: true,
-            consumedAt: new Date(),
-            outcome: {
-                result: "success",
-                credentials: [
-                    {
-                        id: mdocCred.id,
-                        format: "mso_mdoc",
-                        docType: verifyResult.docType,
-                        verified: true,
-                        trust: verifyResult.provenance,
-                        ...(verifyResult.warnings?.length
-                            ? { warnings: verifyResult.warnings }
-                            : {}),
-                    },
-                ],
+        // Complete atomically with the single-use flag so a concurrent
+        // response cannot also complete (and announce) the session.
+        const completed = await this.sessionStore.updateIfUnconsumed(
+            session.tenantId,
+            session.id,
+            {
+                credentials: credentials as any,
+                status: SessionStatus.Completed,
+                responseCode,
+                consumed: true,
+                consumedAt: new Date(),
+                outcome,
             },
-        });
+        );
+        if (!completed) {
+            throw new BadRequestException(
+                "The presentation offer has already been used",
+            );
+        }
+        this.changeSessionState.announce(session, SessionStatus.Completed);
 
-        const webhook =
-            session.parsedWebhook ??
-            (await this.resolveWebhookFromEndpoint(
-                session.webhookEndpointId,
-                session.tenantId,
-            ));
+        const webhook = await this.resolveSessionWebhook(session);
         if (webhook) {
-            const webhookResponse = await this.webhookService
-                .sendWebhook({
-                    webhook,
-                    session,
-                    credentials,
-                    expectResponse: false,
-                })
-                .catch((err: any) => {
-                    this.logger.warn(
-                        { sessionId },
-                        `Webhook delivery failed: ${err?.message ?? err}`,
-                    );
-                    return undefined;
-                });
+            const webhookResponse = await this.publishResult(webhook, session, {
+                status: SessionStatus.Completed,
+                outcome,
+                credentials,
+            });
 
             if (webhookResponse?.redirectUri) {
                 session.redirectUri = webhookResponse.redirectUri;

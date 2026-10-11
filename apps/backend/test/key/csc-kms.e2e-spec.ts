@@ -1,10 +1,10 @@
-import { createSign, createPrivateKey } from "node:crypto";
+import { createPrivateKey, createSign } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import {
+    createServer,
     type IncomingMessage,
     type Server,
     type ServerResponse,
-    createServer,
 } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,10 +14,10 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { AppModule } from "../../src/app.module";
-import { KeyChainType } from "../../src/crypto/key/dto/key-chain-create.dto";
-import { createAppValidationPipe } from "../../src/shared/common/zod/zod-schema.util";
-import { getToken } from "../utils";
+import { AppModule } from "../../src/app.module.js";
+import { KeyChainType } from "../../src/crypto/key/dto/key-chain-create.dto.js";
+import { createAppValidationPipe } from "../../src/shared/common/zod/zod-schema.util.js";
+import { getToken } from "../utils.js";
 
 const PROVIDER_ID = "csc-test";
 const CSC_CREDENTIAL_ID = "[INTESIQCSEALEC]_SEAL_351_SIGN_1781018892758";

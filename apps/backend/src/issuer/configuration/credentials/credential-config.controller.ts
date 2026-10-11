@@ -7,17 +7,28 @@ import {
     Param,
     Patch,
     Post,
-    Req,
 } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Request } from "express";
-import { Role } from "../../../auth/roles/role.enum";
-import { Secured } from "../../../auth/secure.decorator";
-import { Token, TokenPayload } from "../../../auth/token.decorator";
-import { CredentialConfigService } from "./credential-config/credential-config.service";
-import { CredentialConfigCreate } from "./dto/credential-config-create.dto";
-import { CredentialConfigUpdate } from "./dto/credential-config-update.dto";
-import { CredentialConfig } from "./entities/credential.entity";
+import type { AuditLogRequestMeta } from "../../../audit-log/audit-log.service.js";
+import { AuditMeta } from "../../../audit-log/audit-log-context.util.js";
+import { Role } from "../../../auth/roles/role.enum.js";
+import { Secured } from "../../../auth/secure.decorator.js";
+import { Token, TokenPayload } from "../../../auth/token.decorator.js";
+import { createConfigBodyPipe } from "../../../shared/common/zod/zod-schema.util.js";
+import { CredentialConfigService } from "./credential-config/credential-config.service.js";
+import { CredentialConfigCreate } from "./dto/credential-config-create.dto.js";
+import { CredentialConfigUpdate } from "./dto/credential-config-update.dto.js";
+import { CredentialConfig } from "./entities/credential.entity.js";
+import { CredentialConfigCreateSchema } from "./schemas/credential-config.schema.js";
+
+/** Fields a GET response adds to the configuration (tenant and relations). */
+const readOnly = [
+    "tenantId",
+    "tenant",
+    "attributeProvider",
+    "webhookEndpoint",
+    "keyChain",
+];
 
 /**
  * Controller for managing credential configurations.
@@ -47,16 +58,17 @@ export class CredentialConfigController {
     @ApiBody({ type: CredentialConfigCreate })
     @ApiResponse({ status: 201, type: CredentialConfig })
     storeCredentialConfiguration(
-        @Body() config: CredentialConfigCreate,
+        @Body(createConfigBodyPipe(CredentialConfigCreateSchema, { readOnly }))
+        config: CredentialConfigCreate,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
         return this.credentialsService.store(
             user.entity!.id,
             config,
             false,
             user,
-            req,
+            requestMeta,
         );
     }
 
@@ -66,16 +78,22 @@ export class CredentialConfigController {
     @ApiResponse({ status: 200, type: CredentialConfig })
     updateCredentialConfiguration(
         @Param("id") id: string,
-        @Body() config: CredentialConfigUpdate,
+        @Body(
+            createConfigBodyPipe(CredentialConfigCreateSchema, {
+                readOnly,
+                partial: true,
+            }),
+        )
+        config: CredentialConfigUpdate,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
         return this.credentialsService.update(
             user.entity!.id,
             id,
             config,
             user,
-            req,
+            requestMeta,
         );
     }
 
@@ -89,8 +107,13 @@ export class CredentialConfigController {
     deleteIssuanceConfiguration(
         @Param("id") id: string,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ): Promise<unknown> {
-        return this.credentialsService.delete(user.entity!.id, id, user, req);
+        return this.credentialsService.delete(
+            user.entity!.id,
+            id,
+            user,
+            requestMeta,
+        );
     }
 }

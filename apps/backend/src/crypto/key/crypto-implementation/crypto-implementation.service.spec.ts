@@ -1,7 +1,7 @@
-import { describe, expect, test } from "vitest";
 import { ConfigService } from "@nestjs/config";
-import { CredentialFormat } from "../../../issuer/configuration/credentials/entities/credential.entity";
-import { CryptoImplementationService } from "./crypto-implementation.service";
+import { describe, expect, test } from "vitest";
+import { CredentialFormat } from "../../../issuer/configuration/credentials/entities/credential.entity.js";
+import { CryptoImplementationService } from "./crypto-implementation.service.js";
 
 describe("CryptoImplementationService", () => {
     test("returns both classic and fully-specified COSE alg values for mDOC", () => {

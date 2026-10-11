@@ -1,10 +1,24 @@
 <div fxLayout="column" fxFlex fxLayoutGap="24px">
+  @if (isEditMode && trustListId) {
+    <app-config-ownership-notice kind="TrustList" [resourceId]="trustListId" />
+  }
   <!-- Header -->
   <div fxLayout="row" fxLayoutAlign="space-between center">
     <h2>{{ isEditMode ? 'Edit' : 'Create' }} Trust List</h2>
-    <button mat-icon-button routerLink="/trust-list" matTooltip="Back to Trust Lists">
-      <mat-icon>arrow_back</mat-icon>
-    </button>
+    <div fxLayout="row" fxLayoutGap="8px">
+      <a
+        mat-stroked-button
+        href="https://docs.eudiplo.dev/trust/trust-lists"
+        target="_blank"
+        rel="noopener"
+      >
+        <mat-icon>open_in_new</mat-icon>
+        Documentation
+      </a>
+      <button mat-icon-button routerLink="/trust-list" matTooltip="Back to Trust Lists">
+        <mat-icon>arrow_back</mat-icon>
+      </button>
+    </div>
   </div>
 
   @if (form) {
@@ -146,6 +160,13 @@
                 </mat-expansion-panel-header>
 
                 <div fxLayout="column" fxLayoutGap="16px">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Provider type</mat-label>
+                    <mat-select formControlName="providerType">
+                      <mat-option value="attestation-provider">Credential provider</mat-option>
+                      <mat-option value="wallet-provider">Wallet provider</mat-option>
+                    </mat-select>
+                  </mat-form-field>
                   @if (getEntityType(i) === 'internal') {
                     <!-- Internal Entity Form - Key Chain Selection -->
                     <mat-form-field appearance="outline">
@@ -299,6 +320,9 @@
           color="primary"
           type="submit"
           [disabled]="form.invalid || entitiesArray.length === 0"
+          appConfigManaged
+          managedKind="TrustList"
+          [managedResourceId]="trustListId || ''"
         >
           <mat-icon>{{ isEditMode ? 'save' : 'add' }}</mat-icon>
           {{ isEditMode ? 'Save Changes' : 'Create Trust List' }}

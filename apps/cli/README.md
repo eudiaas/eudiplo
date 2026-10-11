@@ -1,10 +1,10 @@
 # EUDIPLO CLI
 
 The EUDIPLO CLI provides deployment-neutral commands for inspecting an EUDIPLO
-instance and deployment-driver commands for local Docker Compose demos.
+instance and deployment-driver commands for local Compose demos.
 
 For installation, command reference, configuration validation, standalone
-releases, and local development, see the [CLI documentation](../../docs/getting-started/cli.md).
+releases, and local development, see the [CLI documentation](../docs/docs/operate/cli.md).
 
 ## Quick Start
 
@@ -17,6 +17,9 @@ installer instead: `curl -fsSL https://eudiplo.dev/install.sh | bash`
 ```bash
 npx @eudiplo/cli demo ./eudiplo-demo
 npx @eudiplo/cli instance add production --url https://eudiplo.example.com
+npx @eudiplo/cli instance ls
+npx @eudiplo/cli instance show production
+npx @eudiplo/cli instance use production
 npx @eudiplo/cli doctor --instance production
 ```
 
@@ -25,8 +28,8 @@ copies canonical demo configuration into `config/demo`, and starts the
 minimal `compose` stack. It always uses SQLite, local file storage,
 database-backed key management, the backend, and the web client.
 
-- Backend image: `ghcr.io/openwallet-foundation/eudiplo:<tag>`
-- Client image: `ghcr.io/openwallet-foundation/eudiplo-client:<tag>`
+- Backend image: `ghcr.io/eudiplo/eudiplo:<tag>`
+- Client image: `ghcr.io/eudiplo/eudiplo-client:<tag>`
 
 Tag selection defaults to `latest` for both images. Use `--image-tag` (or
 `EUDIPLO_IMAGE_TAG`) to select `main`, a release tag, or an immutable SHA tag.
@@ -36,7 +39,9 @@ preserved unless you pass `--force`.
 
 The standalone CLI and this npm package are two distributions of the same
 `eudiplo` command. The standalone CLI removes the Node.js requirement, but
-Docker and Docker Compose are still required for the demo deployment.
+Docker and Docker Compose, or Podman and Podman Compose, are still required for
+the demo deployment. Docker is preferred by default; set
+`EUDIPLO_CONTAINER_RUNTIME=podman` to force Podman.
 
 ## Package and Binary Names
 
@@ -51,6 +56,24 @@ eudiplo status
 pnpm add -D @eudiplo/cli
 pnpm eudiplo status
 ```
+
+## Uninstall
+
+Use the removal path that matches how the CLI was installed:
+
+```bash
+# Standalone Linux/macOS installer
+rm "${EUDIPLO_INSTALL_DIR:-$HOME/.local/bin}/eudiplo"
+
+# npm global install
+npm uninstall -g @eudiplo/cli
+
+# project dependency
+pnpm remove @eudiplo/cli
+```
+
+The CLI stores instance metadata in `~/.eudiplo/config.json` by default. Remove
+`~/.eudiplo` only if you also want to delete local CLI instance registrations.
 
 ## Compose Driver Commands
 
@@ -67,7 +90,11 @@ eudiplo init --target compose --demo --image-tag main
 eudiplo init --target compose --no-client
 eudiplo up
 eudiplo down
-eudiplo logs
+eudiplo ps
+eudiplo logs --service eudiplo --follow --tail 100 --since 10m
+eudiplo restart --service eudiplo-client
+eudiplo pull
+eudiplo upgrade --image-tag 8.1.0
 eudiplo demo --reset --force
 ```
 
@@ -85,7 +112,7 @@ Interactive `demo` runs use the same directory prompt. Pass a positional
 directory, `--directory`, or `--yes` to skip it.
 
 `init --preset minimal` writes a local `.eudiplo.env` using SQLite and local
-storage. `standard` provisions PostgreSQL and MinIO, while `full` additionally
+storage. `standard` provisions PostgreSQL and RustFS, while `full` additionally
 provisions Vault. Arbitrary combinations are supported through the component
 flags.
 
@@ -95,7 +122,7 @@ stored under `config/<tenant-id>/`. The demo tenant is excluded by default and
 can be added with `--demo-tenant`.
 
 `init --target compose --demo` writes demo-specific assets (`.eudiplo.demo.env`
-and `config/demo`) without starting Docker Compose. Add `--no-client`
+and `config/demo`) without starting the Compose runtime. Add `--no-client`
 to generate a small Compose override that skips the web client container.
 
 `demo --reset --force` stops the managed demo stack, removes managed demo
@@ -131,9 +158,29 @@ EUDIPLO_CLI_HOME=/tmp/eudiplo-cli eudiplo config validate
 EUDIPLO_CLI_CONFIG=/tmp/eudiplo-cli/config.json eudiplo config validate
 ```
 
+Print the resolved file path or inspect the validated configuration with:
+
+```bash
+eudiplo config path
+eudiplo config show
+eudiplo config show --json
+```
+
 Do not store secrets in the CLI config. Commands that need authenticated API
 access read credentials from environment variables such as `EUDIPLO_CLIENT_ID`
 and `EUDIPLO_CLIENT_SECRET`.
+
+## Shell Completion
+
+The CLI generates completion scripts for Bash, Zsh, Fish, and PowerShell. For
+the current shell session, use one of:
+
+```bash
+source <(eudiplo completion bash)
+source <(eudiplo completion zsh)
+eudiplo completion fish | source
+eudiplo completion powershell | Out-String | Invoke-Expression
+```
 
 ## Single Executable Application
 
@@ -163,13 +210,13 @@ Extract the archive for the matching platform and run the executable directly:
 
 ```bash
 # Linux / macOS
-curl -LO https://github.com/openwallet-foundation/eudiplo/releases/download/vVERSION/eudiplo-vVERSION-linux-x64.tar.gz
+curl -LO https://github.com/EUDIPLO/eudiplo/releases/download/vVERSION/eudiplo-vVERSION-linux-x64.tar.gz
 mkdir -p ~/.local/bin
  tar -xzf eudiplo-vVERSION-linux-x64.tar.gz -C ~/.local/bin
  ~/.local/bin/eudiplo --help
 
 # Windows PowerShell
-Invoke-WebRequest -Uri "https://github.com/openwallet-foundation/eudiplo/releases/download/vVERSION/eudiplo-vVERSION-windows-x64.zip" -OutFile "eudiplo-vVERSION-windows-x64.zip"
+Invoke-WebRequest -Uri "https://github.com/EUDIPLO/eudiplo/releases/download/vVERSION/eudiplo-vVERSION-windows-x64.zip" -OutFile "eudiplo-vVERSION-windows-x64.zip"
 Expand-Archive -Path .\eudiplo-vVERSION-windows-x64.zip -DestinationPath .
 .\eudiplo.exe --help
 ```
@@ -181,9 +228,9 @@ running it:
 sha256sum -c SHA256SUMS.txt
 ```
 
-The standalone binary does not replace Docker or Docker Compose. You still need
-Docker to run the local deployment stack, but you do not need a local Node.js
-installation just to use the CLI itself.
+The standalone binary does not replace Docker, Podman, or Compose. You still
+need a container runtime to run the local deployment stack, but you do not need a
+local Node.js installation just to use the CLI itself.
 
 ## Developing and Extending the CLI
 
@@ -209,6 +256,26 @@ when testing changes that require a different backend or client build:
 pnpm --filter @eudiplo/cli dev demo ./eudiplo-demo --image-tag main
 ```
 
+Install the JSON Schemas bundled with the CLI into a VS Code workspace and
+associate them with the local tenant configuration tree:
+
+```bash
+eudiplo config editor setup . --config-directory ./config
+```
+
+The command merges `.vscode/settings.json` without removing unrelated settings
+or JSONC comments and can safely be rerun after a CLI upgrade.
+
+List the complete command tree or render the same reference as Markdown:
+
+```bash
+eudiplo commands
+eudiplo commands --format markdown
+```
+
+The documentation prebuild uses the Markdown renderer directly, keeping the
+published command reference synchronized with Commander definitions.
+
 Use a new project directory or add `--force` when regenerating an existing
 project, because the CLI preserves managed environment files by default. The
 `version` command still reports the CLI package version, but that value is not
@@ -229,6 +296,7 @@ src/
 │   │   └── action.ts          # instance persistence
 │   └── config/
 │       ├── index.ts           # config group
+│       ├── editor/            # VS Code schema setup command module
 │       ├── validate/          # validation command module
 │       └── tenant/            # tenant-config command module
 ├── services/
@@ -248,34 +316,34 @@ truth.
 
 ```ts
 // commands/example/index.ts
-import { Command } from "commander";
-import type { CommandContext } from "../../types.js";
-import type { SetExitCode } from "../shared.js";
-import { runExample } from "./action.js";
+import { Command } from 'commander';
+import type { CommandContext } from '../../types.js';
+import type { SetExitCode } from '../shared.js';
+import { runExample } from './action.js';
 
 export function createExampleCommand(
-    context: CommandContext,
-    setExitCode: SetExitCode,
+  context: CommandContext,
+  setExitCode: SetExitCode,
 ): Command {
-    return new Command("example")
-        .description("Describe what the command does")
-        .requiredOption("--input <path>", "input file")
-        .action(async (options) => {
-            setExitCode(await runExample(options.input, context));
-        });
+  return new Command('example')
+    .description('Describe what the command does')
+    .requiredOption('--input <path>', 'input file')
+    .action(async (options) => {
+      setExitCode(await runExample(options.input, context));
+    });
 }
 ```
 
 ```ts
 // commands/example/action.ts
-import type { CommandContext } from "../../types.js";
+import type { CommandContext } from '../../types.js';
 
 export async function runExample(
-    input: string,
-    context: CommandContext,
+  input: string,
+  context: CommandContext,
 ): Promise<number> {
-    context.stdout.write(`Processing ${input}\n`);
-    return 0;
+  context.stdout.write(`Processing ${input}\n`);
+  return 0;
 }
 ```
 

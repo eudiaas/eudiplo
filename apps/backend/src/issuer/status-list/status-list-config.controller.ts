@@ -6,7 +6,6 @@ import {
     HttpCode,
     HttpStatus,
     Put,
-    Req,
 } from "@nestjs/common";
 import {
     ApiNoContentResponse,
@@ -14,13 +13,14 @@ import {
     ApiOperation,
     ApiTags,
 } from "@nestjs/swagger";
-import { Request } from "express";
-import { Role } from "../../auth/roles/role.enum";
-import { Secured } from "../../auth/secure.decorator";
-import { StatusListConfig } from "../../auth/tenant/entities/status-list-config";
-import { Token, TokenPayload } from "../../auth/token.decorator";
-import { UpdateStatusListConfigDto } from "./dto/update-status-list-config.dto";
-import { StatusListConfigService } from "./status-list-config.service";
+import type { AuditLogRequestMeta } from "../../audit-log/audit-log.service.js";
+import { AuditMeta } from "../../audit-log/audit-log-context.util.js";
+import { Role } from "../../auth/roles/role.enum.js";
+import { Secured } from "../../auth/secure.decorator.js";
+import { StatusListConfig } from "../../auth/tenant/entities/status-list-config.js";
+import { Token, TokenPayload } from "../../auth/token.decorator.js";
+import { UpdateStatusListConfigDto } from "./dto/update-status-list-config.dto.js";
+import { StatusListConfigService } from "./status-list-config.service.js";
 
 /**
  * Controller for managing status list configuration per tenant.
@@ -72,13 +72,13 @@ export class StatusListConfigController {
     async updateConfig(
         @Token() token: TokenPayload,
         @Body() config: UpdateStatusListConfigDto,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ): Promise<StatusListConfig> {
         return this.statusListConfigService.updateConfig(
             token.entity!.id,
             config,
             token,
-            req,
+            requestMeta,
         );
     }
 
@@ -98,12 +98,12 @@ export class StatusListConfigController {
     })
     async resetConfig(
         @Token() token: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ): Promise<void> {
         return this.statusListConfigService.resetConfig(
             token.entity!.id,
             token,
-            req,
+            requestMeta,
         );
     }
 }

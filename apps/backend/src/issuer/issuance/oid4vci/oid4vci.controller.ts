@@ -1,7 +1,6 @@
 import {
     Body,
     Controller,
-    Get,
     Header,
     HttpCode,
     HttpException,
@@ -18,10 +17,13 @@ import type {
     DeferredCredentialResponse,
 } from "@openid4vc/openid4vci";
 import type { Request, Response } from "express";
-import { DeferredCredentialRequestDto } from "./dto/deferred-credential-request.dto";
-import { NotificationRequestDto } from "./dto/notification-request.dto";
-import { CredentialRequestException } from "./exceptions";
-import { Oid4vciService } from "./oid4vci.service";
+import { CredentialNotificationNotFound } from "./application/record-credential-notification.js";
+import { DeferredCredentialRequestDto } from "./dto/deferred-credential-request.dto.js";
+import { NotificationRequestDto } from "./dto/notification-request.dto.js";
+import { CredentialRequestException } from "./exceptions/index.js";
+import { NonceService } from "./nonce.service.js";
+import { Oid4vciService } from "./oid4vci.service.js";
+import type { Oid4vciRequestContext } from "./request-context.js";
 
 /**
  * Controller for handling OID4VCI (OpenID for Verifiable Credential Issuance) requests.
@@ -30,21 +32,10 @@ import { Oid4vciService } from "./oid4vci.service";
 @ApiParam({ name: "tenantId", required: true })
 @Controller("issuers/:tenantId/vci")
 export class Oid4vciController {
-    constructor(private readonly oid4vciService: Oid4vciService) {}
-
-    /**
-     * Credential offer endpoint for `credential_offer_uri` references.
-     */
-    @Get("credential-offers/:sessionId")
-    credentialOfferByReference(
-        @Param("tenantId") tenantId: string,
-        @Param("sessionId") sessionId: string,
-    ) {
-        return this.oid4vciService.getCredentialOfferByReference(
-            tenantId,
-            sessionId,
-        );
-    }
+    constructor(
+        private readonly oid4vciService: Oid4vciService,
+        private readonly nonceService: NonceService,
+    ) {}
 
     /**
      * Endpoint to issue credentials
@@ -60,7 +51,8 @@ export class Oid4vciController {
         @Res({ passthrough: true }) res: Response,
         @Param("tenantId") tenantId: string,
     ): Promise<CredentialResponse | DeferredCredentialResponse | string> {
-        return this.oid4vciService.getCredential(req, tenantId).then(
+        const requestContext = await this.toRequestContext(req);
+        return this.oid4vciService.getCredential(requestContext, tenantId).then(
             (result) => {
                 // Check if this is a deferred response (has non-null transaction_id)
                 if ("transaction_id" in result && result.transaction_id) {
@@ -87,44 +79,8 @@ export class Oid4vciController {
                     throw err;
                 }
 
-                // Preserve OAuth2 resource auth semantics (e.g. DPoP scheme
-                // validation) so conformance tests can assert 401 +
-                // WWW-Authenticate correctly.
-                const resourceAuthError = err as
-                    | {
-                          message?: string;
-                          wwwAuthenticateHeaders?: Array<{
-                              scheme?: string;
-                          }>;
-                      }
-                    | undefined;
-
-                if (
-                    Array.isArray(resourceAuthError?.wwwAuthenticateHeaders) &&
-                    resourceAuthError.wwwAuthenticateHeaders.length > 0
-                ) {
-                    const wwwAuthenticateValue =
-                        resourceAuthError.wwwAuthenticateHeaders
-                            .map((header) => header.scheme)
-                            .filter((scheme): scheme is string =>
-                                Boolean(scheme),
-                            )
-                            .join(", ");
-
-                    if (wwwAuthenticateValue) {
-                        res.setHeader("WWW-Authenticate", wwwAuthenticateValue);
-                    }
-
-                    throw new HttpException(
-                        {
-                            error: "invalid_token",
-                            error_description:
-                                resourceAuthError.message ??
-                                "Access token validation failed",
-                        },
-                        HttpStatus.UNAUTHORIZED,
-                    );
-                }
+                const resourceAuthError = toResourceAuthError(err, res);
+                if (resourceAuthError) throw resourceAuthError;
 
                 // Wrap other errors according to OID4VCI spec Section 8.3.1.2
                 throw new CredentialRequestException(
@@ -133,6 +89,56 @@ export class Oid4vciController {
                 );
             },
         );
+    }
+
+    private async toRequestContext(
+        req: Request,
+    ): Promise<Oid4vciRequestContext> {
+        const rawBody = req.body as
+            | Record<string, unknown>
+            | string
+            | undefined;
+        const contentType = (req.headers["content-type"] ?? "").toLowerCase();
+        const isJwtContentType =
+            contentType.startsWith("application/jwt") ||
+            contentType.startsWith(
+                "application/openid4vci-credential-request+jwt",
+            );
+
+        let body = rawBody;
+        if (isJwtContentType || typeof rawBody === "string") {
+            if (typeof rawBody !== "string") {
+                try {
+                    body = await new Promise<string>((resolve, reject) => {
+                        const chunks: Buffer[] = [];
+                        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+                        req.on("end", () =>
+                            resolve(Buffer.concat(chunks).toString("utf8")),
+                        );
+                        req.on("error", reject);
+                    });
+                } catch {
+                    throw new CredentialRequestException(
+                        "invalid_encryption_parameters",
+                        "Failed to read encrypted credential request body",
+                    );
+                }
+                if (!body) {
+                    throw new CredentialRequestException(
+                        "invalid_encryption_parameters",
+                        "Encrypted credential request body is empty",
+                    );
+                }
+            }
+        }
+
+        return {
+            body,
+            contentType,
+            headers: req.headers,
+            method: req.method,
+            url: req.url,
+        };
     }
 
     /**
@@ -152,8 +158,23 @@ export class Oid4vciController {
         @Req() req: Request,
         @Body() body: DeferredCredentialRequestDto,
         @Param("tenantId") tenantId: string,
+        @Res({ passthrough: true }) res: Response,
     ): Promise<CredentialResponse> {
-        return this.oid4vciService.getDeferredCredential(req, body, tenantId);
+        return this.oid4vciService
+            .getDeferredCredential(
+                {
+                    body: req.body,
+                    contentType: req.headers["content-type"] ?? "",
+                    headers: req.headers,
+                    method: req.method,
+                    url: req.url,
+                },
+                body,
+                tenantId,
+            )
+            .catch((err) => {
+                throw toResourceAuthError(err, res) ?? err;
+            });
     }
 
     /**
@@ -166,8 +187,34 @@ export class Oid4vciController {
         @Body() body: NotificationRequestDto,
         @Req() req: Request,
         @Param("tenantId") tenantId: string,
+        @Res({ passthrough: true }) res: Response,
     ) {
-        return this.oid4vciService.handleNotification(req, body, tenantId);
+        return this.oid4vciService
+            .handleNotification(
+                {
+                    body: req.body,
+                    contentType: req.headers["content-type"] ?? "",
+                    headers: req.headers,
+                    method: req.method,
+                    url: req.url,
+                },
+                body,
+                tenantId,
+            )
+            .catch((err) => {
+                // OID4VCI Section 11.3 Notification Error Response
+                if (err instanceof CredentialNotificationNotFound) {
+                    throw new HttpException(
+                        {
+                            error: "invalid_notification_id",
+                            error_description:
+                                "The notification_id is invalid or does not belong to the access token",
+                        },
+                        HttpStatus.BAD_REQUEST,
+                    );
+                }
+                throw toResourceAuthError(err, res) ?? err;
+            });
     }
 
     @Post("nonce")
@@ -175,8 +222,46 @@ export class Oid4vciController {
     @Header("Cache-Control", "no-store")
     nonce(@Param("tenantId") tenantId: string) {
         //TODO: maybe also add it into the header, see https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#name-nonce-response
-        return this.oid4vciService.nonceRequest(tenantId).then((nonce) => ({
+        return this.nonceService.issue(tenantId).then((nonce) => ({
             c_nonce: nonce,
         }));
     }
+}
+
+/**
+ * Map an access-token or DPoP failure of a protected resource request to
+ * RFC 6750 / RFC 9449 semantics: 401 `invalid_token` with `WWW-Authenticate`.
+ * Returns undefined for other errors.
+ */
+function toResourceAuthError(
+    err: unknown,
+    res: Response,
+): HttpException | undefined {
+    const resourceAuthError = err as
+        | {
+              message?: string;
+              wwwAuthenticateHeaders?: Array<{ scheme?: string }>;
+          }
+        | undefined;
+    if (
+        !Array.isArray(resourceAuthError?.wwwAuthenticateHeaders) ||
+        resourceAuthError.wwwAuthenticateHeaders.length === 0
+    ) {
+        return undefined;
+    }
+    const wwwAuthenticateValue = resourceAuthError.wwwAuthenticateHeaders
+        .map((header) => header.scheme)
+        .filter((scheme): scheme is string => Boolean(scheme))
+        .join(", ");
+    if (wwwAuthenticateValue) {
+        res.setHeader("WWW-Authenticate", wwwAuthenticateValue);
+    }
+    return new HttpException(
+        {
+            error: "invalid_token",
+            error_description:
+                resourceAuthError.message ?? "Access token validation failed",
+        },
+        HttpStatus.UNAUTHORIZED,
+    );
 }

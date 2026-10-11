@@ -3,6 +3,7 @@
 apps/cli/dist
 apps/cli/dist-sea
 node_modules
+.angular/
 /build
 /site
 swagger.json
@@ -75,3 +76,11 @@ build
 .secrets
 
 .cache_ggshield
+
+# Staged Cloudflare Pages website and schema assets
+/apps/website/dist/
+
+# Generated CLI schema assets; sourced from /schemas during assets:sync
+/apps/cli/templates/schemas/
+/apps/cli/templates/schemas.manifest.json
+/apps/client/src/app/utils/schemas.json

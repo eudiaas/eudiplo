@@ -11,6 +11,7 @@ import {
     SignJwtCallback,
 } from "@openid4vc/oauth2";
 import { ResolvedOpenid4vpAuthorizationRequest } from "@openid4vc/openid4vp";
+import { digest, ES256 } from "@owf/crypto";
 import {
     CoseKey,
     DeviceKey,
@@ -24,9 +25,8 @@ import {
     SignatureAlgorithm,
 } from "@owf/mdoc";
 import { X509Certificate } from "@peculiar/x509";
-import { digest, ES256 } from "@owf/crypto";
-import { SDJwtVcInstance } from "@sd-jwt/sd-jwt-vc";
 import { kbPayload } from "@sd-jwt/core";
+import { SDJwtVcInstance } from "@sd-jwt/sd-jwt-vc";
 import {
     calculateJwkThumbprint,
     EncryptJWT,
@@ -38,23 +38,33 @@ import {
     SignJWT,
 } from "jose";
 import request from "supertest";
-import { createAppValidationPipe } from "../src/shared/common/zod/zod-schema.util";
 import { App } from "supertest/types";
-import { AppModule } from "../src/app.module";
-import { Role } from "../src/auth/roles/role.enum";
-import { KeyChainImportDto } from "../src/crypto/key/dto/key-chain-import.dto";
-import { KeyChainService } from "../src/crypto/key/key-chain.service";
-import { CredentialConfigCreate } from "../src/issuer/configuration/credentials/dto/credential-config-create.dto";
-import { IssuanceDto } from "../src/issuer/configuration/issuance/dto/issuance.dto";
-import { StatusListService } from "../src/issuer/status-list/status-list.service";
-import { TrustListCreateDto } from "../src/issuer/trust-list/dto/trust-list-create.dto";
-import { PresentationRequest } from "../src/verifier/oid4vp/dto/presentation-request.dto";
-import { PresentationConfigCreateDto } from "../src/verifier/presentations/dto/presentation-config-create.dto";
-import { DEVICE_JWK, mdocContext } from "./utils-mdoc";
-import { CreateWebhookEndpointDto } from "../src/issuer/configuration/webhook-endpoint/dto/create-webhook-endpoint.dto";
+import { AppModule } from "../src/app.module.js";
+import { Role } from "../src/auth/roles/role.enum.js";
+import { KeyChainImportDto } from "../src/crypto/key/dto/key-chain-import.dto.js";
+import { KeyChainService } from "../src/crypto/key/key-chain.service.js";
+import { CredentialConfigCreate } from "../src/issuer/configuration/credentials/dto/credential-config-create.dto.js";
+import { IssuanceDto } from "../src/issuer/configuration/issuance/dto/issuance.dto.js";
+import { CreateWebhookEndpointDto } from "../src/issuer/configuration/webhook-endpoint/dto/create-webhook-endpoint.dto.js";
+import { StatusListService } from "../src/issuer/status-list/status-list.service.js";
+import { TrustListCreateDto } from "../src/issuer/trust-list/dto/trust-list-create.dto.js";
+import { createAppValidationPipe } from "../src/shared/common/zod/zod-schema.util.js";
+import { PresentationRequest } from "../src/verifier/oid4vp/dto/presentation-request.dto.js";
+import { PresentationConfigCreateDto } from "../src/verifier/presentations/dto/presentation-config-create.dto.js";
+import { DEVICE_JWK, mdocContext } from "./utils-mdoc.js";
 
 export function readConfig<T>(path: string): T {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const input = JSON.parse(readFileSync(path, "utf-8"));
+    if (!input.spec || typeof input.spec !== "object") {
+        return input as T;
+    }
+
+    const spec = structuredClone(input.spec);
+    if (spec.keySource?.type === "private-jwk") {
+        spec.key = spec.keySource.jwk;
+        delete spec.keySource;
+    }
+    return spec as T;
 }
 
 /**
@@ -135,6 +145,9 @@ export async function prepareMdocPresentation(
         requestedClaims?: Record<string, boolean>;
         validFrom?: Date;
         validUntil?: Date;
+        /** MSO `signed` time. @owf/mdoc >= 0.8 requires validFrom >= signed,
+         * so a back-dated credential needs a back-dated signature too. */
+        signed?: Date;
     },
 ) {
     // Use the EU PID docType and namespace to match the pid-de fixture,
@@ -144,7 +157,7 @@ export async function prepareMdocPresentation(
 
     const issuer = new Issuer(docType, mdocContext);
 
-    const signed = new Date();
+    const signed = overrides?.signed ?? new Date();
     const defaultValidUntil = new Date(signed);
     defaultValidUntil.setFullYear(signed.getFullYear() + 30);
     const validFrom = overrides?.validFrom ?? new Date(signed);
@@ -212,11 +225,19 @@ export async function prepareMdocPresentation(
     const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
         {
             deviceRequest,
-            issuerSigned: [credential],
             sessionTranscript,
-            signature: {
-                signingKey: CoseKey.fromJwk({ ...DEVICE_JWK, alg: "ES256" }),
-            },
+            documents: [
+                {
+                    docRequestIndex: 0,
+                    issuerSigned: credential,
+                    signature: {
+                        signingKey: CoseKey.fromJwk({
+                            ...DEVICE_JWK,
+                            alg: "ES256",
+                        }),
+                    },
+                },
+            ],
         },
         mdocContext,
     );
@@ -282,16 +303,19 @@ export async function preparePresentation(
     x5c: string[],
     statusListService: StatusListService,
     credentialConfigId: string,
+    sessionId = "1",
 ) {
+    // createEntry returns `{ status: { status_list } }`, so it is spread into
+    // the claims to put `status_list` at `status.status_list`.
     const status = await statusListService.createEntry(
-        { tenantId: "root", id: "1" } as any,
+        { tenantId: "root", id: sessionId } as any,
         credentialConfigId,
     );
 
     const credential = await createCredential({
         claims: {
             vct: "http://localhost:3000/issuers/demo/credentials-metadata/vct/pid",
-            status,
+            ...status,
             // Include claims that can be selectively disclosed
             birthdate: "1990-01-01",
             address: {
@@ -493,6 +517,45 @@ export async function getToken(
         .then((res) => res.body.access_token);
 }
 
+/**
+ * Create a tenant whose client holds `tenant:admin` besides `roles`, and
+ * return that client's access token. Uses the root client credentials.
+ */
+export async function getTenantAdminToken(
+    app: INestApplication,
+    clientId: string,
+    clientSecret: string,
+    tenantId: string,
+    roles: Role[] = [Role.Issuances],
+): Promise<string> {
+    const bootstrap = await request(app.getHttpServer())
+        .post("/api/oauth2/token")
+        .send({
+            grant_type: "client_credentials",
+            client_id: clientId,
+            client_secret: clientSecret,
+        })
+        .expect(201);
+    const tenant = await request(app.getHttpServer())
+        .post("/tenant")
+        .set("Authorization", `Bearer ${bootstrap.body.access_token}`)
+        .send({
+            id: tenantId,
+            name: `${tenantId} tenant`,
+            roles: [...roles, Role.TenantAdmin],
+        })
+        .expect(201);
+    return request(app.getHttpServer())
+        .post("/api/oauth2/token")
+        .send({
+            grant_type: "client_credentials",
+            client_id: tenant.body.client.clientId,
+            client_secret: tenant.body.client.clientSecret,
+        })
+        .expect(201)
+        .then((res) => res.body.access_token);
+}
+
 export function getDefaultSecret(input: string): string {
     const pattern = /\$\{([A-Z0-9_]+)(?::([^}]*))?\}/g;
     return input.replaceAll(
@@ -529,7 +592,7 @@ export async function setupIssuanceTestApp(): Promise<IssuanceTestContext> {
     app.useGlobalPipes(createAppValidationPipe());
 
     const configService = app.get(ConfigService);
-    configService.set("CONFIG_IMPORT", false);
+    configService.set("CONFIG_IMPORT_MODE", "disabled");
     configService.set("LOG_LEVEL", "debug");
     const clientId = configService.getOrThrow<string>("AUTH_CLIENT_ID");
     const clientSecret = configService.getOrThrow<string>("AUTH_CLIENT_SECRET");
@@ -594,18 +657,26 @@ export async function setupIssuanceTestApp(): Promise<IssuanceTestContext> {
         .expect(201);
 
     // Import issuance config (disable wallet attestation for non-OIDF tests)
+    const issuanceConfig = readConfig<IssuanceDto>(
+        join(configFolder, "haip/issuance/issuance.json"),
+    );
     await request(app.getHttpServer())
         .post("/issuer/config")
         .trustLocalhost()
         .set("Authorization", `Bearer ${authToken}`)
         .send({
-            ...readConfig<IssuanceDto>(
-                join(configFolder, "haip/issuance/issuance.json"),
+            ...issuanceConfig,
+            authorizationServers: issuanceConfig.authorizationServers?.map(
+                (server) => ({
+                    ...server,
+                    walletAttestationRequired: false,
+                }),
             ),
             dPopRequired: false,
             credentialResponseEncryption: false,
             credentialRequestEncryption: false,
             walletAttestationRequired: false,
+            walletProviderTrustLists: [],
         } as IssuanceDto)
         .expect(201);
 
@@ -641,10 +712,7 @@ export async function setupIssuanceTestApp(): Promise<IssuanceTestContext> {
         .set("Authorization", `Bearer ${authToken}`)
         .send(
             readConfig(
-                join(
-                    configFolder,
-                    "haip/issuance/attribute-providers/citizen-ap.json",
-                ),
+                join(configFolder, "haip/attribute-providers/citizen-ap.json"),
             ),
         )
         .expect(201);

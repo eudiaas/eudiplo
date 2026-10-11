@@ -23,9 +23,12 @@ import {
   type TrustList,
 } from '@eudiplo/sdk-core';
 import { EditorComponent } from '../../utils/editor/editor.component';
+import { ConfigOwnershipDirective } from '../../config-portability/config-ownership.directive';
+import { ConfigOwnershipNoticeComponent } from '../../config-portability/config-ownership-notice.component';
 
 /** Common info fields for both internal and external entities */
 interface EntityInfoForm {
+  providerType: FormControl<'attestation-provider' | 'wallet-provider'>;
   infoName: FormControl<string>;
   infoLang: FormControl<string>;
   infoUri: FormControl<string>;
@@ -67,6 +70,8 @@ interface ExternalEntityForm extends EntityInfoForm {
     ReactiveFormsModule,
     RouterModule,
     EditorComponent,
+    ConfigOwnershipDirective,
+    ConfigOwnershipNoticeComponent,
   ],
   templateUrl: './trust-list-edit.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
@@ -182,6 +187,9 @@ export class TrustListEditComponent implements OnInit {
     for (const entity of entityConfig) {
       if (entity.type === 'internal') {
         const entityGroup = new FormGroup<InternalEntityForm>({
+          providerType: new FormControl(entity.providerType || 'attestation-provider', {
+            nonNullable: true,
+          }),
           type: new FormControl('internal', { nonNullable: true }),
           issuerKeyChainId: new FormControl(entity.issuerKeyChainId || '', {
             nonNullable: true,
@@ -208,6 +216,9 @@ export class TrustListEditComponent implements OnInit {
         this.entitiesArray.push(entityGroup);
       } else {
         const entityGroup = new FormGroup<ExternalEntityForm>({
+          providerType: new FormControl(entity.providerType || 'attestation-provider', {
+            nonNullable: true,
+          }),
           type: new FormControl('external', { nonNullable: true }),
           issuerCertPem: new FormControl(entity.issuerCertPem || '', {
             nonNullable: true,
@@ -266,6 +277,12 @@ export class TrustListEditComponent implements OnInit {
 
       // Create external entity form with loaded data
       const entityGroup = new FormGroup<ExternalEntityForm>({
+        providerType: new FormControl<'attestation-provider' | 'wallet-provider'>(
+          issuanceService?.ServiceInformation?.ServiceTypeIdentifier?.includes('/WalletSolution/')
+            ? 'wallet-provider'
+            : 'attestation-provider',
+          { nonNullable: true }
+        ),
         type: new FormControl('external', { nonNullable: true }),
         issuerCertPem: new FormControl(issuerCertPem, {
           nonNullable: true,
@@ -329,6 +346,10 @@ export class TrustListEditComponent implements OnInit {
 
   addInternalEntity(): void {
     const entityGroup = new FormGroup<InternalEntityForm>({
+      providerType: new FormControl<'attestation-provider' | 'wallet-provider'>(
+        'attestation-provider',
+        { nonNullable: true }
+      ),
       type: new FormControl('internal', { nonNullable: true }),
       issuerKeyChainId: new FormControl('', { nonNullable: true, validators: Validators.required }),
       revocationKeyChainId: new FormControl('', {
@@ -349,6 +370,10 @@ export class TrustListEditComponent implements OnInit {
 
   addExternalEntity(): void {
     const entityGroup = new FormGroup<ExternalEntityForm>({
+      providerType: new FormControl<'attestation-provider' | 'wallet-provider'>(
+        'attestation-provider',
+        { nonNullable: true }
+      ),
       type: new FormControl('external', { nonNullable: true }),
       issuerCertPem: new FormControl('', { nonNullable: true, validators: Validators.required }),
       revocationCertPem: new FormControl('', {
@@ -413,6 +438,7 @@ export class TrustListEditComponent implements OnInit {
       if (entity.type === 'internal') {
         return {
           type: 'internal',
+          providerType: entity.providerType,
           issuerKeyChainId: entity.issuerKeyChainId,
           revocationKeyChainId: entity.revocationKeyChainId,
           info,
@@ -420,6 +446,7 @@ export class TrustListEditComponent implements OnInit {
       } else {
         return {
           type: 'external',
+          providerType: entity.providerType,
           issuerCertPem: entity.issuerCertPem,
           revocationCertPem: entity.revocationCertPem,
           info,

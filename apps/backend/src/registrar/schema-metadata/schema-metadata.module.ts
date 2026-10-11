@@ -1,9 +1,10 @@
 import { Module } from "@nestjs/common";
-import { CredentialConfigModule } from "../../issuer/configuration/credentials/credential-config.module";
-import { TrustListModule } from "../../issuer/trust-list/trustlist.module";
-import { RegistrarModule } from "../registrar.module";
-import { SchemaMetadataController } from "./schema-metadata.controller";
-import { SchemaMetadataSubmissionService } from "./schema-metadata-submission.service";
+import { CredentialConfigModule } from "../../issuer/configuration/credentials/credential-config.module.js";
+import { TrustListModule } from "../../issuer/trust-list/trustlist.module.js";
+import { WebhookModule } from "../../webhook/webhook.module.js";
+import { RegistrarModule } from "../registrar.module.js";
+import { SchemaMetadataController } from "./schema-metadata.controller.js";
+import { SchemaMetadataSubmissionService } from "./schema-metadata-submission.service.js";
 
 /**
  * Management and publishing API for schema metadata.
@@ -12,7 +13,12 @@ import { SchemaMetadataSubmissionService } from "./schema-metadata-submission.se
  * composes it with credential configuration and trust-list capabilities.
  */
 @Module({
-    imports: [RegistrarModule, CredentialConfigModule, TrustListModule],
+    imports: [
+        RegistrarModule,
+        CredentialConfigModule,
+        TrustListModule,
+        WebhookModule,
+    ],
     controllers: [SchemaMetadataController],
     providers: [SchemaMetadataSubmissionService],
 })

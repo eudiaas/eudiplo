@@ -4,8 +4,6 @@ import {
     Delete,
     ForbiddenException,
     Get,
-    HttpException,
-    HttpStatus,
     HttpCode,
     Inject,
     Param,
@@ -13,15 +11,15 @@ import {
     Post,
 } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Role } from "../roles/role.enum";
-import { Secured } from "../secure.decorator";
-import { Token, TokenPayload } from "../token.decorator";
-import { requireTenantContext } from "../tenant-context.util";
-import { CLIENTS_PROVIDER, ClientsProvider } from "./client.provider";
-import { CreateClientDto } from "./dto/create-client.dto";
-import { ClientSecretResponseDto } from "./dto/client-secret-response.dto";
-import { UpdateClientDto } from "./dto/update-client.dto";
-import { ClientEntity } from "./entities/client.entity";
+import { Role } from "../roles/role.enum.js";
+import { Secured } from "../secure.decorator.js";
+import { requireTenantContext } from "../tenant-context.util.js";
+import { Token, TokenPayload } from "../token.decorator.js";
+import { CLIENTS_PROVIDER, ClientsProvider } from "./client.provider.js";
+import { ClientResponseDto } from "./dto/client-response.dto.js";
+import { ClientSecretResponseDto } from "./dto/client-secret-response.dto.js";
+import { CreateClientDto } from "./dto/create-client.dto.js";
+import { UpdateClientDto } from "./dto/update-client.dto.js";
 
 /**
  * Controller to manage clients.
@@ -40,7 +38,7 @@ export class ClientController {
      */
     @Secured([Role.Clients])
     @ApiOperation({ summary: "Get all clients for the current tenant" })
-    @ApiResponse({ status: 200, type: [ClientEntity] })
+    @ApiResponse({ status: 200, type: [ClientResponseDto] })
     @Get()
     getClients(@Token() user: TokenPayload) {
         const tenantId = requireTenantContext(user);
@@ -55,31 +53,12 @@ export class ClientController {
      */
     @Secured([Role.Clients])
     @ApiOperation({ summary: "Get a client by its id" })
-    @ApiResponse({ status: 200, type: ClientEntity })
+    @ApiResponse({ status: 200, type: ClientResponseDto })
     @ApiResponse({ status: 404, description: "Client not found" })
     @Get(":id")
     getClient(@Param("id") id: string, @Token() user: TokenPayload) {
         const tenantId = requireTenantContext(user);
         return this.clients.getClient(tenantId, id);
-    }
-
-    /**
-     * @deprecated Client secrets are now hashed and cannot be retrieved.
-     * Use POST /client/:id/rotate-secret to generate a new secret.
-     * @param id
-     * @param user
-     * @returns
-     */
-    @Secured([Role.Clients])
-    @Get(":id/secret")
-    getClientSecret(
-        @Param("id") id: string,
-        @Token() user: TokenPayload,
-    ): Promise<ClientSecretResponseDto> {
-        throw new HttpException(
-            "Client secrets are hashed and cannot be retrieved. Use POST /client/:id/rotate-secret to generate a new secret.",
-            HttpStatus.GONE,
-        );
     }
 
     /**
@@ -118,7 +97,7 @@ export class ClientController {
     @Secured([Role.Clients])
     @ApiOperation({ summary: "Update a client by its id" })
     @ApiBody({ type: UpdateClientDto })
-    @ApiResponse({ status: 200, type: ClientEntity })
+    @ApiResponse({ status: 200, type: ClientResponseDto })
     @ApiResponse({ status: 404, description: "Client not found" })
     @Patch(":id")
     updateClient(
@@ -129,7 +108,8 @@ export class ClientController {
         const tenantId = requireTenantContext(user);
         // Prevent privilege escalation: only users with tenant:manage can grant tenant:manage
         if (
-            updateClientDto.roles?.includes(Role.Tenants) &&
+            (updateClientDto.roles?.includes(Role.Tenants) ||
+                updateClientDto.roles?.includes(Role.TenantAdmin)) &&
             !user.roles.includes(Role.Tenants)
         ) {
             throw new ForbiddenException(
@@ -148,7 +128,7 @@ export class ClientController {
     @Secured([Role.Clients])
     @ApiOperation({ summary: "Create a new client" })
     @ApiBody({ type: CreateClientDto })
-    @ApiResponse({ status: 201, type: ClientEntity })
+    @ApiResponse({ status: 201, type: ClientResponseDto })
     @Post()
     createClient(
         @Body() createClientDto: CreateClientDto,
@@ -157,7 +137,8 @@ export class ClientController {
         const tenantId = requireTenantContext(user);
         // Prevent privilege escalation: only users with tenant:manage can grant tenant:manage
         if (
-            createClientDto.roles?.includes(Role.Tenants) &&
+            (createClientDto.roles?.includes(Role.Tenants) ||
+                createClientDto.roles?.includes(Role.TenantAdmin)) &&
             !user.roles.includes(Role.Tenants)
         ) {
             throw new ForbiddenException(

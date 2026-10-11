@@ -1,8 +1,16 @@
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Injectable, Logger } from "@nestjs/common";
+import { resourceId } from "@eudiplo/config-format/config-format.js";
+import { resolveConfigVariables } from "@eudiplo/config-format/config-values.js";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { ImportOptions, TenantImportOptions } from "./import-options";
+import { ConfigMigrationService } from "../config-portability/config-migration.service.js";
+import { ConfigOwnershipService } from "../config-portability/config-ownership.service.js";
+import { ConfigResourceRegistry } from "../config-portability/config-resource.registry.js";
+import type { ConfigDocument } from "../config-portability/config-resource.types.js";
+import { ConfigImportModeService } from "./config-import-mode.service.js";
+import { TenantImportOptions } from "./import-options.js";
 
 function resolveValidationSchema(schemaOrDto: unknown): any | undefined {
     if (!schemaOrDto) {
@@ -25,7 +33,17 @@ function resolveValidationSchema(schemaOrDto: unknown): any | undefined {
 export class ConfigImportService {
     private readonly logger = new Logger(ConfigImportService.name);
 
-    constructor(private readonly configService: ConfigService) {}
+    constructor(
+        private readonly configService: ConfigService,
+        @Optional()
+        private readonly migrationService?: ConfigMigrationService,
+        @Optional()
+        private readonly ownershipService?: ConfigOwnershipService,
+        @Optional()
+        private readonly resourceRegistry?: ConfigResourceRegistry,
+        @Optional()
+        private readonly importModeService?: ConfigImportModeService,
+    ) {}
 
     /**
      * Import configs for a specific tenant.
@@ -36,7 +54,9 @@ export class ConfigImportService {
         options: TenantImportOptions<T>,
     ): Promise<void> {
         const configPath = this.configService.getOrThrow("CONFIG_FOLDER");
-        const force = this.configService.get<boolean>("CONFIG_IMPORT_FORCE");
+        const mode = this.resolveMode();
+        if (mode === "disabled") return;
+        const updateExisting = mode !== "create";
         const strictConfig = this.configService.get<any>(
             "CONFIG_VARIABLE_STRICT",
         );
@@ -64,32 +84,75 @@ export class ConfigImportService {
             try {
                 // Load data using custom loader or default JSON loader
                 let data: T;
-                if (options.loadData) {
+                let portableDocument: ConfigDocument | undefined;
+                const resourceKind =
+                    options.resourceKind ??
+                    this.resourceRegistry?.inferKind(options.resourceType);
+                const raw = readFileSync(filePath, "utf8");
+                if (
+                    resourceKind &&
+                    this.migrationService &&
+                    file.endsWith(".json")
+                ) {
+                    const payload = this.replacePlaceholders(
+                        JSON.parse(raw),
+                    ) as Record<string, unknown>;
+                    const fileId = file.replace(/\.json$/i, "");
+                    const wrapped = this.migrationService.isDocument(payload)
+                        ? payload
+                        : this.migrationService.wrapLegacy(
+                              resourceKind,
+                              payload,
+                              String(payload.id ?? payload.clientId ?? fileId),
+                          );
+                    const upgraded = this.migrationService.upgrade(wrapped);
+                    const blocking = upgraded.issues.filter(
+                        (issue) => issue.severity !== "warning",
+                    );
+                    if (blocking.length > 0) {
+                        throw new Error(
+                            `Configuration migration requires input: ${blocking
+                                .map(
+                                    (issue) =>
+                                        `${issue.path}: ${issue.message}`,
+                                )
+                                .join("; ")}`,
+                        );
+                    }
+                    if (upgraded.document.kind !== resourceKind)
+                        throw new Error(
+                            `Expected ${resourceKind} configuration`,
+                        );
+                    portableDocument = upgraded.document;
+                    data = this.migrationService.unwrapForLegacyImporter(
+                        upgraded.document,
+                    ) as T;
+                } else if (options.loadData) {
                     data = await Promise.resolve(options.loadData(filePath));
                 } else {
-                    const payload = JSON.parse(readFileSync(filePath, "utf8"));
+                    const payload = JSON.parse(raw);
                     data = payload as T;
                 }
 
                 // Replace placeholders like ${ENV_VAR} or ${ENV_VAR:default}
-                data = this.replacePlaceholders(data);
+                if (!portableDocument) data = this.replacePlaceholders(data);
 
                 // Validate if validation schema is provided
-                const schemaOrDto =
-                    options.validationSchema ?? options.validationClass;
-                if (schemaOrDto) {
+                if (options.validationSchema) {
                     const validationResult = await this.validateConfig(
                         filePath,
                         file,
                         data,
-                        schemaOrDto,
+                        options.validationSchema,
                         { name: tenantId },
                         options.resourceType,
                         options.formatValidationError,
                     );
 
                     if (!validationResult.isValid) {
-                        continue; // Skip invalid config
+                        throw new Error(
+                            `Validation failed for ${options.resourceType} ${file}`,
+                        );
                     }
 
                     data = validationResult.data as T;
@@ -100,7 +163,27 @@ export class ConfigImportService {
                     .checkExists(tenantId, data, file)
                     .catch(() => false);
 
-                if (exists && !force) {
+                if (
+                    exists &&
+                    portableDocument &&
+                    resourceKind &&
+                    this.ownershipService
+                ) {
+                    const stored = await this.ownershipService.get(
+                        tenantId,
+                        resourceKind,
+                        resourceId(portableDocument),
+                    );
+                    const incomingGeneration =
+                        portableDocument.metadata.generation ?? 1;
+                    if (incomingGeneration < stored.generation) {
+                        throw new Error(
+                            `Stale configuration generation ${incomingGeneration}; stored generation is ${stored.generation}`,
+                        );
+                    }
+                }
+
+                if (exists && !updateExisting) {
                     this.logger.debug(
                         `[${tenantId}] ${options.resourceType} ${file} already exists, skipping`,
                     );
@@ -108,12 +191,21 @@ export class ConfigImportService {
                 }
 
                 // Delete existing if force is enabled
-                if (exists && force && options.deleteExisting) {
+                if (exists && updateExisting && options.deleteExisting) {
                     await options.deleteExisting(tenantId, data, file);
                 }
 
                 // Process and store item
                 await options.processItem(tenantId, data, file);
+                if (portableDocument && resourceKind && this.ownershipService) {
+                    await this.markFileManaged(
+                        tenantId,
+                        resourceKind,
+                        portableDocument,
+                        filePath,
+                        raw,
+                    );
+                }
                 counter++;
             } catch (error: any) {
                 const reason = error?.message || "Unknown error";
@@ -134,125 +226,22 @@ export class ConfigImportService {
         }
     }
 
-    /**
-     * Generic import method that handles the common pattern across all services.
-     * @deprecated Use importConfigsForTenant with the orchestrator's tenant-by-tenant approach instead.
-     */
-    async importConfigs<T extends object>(
-        options: ImportOptions<T>,
+    private async markFileManaged(
+        tenantId: string,
+        kind: import("../config-portability/config-resource.types.js").ConfigResourceKind,
+        document: ConfigDocument,
+        filePath: string,
+        raw: string,
     ): Promise<void> {
-        if (!this.configService.get<boolean>("CONFIG_IMPORT")) {
-            return;
-        }
-
-        const configPath = this.configService.getOrThrow("CONFIG_FOLDER");
-        const force = this.configService.get<boolean>("CONFIG_IMPORT_FORCE");
-
-        const tenantFolders = readdirSync(configPath, {
-            withFileTypes: true,
-        }).filter((tenant) => tenant.isDirectory());
-
-        const strictConfig = this.configService.get<any>(
-            "CONFIG_VARIABLE_STRICT",
-        );
-
-        for (const tenant of tenantFolders) {
-            let counter = 0;
-            const path = join(configPath, tenant.name, options.subfolder);
-
-            if (!existsSync(path)) {
-                continue;
-            }
-
-            const files = readdirSync(path);
-
-            for (const file of files) {
-                const filePath = join(path, file);
-
-                // Filter by extension if provided
-                if (
-                    options.fileExtension &&
-                    !file.endsWith(options.fileExtension)
-                ) {
-                    continue;
-                }
-
-                try {
-                    // Load data using custom loader or default JSON loader
-                    let data: T;
-                    if (options.loadData) {
-                        data = await Promise.resolve(
-                            options.loadData(filePath),
-                        );
-                    } else {
-                        const payload = JSON.parse(
-                            readFileSync(filePath, "utf8"),
-                        );
-                        data = payload as T;
-                    }
-
-                    // Replace placeholders like ${ENV_VAR} or ${ENV_VAR:default}
-                    data = this.replacePlaceholders(data);
-
-                    // Validate if validation class is provided
-                    const schemaOrDto =
-                        options.validationSchema ?? options.validationClass;
-                    if (schemaOrDto) {
-                        const validationResult = await this.validateConfig(
-                            filePath,
-                            file,
-                            data,
-                            schemaOrDto,
-                            tenant,
-                            options.resourceType,
-                            options.formatValidationError,
-                        );
-
-                        if (!validationResult.isValid) {
-                            continue; // Skip invalid config
-                        }
-
-                        data = validationResult.data as T;
-                    }
-
-                    // Check if exists
-                    const exists = await options
-                        .checkExists(tenant.name, data, file)
-                        .catch(() => false);
-
-                    if (exists && !force) {
-                        this.logger.debug(
-                            `[${tenant.name}] ${options.resourceType} ${file} already exists, skipping`,
-                        );
-                        continue;
-                    }
-
-                    // Delete existing if force is enabled
-                    if (exists && force && options.deleteExisting) {
-                        await options.deleteExisting(tenant.name, data, file);
-                    }
-
-                    // Process and store item
-                    await options.processItem(tenant.name, data, file);
-                    counter++;
-                } catch (error: any) {
-                    const reason = error?.message || "Unknown error";
-                    this.logger.error(
-                        `[${tenant.name}] Failed to import ${options.resourceType} ${file} (${filePath}): ${reason}`,
-                    );
-                    if (strictConfig === "abort") {
-                        // Abort the entire import process in strict abort mode
-                        throw error;
-                    }
-                }
-            }
-
-            if (counter > 0) {
-                this.logger.log(
-                    `[${tenant.name}] ${counter} ${options.resourceType}(s) imported`,
-                );
-            }
-        }
+        await this.ownershipService!.markApplied({
+            tenantId,
+            kind,
+            resourceId: resourceId(document),
+            ownership: "file-managed",
+            generation: document.metadata.generation ?? 1,
+            source: filePath,
+            sourceHash: createHash("sha256").update(raw).digest("hex"),
+        });
     }
 
     /**
@@ -260,68 +249,39 @@ export class ConfigImportService {
      * ${VAR} -> replaced with process.env.VAR if defined; if undefined and no default given, logs a warning and leaves placeholder intact.
      * ${VAR:default} -> replaced with env value if defined, otherwise with "default".
      */
-    private replacePlaceholders<T>(input: T): T {
-        const seen = new WeakSet();
-        const isObject = (val: any) =>
-            val && typeof val === "object" && !Array.isArray(val);
-        const strictConfigInner = this.configService.get<any>(
+    replacePlaceholders<T>(input: T): T {
+        const configured = this.configService.get<any>(
             "CONFIG_VARIABLE_STRICT",
         );
-        const strictMode =
-            strictConfigInner === true
-                ? "skip"
-                : strictConfigInner === false || strictConfigInner === undefined
-                  ? "ignore"
-                  : (strictConfigInner as string);
-
-        const processString = (str: string): string => {
-            const pattern = /\$\{([A-Z0-9_]+)(?::([^}]*))?\}/g;
-            return str.replaceAll(
-                pattern,
-                (fullMatch, varName: string, defVal: string) => {
-                    const envVal = process.env[varName];
-                    if (envVal !== undefined && envVal !== "") {
-                        return envVal;
-                    }
-                    if (defVal !== undefined) {
-                        return defVal;
-                    }
-                    if (
-                        strictMode === "abort" ||
-                        strictMode === "skip" ||
-                        strictMode === "true"
-                    ) {
-                        // abort -> will bubble up and stop the whole process via outer catch
-                        // skip/true -> outer catch will log and continue with next file
-                        throw new Error(
-                            `Missing required environment variable ${varName} for placeholder ${fullMatch}`,
-                        );
-                    }
-                    // ignore/false/undefined: keep placeholder and warn
-                    this.logger.warn(
-                        `Environment variable ${varName} not set and no default provided (placeholder kept)`,
-                    );
-                    return fullMatch; // keep original placeholder
-                },
+        const strict =
+            configured === true ||
+            configured === "true" ||
+            configured === "abort" ||
+            configured === "skip";
+        const result = resolveConfigVariables(input, process.env);
+        if (strict && result.issues.length)
+            throw new Error(
+                result.issues
+                    .map((issue) => `${issue.path}: ${issue.message}`)
+                    .join("; "),
             );
-        };
+        for (const issue of result.issues)
+            this.logger.warn(`${issue.path}: ${issue.message}`);
+        return result.value;
+    }
 
-        const recurse = (val: any): any => {
-            if (typeof val === "string") return processString(val);
-            if (Array.isArray(val)) return val.map(recurse);
-            if (Buffer.isBuffer(val)) return val; // skip binary
-            if (isObject(val)) {
-                if (seen.has(val)) return val; // avoid circular refs
-                seen.add(val);
-                for (const key of Object.keys(val)) {
-                    val[key] = recurse(val[key]);
-                }
-                return val;
-            }
-            return val;
-        };
-
-        return recurse(input);
+    private resolveMode():
+        | "disabled"
+        | import("../config-portability/config-resource.types.js").ConfigImportMode {
+        if (this.importModeService) {
+            return this.importModeService.resolve();
+        }
+        if (!this.configService.get<boolean>("CONFIG_IMPORT")) {
+            return "disabled";
+        }
+        return this.configService.get<boolean>("CONFIG_IMPORT_FORCE")
+            ? "upsert"
+            : "create";
     }
 
     /**

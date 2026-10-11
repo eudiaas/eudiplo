@@ -21,7 +21,7 @@ import { statusListRoutes } from './status-list-management/status-list.routes';
 import { clientRoutes, tenantRoutes } from './tenants/tenants.routes';
 import { trustListRoutes } from './trust-list/trust-list.routes';
 import { userRoutes } from './users/users.routes';
-import { schemaMetadataRoutes } from './schema-metadata/schema-metadata.routes';
+import { schemaRoutes } from './schema/schema.routes';
 
 export const routes: Routes = [
   {
@@ -41,6 +41,17 @@ export const routes: Routes = [
         (m) => m.ConnectionSettingsComponent
       ),
     canActivate: [AuthGuard],
+  },
+  {
+    path: 'settings/config-portability',
+    loadComponent: () =>
+      import('./config-portability/config-portability.component').then(
+        (m) => m.ConfigPortabilityComponent
+      ),
+    canActivate: [AuthGuard, RoleGuard],
+    data: {
+      role: [getRole('tenants:manage'), getRole('tenant:admin')],
+    },
   },
   { path: '', redirectTo: '/dashboard', pathMatch: 'full' },
 
@@ -180,11 +191,14 @@ export const routes: Routes = [
     children: trustListRoutes,
   },
 
-  // Schema metadata routes
+  // Schema routes
   {
-    path: 'schema-metadata',
+    path: 'schema',
     canActivate: [AuthGuard, RoleGuard],
     data: { role: getRole('registrar:manage') },
-    children: schemaMetadataRoutes,
+    children: schemaRoutes,
   },
+  { path: 'schema-metadata', redirectTo: 'schema', pathMatch: 'full' },
+  { path: 'schema-metadata/create', redirectTo: 'schema/create' },
+  { path: 'schema-metadata/:id', redirectTo: 'schema/:id' },
 ];

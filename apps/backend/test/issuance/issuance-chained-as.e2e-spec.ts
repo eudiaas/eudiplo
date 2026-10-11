@@ -1,9 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { INestApplication, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
-import { decodeJwt } from "jose";
+import { createDpopHeadersForRequest, type Jwk } from "@openid4vc/oauth2";
+import {
+    calculateJwkThumbprint,
+    decodeJwt,
+    exportJWK,
+    generateKeyPair,
+    SignJWT,
+} from "jose";
 import nock from "nock";
 import request from "supertest";
 import { App } from "supertest/types";
@@ -17,14 +25,19 @@ import {
     expect,
     test,
 } from "vitest";
-import { AppModule } from "../../src/app.module";
-import { KeyChainImportDto } from "../../src/crypto/key/dto/key-chain-import.dto";
-import { CredentialConfigCreate } from "../../src/issuer/configuration/credentials/dto/credential-config-create.dto";
-import { IssuanceDto } from "../../src/issuer/configuration/issuance/dto/issuance.dto";
-import { SessionStatus } from "../../src/session/entities/session.entity";
-import { SessionService } from "../../src/session/session.service";
-import { PresentationConfigCreateDto } from "../../src/verifier/presentations/dto/presentation-config-create.dto";
-import { getToken, readConfig } from "../utils";
+import { AppModule } from "../../src/app.module.js";
+import { KeyChainImportDto } from "../../src/crypto/key/dto/key-chain-import.dto.js";
+import { CredentialConfigCreate } from "../../src/issuer/configuration/credentials/dto/credential-config-create.dto.js";
+import { IssuanceDto } from "../../src/issuer/configuration/issuance/dto/issuance.dto.js";
+import { SessionStore } from "../../src/session/application/session-store.js";
+import { SessionStatus } from "../../src/session/domain/session-state.js";
+import { PresentationConfigCreateDto } from "../../src/verifier/presentations/dto/presentation-config-create.dto.js";
+import {
+    callbacks,
+    getSignJwtCallback,
+    getToken,
+    readConfig,
+} from "../utils.js";
 
 setGlobalDispatcher(
     new Agent({
@@ -101,12 +114,66 @@ function createFakeIdToken(claims: Record<string, unknown>): string {
     return `${header}.${payload}.`;
 }
 
+async function holderKey() {
+    const { privateKey, publicKey } = await generateKeyPair("ES256", {
+        extractable: true,
+    });
+    return {
+        privateKey,
+        privateJwk: (await exportJWK(privateKey)) as Jwk,
+        publicJwk: (await exportJWK(publicKey)) as Jwk,
+    };
+}
+
+type HolderKey = Awaited<ReturnType<typeof holderKey>>;
+
+/** A DPoP proof for a POST to `url`, created like a wallet does with the OAuth library. */
+async function dpopProof(key: HolderKey, url: string): Promise<string> {
+    const { DPoP } = await createDpopHeadersForRequest({
+        request: { method: "POST", url },
+        signer: { method: "jwk", alg: "ES256", publicJwk: key.publicJwk },
+        callbacks: {
+            ...callbacks,
+            signJwt: getSignJwtCallback([key.privateJwk]),
+        },
+    });
+    return DPoP;
+}
+
+/** A hand-made DPoP proof for a POST to `url`, to break single checks. */
+function craftedDpopProof(
+    key: HolderKey,
+    url: string,
+    {
+        payload = {},
+        signingKey = key.privateKey,
+    }: {
+        payload?: Record<string, unknown>;
+        signingKey?: HolderKey["privateKey"];
+    } = {},
+): Promise<string> {
+    return new SignJWT({
+        htm: "POST",
+        htu: url,
+        iat: Math.floor(Date.now() / 1000),
+        jti: randomUUID(),
+        ...payload,
+    })
+        .setProtectedHeader({
+            alg: "ES256",
+            typ: "dpop+jwt",
+            jwk: key.publicJwk,
+        })
+        .sign(signingKey);
+}
+
 describe("Issuance - Chained AS Flow", () => {
     let app: INestApplication<App>;
     let authToken: string;
     let clientId: string;
     let clientSecret: string;
-    let sessionService: SessionService;
+    let publicUrl: string;
+    let sessionStore: SessionStore;
 
     beforeAll(async () => {
         // Delete the database
@@ -120,15 +187,16 @@ describe("Issuance - Chained AS Flow", () => {
         app.useGlobalPipes(new ValidationPipe());
 
         const configService = app.get(ConfigService);
-        configService.set("CONFIG_IMPORT", false);
+        configService.set("CONFIG_IMPORT_MODE", "disabled");
         configService.set("LOG_LEVEL", "debug");
 
         clientId = configService.getOrThrow<string>("AUTH_CLIENT_ID");
         clientSecret = configService.getOrThrow<string>("AUTH_CLIENT_SECRET");
+        publicUrl = configService.getOrThrow<string>("PUBLIC_URL");
 
         await app.init();
 
-        sessionService = app.get(SessionService);
+        sessionStore = app.get(SessionStore);
 
         authToken = await getToken(app, clientId, clientSecret, "haip");
 
@@ -210,17 +278,6 @@ describe("Issuance - Chained AS Flow", () => {
                 ),
             )
             .expect(201);
-
-        await request(app.getHttpServer())
-            .post("/verifier/config")
-            .trustLocalhost()
-            .set("Authorization", `Bearer ${authToken}`)
-            .send(
-                readConfig<PresentationConfigCreateDto>(
-                    join(configFolder, "haip/presentation/pid-no-hook.json"),
-                ),
-            )
-            .expect(201);
     });
 
     beforeEach(() => {
@@ -236,7 +293,7 @@ describe("Issuance - Chained AS Flow", () => {
     });
 
     afterAll(async () => {
-        await app.close();
+        await app?.close();
     });
 
     async function configureChainedAs(
@@ -280,130 +337,131 @@ describe("Issuance - Chained AS Flow", () => {
             .expect(201);
     }
 
-    async function configureChainedAsVp(
-        refreshTokenEnabled = false,
-    ): Promise<void> {
+    test("rejects the removed OID4VP-backed chained authorization server", async () => {
+        const response = await request(app.getHttpServer())
+            .post("/issuer/config")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send({
+                authorizationServers: [
+                    {
+                        id: "chained-auth",
+                        type: "chained",
+                        vp: {
+                            enabled: true,
+                            presentationConfigId: "pid-no-hook",
+                        },
+                    },
+                ],
+            })
+            .expect(400);
+
+        expect(JSON.stringify(response.body.errors)).toContain("'oid4vp'");
+    });
+
+    test("OID4VP authorization server binds the token to the PAR DPoP key", async () => {
+        await request(app.getHttpServer())
+            .post("/verifier/config")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send(
+                readConfig<PresentationConfigCreateDto>(
+                    join(
+                        resolve(__dirname + "/../fixtures"),
+                        "haip/presentation/pid-no-hook.json",
+                    ),
+                ),
+            )
+            .expect(201);
         const currentConfigResponse = await request(app.getHttpServer())
             .get("/issuer/config")
             .trustLocalhost()
             .set("Authorization", `Bearer ${authToken}`)
             .expect(200);
-
-        const currentConfig = currentConfigResponse.body;
-
         await request(app.getHttpServer())
             .post("/issuer/config")
             .trustLocalhost()
             .set("Authorization", `Bearer ${authToken}`)
             .send({
-                ...currentConfig,
+                ...currentConfigResponse.body,
                 authorizationServers: [
                     {
-                        id: "chained-auth",
-                        type: "chained",
-                        enabled: true,
-                        vp: {
-                            enabled: true,
-                            presentationConfigId: "pid-no-hook",
-                        },
-                        token: {
-                            lifetimeSeconds: 3600,
-                            refreshTokenEnabled,
-                        },
+                        id: "vp-as",
+                        type: "oid4vp",
+                        presentationConfigId: "pid-no-hook",
+                        token: { lifetimeSeconds: 3600 },
                         requireDPoP: false,
                     },
                 ],
             })
             .expect(201);
-    }
 
-    test("VP chained AS flow redirects into OID4VP and returns OAuth code after verifier callback", async () => {
-        await configureChainedAsVp(true);
-
-        const metadataResponse = await request(app.getHttpServer())
-            .get(
-                "/.well-known/oauth-authorization-server/issuers/haip/chained-as-vp",
-            )
-            .trustLocalhost()
-            .expect(200);
-
-        expect(metadataResponse.body.issuer).toContain(
-            "/issuers/haip/chained-as-vp",
-        );
-
+        const path = "/issuers/haip/authorization-servers/vp-as";
+        const key = await holderKey();
         const parResponse = await request(app.getHttpServer())
-            .post("/issuers/haip/chained-as-vp/par")
+            .post(`${path}/par`)
             .trustLocalhost()
+            .set("DPoP", await dpopProof(key, `${publicUrl}${path}/par`))
             .send({
                 response_type: "code",
                 client_id: "test-wallet",
                 redirect_uri: "http://wallet.example.com/callback",
                 code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
                 code_challenge_method: "S256",
-                state: "wallet-state",
             })
             .expect(201);
-
-        const authorizeResponse = await request(app.getHttpServer())
-            .get("/issuers/haip/chained-as-vp/authorize")
+        await request(app.getHttpServer())
+            .get(`${path}/authorize`)
             .query({
                 client_id: "test-wallet",
                 request_uri: parResponse.body.request_uri,
             })
             .trustLocalhost()
-            .redirects(0)
-            .expect(302);
-
-        expect(authorizeResponse.headers.location).toContain("openid4vp://?");
-
-        const chainedAsSessionId = parResponse.body.request_uri.replace(
+            .expect(200);
+        const sessionId = parResponse.body.request_uri.replace(
             "urn:ietf:params:oauth:request_uri:",
             "",
         );
-
-        await sessionService.add(chainedAsSessionId, {
+        await sessionStore.updateForTenant("haip", sessionId, {
             status: SessionStatus.Completed,
             responseCode: "vp-response-code",
         });
-
         const callbackResponse = await request(app.getHttpServer())
-            .get("/issuers/haip/chained-as-vp/vp-callback")
-            .query({
-                cas: chainedAsSessionId,
-                response_code: "vp-response-code",
-            })
+            .get(`${path}/vp-callback`)
+            .query({ cas: sessionId, response_code: "vp-response-code" })
             .trustLocalhost()
             .redirects(0)
             .expect(302);
+        const tokenRequest = {
+            grant_type: "authorization_code",
+            code: new URL(callbackResponse.headers.location).searchParams.get(
+                "code",
+            ),
+            redirect_uri: "http://wallet.example.com/callback",
+            code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        };
 
-        const walletRedirectUrl = new URL(callbackResponse.headers.location);
-        const authorizationCode = walletRedirectUrl.searchParams.get("code");
-
-        expect(walletRedirectUrl.searchParams.get("state")).toBe(
-            "wallet-state",
-        );
-        expect(walletRedirectUrl.searchParams.get("iss")).toContain(
-            "/issuers/haip/chained-as-vp",
-        );
-        expect(authorizationCode).toBeTruthy();
+        const otherKey = await request(app.getHttpServer())
+            .post(`${path}/token`)
+            .trustLocalhost()
+            .set(
+                "DPoP",
+                await dpopProof(await holderKey(), `${publicUrl}${path}/token`),
+            )
+            .send(tokenRequest)
+            .expect(400);
+        expect(otherKey.body.error).toBe("invalid_dpop_proof");
 
         const tokenResponse = await request(app.getHttpServer())
-            .post("/issuers/haip/chained-as-vp/token")
+            .post(`${path}/token`)
             .trustLocalhost()
-            .send({
-                grant_type: "authorization_code",
-                code: authorizationCode,
-                redirect_uri: "http://wallet.example.com/callback",
-                code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
-            })
+            .set("DPoP", await dpopProof(key, `${publicUrl}${path}/token`))
+            .send(tokenRequest)
             .expect(200);
-
-        expect(tokenResponse.body.access_token).toBeDefined();
-        expect(tokenResponse.body.refresh_token).toBeDefined();
-
-        const tokenPayload = decodeJwt(tokenResponse.body.access_token);
-        expect(tokenPayload.iss).toContain("/issuers/haip/chained-as-vp");
-        expect(tokenPayload.issuer_state).toBeDefined();
+        expect(tokenResponse.body.token_type).toBe("DPoP");
+        expect(decodeJwt(tokenResponse.body.access_token).cnf).toEqual({
+            jkt: await calculateJwkThumbprint(key.publicJwk, "sha256"),
+        });
     });
 
     test("token endpoint supports refresh_token grant in Chained AS flow", async () => {
@@ -489,6 +547,30 @@ describe("Issuance - Chained AS Flow", () => {
         expect(refreshedTokenPayload.issuer_state).toBeDefined();
     });
 
+    test("disabled refresh tokens are neither advertised nor accepted in Chained AS flow", async () => {
+        await configureChainedAs(false);
+
+        const metadataResponse = await request(app.getHttpServer())
+            .get(
+                "/.well-known/oauth-authorization-server/issuers/haip/chained-as",
+            )
+            .trustLocalhost()
+            .expect(200);
+        expect(metadataResponse.body.grant_types_supported).toEqual([
+            "authorization_code",
+        ]);
+
+        const refreshResponse = await request(app.getHttpServer())
+            .post("/issuers/haip/chained-as/token")
+            .trustLocalhost()
+            .send({
+                grant_type: "refresh_token",
+                refresh_token: "any-refresh-token",
+            })
+            .expect(400);
+        expect(refreshResponse.body.error).toBe("unsupported_grant_type");
+    });
+
     test("chained AS metadata endpoint returns correct configuration", async () => {
         await configureChainedAs();
 
@@ -517,6 +599,9 @@ describe("Issuance - Chained AS Flow", () => {
         expect(metadataResponse.body.grant_types_supported).toContain(
             "authorization_code",
         );
+        expect(metadataResponse.body.code_challenge_methods_supported).toEqual([
+            "S256",
+        ]);
     });
 
     test("PAR endpoint accepts authorization request and returns request_uri", async () => {
@@ -542,6 +627,46 @@ describe("Issuance - Chained AS Flow", () => {
             /^urn:ietf:params:oauth:request_uri:/,
         );
         expect(parResponse.body.expires_in).toBeGreaterThan(0);
+    });
+
+    test("PAR endpoint rejects a request without code_challenge", async () => {
+        setupUpstreamOidcMocks();
+        await configureChainedAs();
+
+        const parResponse = await request(app.getHttpServer())
+            .post("/issuers/haip/chained-as/par")
+            .trustLocalhost()
+            .send({
+                response_type: "code",
+                client_id: "test-wallet",
+                redirect_uri: "http://wallet.example.com/callback",
+                scope: "openid pid",
+            })
+            .expect(400);
+
+        expect(parResponse.body.error).toBe("invalid_request");
+        expect(parResponse.body.error_description).toContain("code_challenge");
+    });
+
+    test("PAR endpoint rejects code_challenge_method plain", async () => {
+        setupUpstreamOidcMocks();
+        await configureChainedAs();
+
+        const parResponse = await request(app.getHttpServer())
+            .post("/issuers/haip/chained-as/par")
+            .trustLocalhost()
+            .send({
+                response_type: "code",
+                client_id: "test-wallet",
+                redirect_uri: "http://wallet.example.com/callback",
+                code_challenge: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+                code_challenge_method: "plain",
+                scope: "openid pid",
+            })
+            .expect(400);
+
+        expect(parResponse.body.error).toBe("invalid_request");
+        expect(parResponse.body.error_description).toContain("S256");
     });
 
     test("authorize endpoint redirects to upstream OIDC provider", async () => {
@@ -824,5 +949,208 @@ describe("Issuance - Chained AS Flow", () => {
         expect(walletRedirectUrl.searchParams.get("state")).toBe(
             "wallet-state-error",
         );
+    });
+
+    describe("DPoP", () => {
+        const parUrl = () => `${publicUrl}/issuers/haip/chained-as/par`;
+        const tokenUrl = () => `${publicUrl}/issuers/haip/chained-as/token`;
+
+        const par = (dpop?: string) => {
+            const req = request(app.getHttpServer())
+                .post("/issuers/haip/chained-as/par")
+                .trustLocalhost();
+            if (dpop) req.set("DPoP", dpop);
+            return req.send({
+                response_type: "code",
+                client_id: "test-wallet",
+                redirect_uri: "http://wallet.example.com/callback",
+                code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                code_challenge_method: "S256",
+            });
+        };
+
+        /** PAR, authorization and upstream callback; returns the wallet's code. */
+        async function authorizationCode(parDpop?: string): Promise<string> {
+            const parResponse = await par(parDpop).expect(201);
+            const authorizeResponse = await request(app.getHttpServer())
+                .get("/issuers/haip/chained-as/authorize")
+                .query({
+                    client_id: "test-wallet",
+                    request_uri: parResponse.body.request_uri,
+                })
+                .trustLocalhost()
+                .redirects(0)
+                .expect(302);
+            const callbackResponse = await request(app.getHttpServer())
+                .get("/issuers/haip/chained-as/callback")
+                .query({
+                    code: "upstream-auth-code",
+                    state: new URL(
+                        authorizeResponse.headers.location,
+                    ).searchParams.get("state"),
+                })
+                .trustLocalhost()
+                .redirects(0)
+                .expect(302);
+            return new URL(callbackResponse.headers.location).searchParams.get(
+                "code",
+            )!;
+        }
+
+        const token = (body: Record<string, string>, dpop?: string) => {
+            const req = request(app.getHttpServer())
+                .post("/issuers/haip/chained-as/token")
+                .trustLocalhost();
+            if (dpop) req.set("DPoP", dpop);
+            return req.send(body);
+        };
+
+        const codeGrant = (code: string) => ({
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: "http://wallet.example.com/callback",
+            code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        });
+
+        beforeEach(async () => {
+            setupUpstreamOidcMocks();
+            mockUpstreamTokenResponse({ sub: "dpop-user" });
+            await configureChainedAs(true);
+        });
+
+        test("binds the access and refresh token to the verified DPoP key", async () => {
+            const key = await holderKey();
+            const code = await authorizationCode(
+                await dpopProof(key, parUrl()),
+            );
+
+            const tokenResponse = await token(
+                codeGrant(code),
+                await dpopProof(key, tokenUrl()),
+            ).expect(200);
+            expect(tokenResponse.body.token_type).toBe("DPoP");
+            expect(decodeJwt(tokenResponse.body.access_token).cnf).toEqual({
+                jkt: await calculateJwkThumbprint(key.publicJwk, "sha256"),
+            });
+
+            const refreshGrant = {
+                grant_type: "refresh_token",
+                refresh_token: tokenResponse.body.refresh_token,
+            };
+            const withoutProof = await token(refreshGrant).expect(400);
+            expect(withoutProof.body.error).toBe("invalid_dpop_proof");
+            const otherKey = await token(
+                refreshGrant,
+                await dpopProof(await holderKey(), tokenUrl()),
+            ).expect(400);
+            expect(otherKey.body.error).toBe("invalid_dpop_proof");
+
+            const refreshed = await token(
+                refreshGrant,
+                await dpopProof(key, tokenUrl()),
+            ).expect(200);
+            expect(refreshed.body.token_type).toBe("DPoP");
+        });
+
+        test.each<[string, (key: HolderKey) => Promise<string>]>([
+            [
+                "a forged signature",
+                async (key) =>
+                    craftedDpopProof(key, parUrl(), {
+                        signingKey: (await holderKey()).privateKey,
+                    }),
+            ],
+            [
+                "the wrong htm",
+                (key) =>
+                    craftedDpopProof(key, parUrl(), {
+                        payload: { htm: "GET" },
+                    }),
+            ],
+            ["the wrong htu", (key) => craftedDpopProof(key, tokenUrl())],
+            [
+                "a stale iat",
+                (key) =>
+                    craftedDpopProof(key, parUrl(), {
+                        payload: { iat: Math.floor(Date.now() / 1000) - 3600 },
+                    }),
+            ],
+            [
+                "no signature",
+                async (key) => {
+                    const [, payload] = (
+                        await craftedDpopProof(key, parUrl())
+                    ).split(".");
+                    const header = Buffer.from(
+                        JSON.stringify({
+                            alg: "none",
+                            typ: "dpop+jwt",
+                            jwk: key.publicJwk,
+                        }),
+                    ).toString("base64url");
+                    return `${header}.${payload}.`;
+                },
+            ],
+            ["a malformed value", async () => "not-a-dpop-proof"],
+        ])("rejects a PAR DPoP proof with %s", async (_, createProof) => {
+            const response = await par(
+                await createProof(await holderKey()),
+            ).expect(400);
+            expect(response.body.error).toBe("invalid_dpop_proof");
+        });
+
+        test("rejects a replayed PAR DPoP proof", async () => {
+            const proof = await dpopProof(await holderKey(), parUrl());
+            await par(proof).expect(201);
+
+            const replay = await par(proof).expect(400);
+            expect(replay.body.error).toBe("invalid_dpop_proof");
+        });
+
+        test("requires a DPoP proof with the PAR-bound key at the token endpoint", async () => {
+            const key = await holderKey();
+            const code = await authorizationCode(
+                await dpopProof(key, parUrl()),
+            );
+
+            const withoutProof = await token(codeGrant(code)).expect(400);
+            expect(withoutProof.body.error).toBe("invalid_dpop_proof");
+            const otherKey = await token(
+                codeGrant(code),
+                await dpopProof(await holderKey(), tokenUrl()),
+            ).expect(400);
+            expect(otherKey.body.error).toBe("invalid_dpop_proof");
+
+            await token(codeGrant(code), await dpopProof(key, tokenUrl()))
+                .expect(200)
+                .expect(({ body }) => expect(body.token_type).toBe("DPoP"));
+        });
+
+        test("never issues a DPoP token for an invalid proof", async () => {
+            const forged = await craftedDpopProof(
+                await holderKey(),
+                tokenUrl(),
+                { signingKey: (await holderKey()).privateKey },
+            );
+
+            const response = await token(
+                codeGrant(await authorizationCode()),
+                forged,
+            ).expect(400);
+            expect(response.body.error).toBe("invalid_dpop_proof");
+        });
+
+        test("rejects a replayed DPoP proof at the token endpoint", async () => {
+            const proof = await dpopProof(await holderKey(), tokenUrl());
+            await token(codeGrant(await authorizationCode()), proof).expect(
+                200,
+            );
+
+            const replay = await token(
+                codeGrant(await authorizationCode()),
+                proof,
+            ).expect(400);
+            expect(replay.body.error).toBe("invalid_dpop_proof");
+        });
     });
 });

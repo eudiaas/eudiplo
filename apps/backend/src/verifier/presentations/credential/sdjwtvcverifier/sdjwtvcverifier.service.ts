@@ -5,20 +5,20 @@ import { SDJwtVcInstance, VerificationResult } from "@sd-jwt/sd-jwt-vc";
 import { base64url, JWK } from "jose";
 import { Span } from "nestjs-otel";
 import { PinoLogger } from "nestjs-pino";
-import { CryptoImplementationService } from "../../../../crypto/key/crypto-implementation/crypto-implementation.service";
-import { VerifierOptions } from "../../../../trust/types";
-import { MatchedTrustedEntity } from "../../../../trust/x509-validation.service";
-import { ResolverService } from "../../../resolver/resolver.service";
-import { CredentialChainValidationService } from "../credential-chain-validation.service";
+import { CryptoImplementationService } from "../../../../crypto/key/crypto-implementation/crypto-implementation.service.js";
 import {
     isStatusListUnavailableError,
     resolveRevocationPolicy,
-} from "../../../../trust/revocation-policy.util";
+} from "../../../../trust/revocation-policy.util.js";
+import { VerifierOptions } from "../../../../trust/types.js";
+import { MatchedTrustedEntity } from "../../../../trust/x509-validation.service.js";
+import { ResolverService } from "../../../resolver/resolver.service.js";
+import { CredentialChainValidationService } from "../credential-chain-validation.service.js";
 import {
     mapChainErrorToFailureType,
     shortVerificationMessage,
     type VerificationFailureType,
-} from "../verification-failure";
+} from "../verification-failure.js";
 
 /**
  * SD-JWT-VC verification failure carrying the shared, machine-readable failure
@@ -175,12 +175,51 @@ export class SdjwtvcverifierService {
             throw e;
         }
 
+        if (revocationPolicy.enabled) {
+            this.checkStatusMechanism(result, revocationPolicy.failClosed);
+        }
+
         // Validate transaction data hashes if transaction data was provided
         if (options.transactionData && options.transactionData.length > 0) {
             this.validateTransactionDataHashes(result, options.transactionData);
         }
 
+        if (options.ts12TransactionData) {
+            this.validateTs12KeyBinding(result, options.keyBindingResponseMode);
+        }
+
         return result;
+    }
+
+    /**
+     * The library only checks `status.status_list` and passes any other
+     * `status` claim unchecked. A credential without a `status` claim cannot
+     * be revoked and is accepted, but a `status` claim without a status list
+     * names a status the verifier could not check: strict mode rejects it,
+     * best-effort mode logs it and accepts the credential.
+     */
+    private checkStatusMechanism(
+        result: VerificationResult,
+        failClosed: boolean,
+    ): void {
+        const status = (result.payload as Record<string, unknown>).status;
+        if (status === undefined) {
+            return;
+        }
+        const statusList =
+            typeof status === "object" && status !== null
+                ? (status as Record<string, unknown>).status_list
+                : undefined;
+        if (statusList !== undefined) {
+            return;
+        }
+
+        const reason =
+            "The credential's status claim contains no supported status mechanism, so its status could not be checked";
+        if (failClosed) {
+            throw new BadRequestException(reason);
+        }
+        this.logger.warn(`${reason}; accepting it in best-effort mode`);
     }
 
     /**
@@ -266,6 +305,60 @@ export class SdjwtvcverifierService {
         this.logger.debug(
             `Transaction data hashes validated successfully (${transactionData.length} entries)`,
         );
+    }
+
+    private validateTs12KeyBinding(
+        result: VerificationResult,
+        expectedResponseMode: string | undefined,
+    ): void {
+        const kbPayload = result.kb?.payload as
+            | {
+                  amr?: unknown;
+                  jti?: unknown;
+                  response_mode?: unknown;
+                  transaction_data_hashes_alg?: unknown;
+              }
+            | undefined;
+
+        if (!kbPayload || typeof kbPayload.jti !== "string" || !kbPayload.jti) {
+            throw new BadRequestException(
+                "TS12 KB-JWT requires a non-empty jti",
+            );
+        }
+        if (kbPayload.response_mode !== expectedResponseMode) {
+            throw new BadRequestException(
+                "TS12 KB-JWT response_mode does not match the request",
+            );
+        }
+        if (kbPayload.transaction_data_hashes_alg !== "sha-256") {
+            throw new BadRequestException(
+                "TS12 KB-JWT requires transaction_data_hashes_alg sha-256",
+            );
+        }
+        if (!Array.isArray(kbPayload.amr)) {
+            throw new BadRequestException("TS12 KB-JWT requires an amr array");
+        }
+
+        const categories = new Set(
+            kbPayload.amr.flatMap((entry) => {
+                if (
+                    !entry ||
+                    typeof entry !== "object" ||
+                    Array.isArray(entry)
+                ) {
+                    return [];
+                }
+                return Object.keys(entry as Record<string, unknown>).filter(
+                    (key) =>
+                        ["knowledge", "possession", "inherence"].includes(key),
+                );
+            }),
+        );
+        if (categories.size < 2) {
+            throw new BadRequestException(
+                "TS12 KB-JWT amr requires at least two distinct SCA factor categories",
+            );
+        }
     }
 
     /**

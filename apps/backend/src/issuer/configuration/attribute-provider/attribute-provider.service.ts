@@ -1,33 +1,34 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Request } from "express";
-import { Repository } from "typeorm";
-import { AuditLogService } from "../../../audit-log/audit-log.service";
-import { TokenPayload } from "../../../auth/token.decorator";
+import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import type { AuditLogRequestMeta } from "../../../audit-log/audit-log.service.js";
+import { AuditLogService } from "../../../audit-log/audit-log.service.js";
 import {
-    extractRequestMeta,
     getChangedFields,
     resolveAuditActor,
-} from "../../../audit-log/audit-log-context.util";
-import { loadConfigDto } from "../../../shared/utils/config-file-loader.util";
-import { ConfigImportService } from "../../../platform/config-import/config-import.service";
+} from "../../../audit-log/audit-log-context.util.js";
+import { TokenPayload } from "../../../auth/token.decorator.js";
+import { ConfigImportService } from "../../../platform/config-import/config-import.service.js";
 import {
     ConfigImportOrchestratorService,
     ImportPhase,
-} from "../../../platform/config-import/config-import-orchestrator.service";
-import { OutboundUrlPolicyService } from "../../../webhook/outbound-url-policy.service";
-import { CreateAttributeProviderDto } from "./dto/create-attribute-provider.dto";
-import { AttributeProviderEntity } from "./entities/attribute-provider.entity";
+} from "../../../platform/config-import/config-import-orchestrator.service.js";
+import { loadConfigDto } from "../../../shared/utils/config-file-loader.util.js";
+import { OutboundUrlPolicyService } from "../../../webhook/outbound-url-policy.service.js";
+import type { AttributeProviderData } from "./domain/attribute-provider-data.js";
+import { CreateAttributeProviderDto } from "./dto/create-attribute-provider.dto.js";
+import {
+    ATTRIBUTE_PROVIDER_REPOSITORY,
+    type AttributeProviderRepository,
+} from "./ports/attribute-provider.repository.js";
 import type {
     CreateAttributeProvider,
     UpdateAttributeProvider,
-} from "./schemas/attribute-provider.schema";
+} from "./schemas/attribute-provider.schema.js";
 
 @Injectable()
 export class AttributeProviderService {
     constructor(
-        @InjectRepository(AttributeProviderEntity)
-        private readonly repo: Repository<AttributeProviderEntity>,
+        @Inject(ATTRIBUTE_PROVIDER_REPOSITORY)
+        private readonly repo: AttributeProviderRepository,
         private readonly configImportService: ConfigImportService,
         private readonly configImportOrchestrator: ConfigImportOrchestratorService,
         private readonly tenantActionLogService: AuditLogService,
@@ -46,7 +47,7 @@ export class AttributeProviderService {
             {
                 subfolder: "attribute-providers",
                 fileExtension: ".json",
-                validationClass: CreateAttributeProviderDto,
+                validationSchema: CreateAttributeProviderDto,
                 resourceType: "attribute provider",
                 checkExists: (tid, data) =>
                     this.getById(tid, data.id)
@@ -54,7 +55,7 @@ export class AttributeProviderService {
                         .catch(() => false),
                 deleteExisting: (tid, data) =>
                     this.repo
-                        .delete({ id: data.id, tenantId: tid })
+                        .deleteForTenant(tid, data.id)
                         .then(() => undefined),
                 loadData: (filePath) =>
                     loadConfigDto(filePath, CreateAttributeProviderDto),
@@ -66,11 +67,11 @@ export class AttributeProviderService {
     }
 
     getAll(tenantId: string) {
-        return this.repo.find({ where: { tenantId } });
+        return this.repo.listForTenant(tenantId);
     }
 
     async getById(tenantId: string, id: string) {
-        const entity = await this.repo.findOneBy({ id, tenantId });
+        const entity = await this.repo.findForTenant(tenantId, id);
         if (!entity) {
             throw new NotFoundException(`Attribute provider '${id}' not found`);
         }
@@ -81,14 +82,14 @@ export class AttributeProviderService {
         tenantId: string,
         dto: CreateAttributeProvider,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         await this.outboundUrlPolicyService.assertSafeUrl(dto.url);
 
-        const saved = (await this.repo.save({
+        const saved = await this.repo.save({
             ...dto,
             tenantId,
-        } as any)) as AttributeProviderEntity;
+        });
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -100,7 +101,7 @@ export class AttributeProviderService {
                     this.sanitizeAttributeProviderForLog(saved),
                 ),
                 after: this.sanitizeAttributeProviderForLog(saved),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -112,7 +113,7 @@ export class AttributeProviderService {
         id: string,
         dto: UpdateAttributeProvider,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         const existing = await this.getById(tenantId, id);
 
@@ -120,12 +121,12 @@ export class AttributeProviderService {
             await this.outboundUrlPolicyService.assertSafeUrl(dto.url);
         }
 
-        const saved = (await this.repo.save({
+        const saved = await this.repo.save({
             ...existing,
             ...dto,
             id,
             tenantId,
-        } as any)) as AttributeProviderEntity;
+        });
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -138,7 +139,7 @@ export class AttributeProviderService {
                 ),
                 before: this.sanitizeAttributeProviderForLog(existing),
                 after: this.sanitizeAttributeProviderForLog(saved),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -149,10 +150,10 @@ export class AttributeProviderService {
         tenantId: string,
         id: string,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         const existing = await this.getById(tenantId, id);
-        const result = await this.repo.delete({ id, tenantId });
+        const result = await this.repo.deleteForTenant(tenantId, id);
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -160,7 +161,7 @@ export class AttributeProviderService {
                 actionType: "attribute_provider_deleted",
                 actor: resolveAuditActor(actorToken),
                 before: this.sanitizeAttributeProviderForLog(existing),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -168,7 +169,7 @@ export class AttributeProviderService {
     }
 
     private sanitizeAttributeProviderForLog(
-        provider: AttributeProviderEntity,
+        provider: AttributeProviderData,
     ): Record<string, unknown> {
         return {
             id: provider.id,

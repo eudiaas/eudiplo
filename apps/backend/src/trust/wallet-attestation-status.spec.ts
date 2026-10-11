@@ -1,6 +1,6 @@
 import { UnauthorizedException } from "@nestjs/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { WalletAttestationService } from "./wallet-attestation.service";
+import { WalletAttestationService } from "./wallet-attestation.service.js";
 
 /**
  * The status check of WIAs and KAs (EUDI TS3 v1.5.2 §2.4.3). Certificate
@@ -63,7 +63,7 @@ describe("WalletAttestationService — status of WIAs and KAs", () => {
     });
 
     it("a KA is checked at key_storage_status.status", async () => {
-        await service.verifyKeyAttestationStatus(KA, LISTS as any);
+        await service.verifyKeyAttestationStatus(KA, LISTS as any, "tenant-1");
         expect(statusLists.checkStatus).toHaveBeenCalledWith(LIST, 7);
     });
 
@@ -73,19 +73,23 @@ describe("WalletAttestationService — status of WIAs and KAs", () => {
             description: "INVALID",
         });
         await expect(
-            service.verifyKeyAttestationStatus(KA, LISTS as any),
+            service.verifyKeyAttestationStatus(KA, LISTS as any, "tenant-1"),
         ).rejects.toThrow(
             new UnauthorizedException("Key attestation is not valid: INVALID"),
         );
     });
 
     it("without wallet provider trust lists there is no provider to match: nothing is checked", async () => {
-        await service.verifyKeyAttestationStatus(KA, []);
+        await service.verifyKeyAttestationStatus(KA, [], "tenant-1");
         expect(statusLists.getStatusListJwt).not.toHaveBeenCalled();
     });
 
     it("a KA without status reference passes", async () => {
-        await service.verifyKeyAttestationStatus(jwt({}), LISTS as any);
+        await service.verifyKeyAttestationStatus(
+            jwt({}),
+            LISTS as any,
+            "tenant-1",
+        );
         expect(statusLists.checkStatus).not.toHaveBeenCalled();
     });
 });

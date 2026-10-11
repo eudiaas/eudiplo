@@ -1,56 +1,72 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { HttpService } from "@nestjs/axios";
 import {
     BadRequestException,
+    Inject,
     Injectable,
     Logger,
     NotFoundException,
+    Optional,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
 import { decodeJwt } from "jose";
-import { TraceService } from "nestjs-otel";
-import { firstValueFrom } from "rxjs";
-import { LessThan, Repository } from "typeorm";
+import { MetricService, TraceService } from "nestjs-otel";
 import { v4 } from "uuid";
-import { KeyChainService } from "../../../../../crypto/key/key-chain.service";
-import { SessionService } from "../../../../../session/session.service";
-import { FederationTrustService } from "../../../../../trust/federation-trust.service";
-import { FederationTrustSource } from "../../../../../trust/types";
-import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service";
-import { AuthorizationIdentity } from "../../../../configuration/credentials/dto/authorization-identity";
-import type { ChainedAsConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto";
-import { IssuanceService } from "../../../../configuration/issuance/issuance.service";
+import { CryptoService } from "../../../../../crypto/crypto.service.js";
+import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
+import { SessionStore } from "../../../../../session/application/session-store.js";
+import { assertSessionUsable } from "../../../../../session/domain/session-usability.js";
+import { FederationTrustService } from "../../../../../trust/federation-trust.service.js";
+import { FederationTrustSource } from "../../../../../trust/types.js";
+import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service.js";
+import type { TrustListRef } from "../../../../../verifier/presentations/entities/presentation-config.entity.js";
+import { AuthorizationIdentity } from "../../../../configuration/credentials/domain/authorization-identity.js";
+import type { ChainedAsConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto.js";
+import { IssuanceService } from "../../../../configuration/issuance/issuance.service.js";
 import {
+    OID4VCI_SETTINGS,
+    type Oid4vciSettings,
+} from "../../oid4vci-settings.js";
+import {
+    DPOP_PROOF_REPLAY_REGISTRY,
+    type DpopProofReplayRegistry,
+} from "../../ports/dpop-proof-replay-registry.js";
+import { refreshTokenPolicy } from "../domain/token-grant-rules.js";
+import {
+    CHAINED_AS_SESSION_REPOSITORY,
+    type ChainedAsSessionRepository,
+} from "../ports/chained-as-session.repository.js";
+import {
+    assertPkceCodeChallenge,
     assertTokenRequestSessionValid,
+    buildAccessTokenPayload,
+    buildAuthorizationCodeRedirect,
+    buildAuthorizationErrorRedirect,
     buildAuthorizationServerMetadata,
-    buildWalletAttestationMetadata,
     buildJwksResponse,
+    buildWalletAttestationMetadata,
+    type ChainedAsDpopVerification,
     ChainedAsParRequestDto,
     ChainedAsParResponseDto,
-    ChainedAsSessionEntity,
+    type ChainedAsSession,
     ChainedAsSessionStatus,
     ChainedAsTokenRequestDto,
     ChainedAsTokenResponseDto,
+    DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
     issueRefreshTokenIfEnabled,
     resolveSessionForTokenRequest,
     resolveTokenBinding,
-    DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
-} from "../shared";
-
-/**
- * Upstream OIDC discovery document structure.
- */
-interface OidcDiscoveryDocument {
-    issuer: string;
-    authorization_endpoint: string;
-    token_endpoint: string;
-    userinfo_endpoint?: string;
-    jwks_uri: string;
-    scopes_supported?: string[];
-    response_types_supported?: string[];
-    token_endpoint_auth_methods_supported?: string[];
-}
+    resolveWalletAttestationPolicy,
+    retainSessionForIssuedTokens,
+    verifyChainedAsDpopProof,
+} from "../shared/index.js";
+import {
+    OIDC_DISCOVERY_RESOLVER,
+    type OidcDiscoveryDocument,
+    type OidcDiscoveryResolver,
+} from "./ports/oidc-discovery-resolver.js";
+import {
+    OIDC_TOKEN_EXCHANGER,
+    type OidcTokenExchanger,
+} from "./ports/oidc-token-exchanger.js";
 
 /**
  * Service implementing Chained Authorization Server functionality.
@@ -70,8 +86,22 @@ export class ChainedAsService {
     /** Cache for upstream OIDC discovery documents */
     private readonly discoveryCache = new Map<
         string,
-        { doc: OidcDiscoveryDocument; expiresAt: number }
+        { doc: OidcDiscoveryDocument; fetchedAt: number; expiresAt: number }
     >();
+    private readonly inFlightDiscoveryRequests = new Map<
+        string,
+        Promise<OidcDiscoveryDocument>
+    >();
+
+    private readonly discoveryHitsCounter;
+    private readonly discoveryMissesCounter;
+    private readonly discoveryStaleCounter;
+    private readonly discoveryFetchesCounter;
+
+    clearDiscoveryCache(): void {
+        this.discoveryCache.clear();
+        this.inFlightDiscoveryRequests.clear();
+    }
 
     /** Request URI prefix for PAR responses */
     private readonly REQUEST_URI_PREFIX = "urn:ietf:params:oauth:request_uri:";
@@ -83,24 +113,69 @@ export class ChainedAsService {
     private readonly AUTH_CODE_LIFETIME_SECONDS = 300;
 
     constructor(
-        private readonly configService: ConfigService,
-        private readonly httpService: HttpService,
+        @Inject(OID4VCI_SETTINGS) private readonly settings: Oid4vciSettings,
+        @Inject(OIDC_DISCOVERY_RESOLVER)
+        private readonly oidcDiscoveryResolver: OidcDiscoveryResolver,
+        @Inject(OIDC_TOKEN_EXCHANGER)
+        private readonly oidcTokenExchanger: OidcTokenExchanger,
         private readonly keyChainService: KeyChainService,
-        private readonly sessionService: SessionService,
+        private readonly sessionStore: SessionStore,
         private readonly issuanceService: IssuanceService,
         private readonly federationTrustService: FederationTrustService,
         private readonly walletAttestationService: WalletAttestationService,
         private readonly traceService: TraceService,
-        @InjectRepository(ChainedAsSessionEntity)
-        private readonly sessionRepository: Repository<ChainedAsSessionEntity>,
-    ) {}
+        @Inject(CHAINED_AS_SESSION_REPOSITORY)
+        private readonly sessionRepository: ChainedAsSessionRepository,
+        private readonly cryptoService: CryptoService,
+        @Inject(DPOP_PROOF_REPLAY_REGISTRY)
+        private readonly dpopProofs: DpopProofReplayRegistry,
+        @Optional() private readonly metricService?: MetricService,
+    ) {
+        this.discoveryHitsCounter = this.metricService?.getCounter(
+            "chained_as_discovery_cache_hits_total",
+            {
+                description:
+                    "Total hits on Chained AS upstream discovery cache",
+            },
+        );
+        this.discoveryMissesCounter = this.metricService?.getCounter(
+            "chained_as_discovery_cache_misses_total",
+            {
+                description:
+                    "Total misses on Chained AS upstream discovery cache",
+            },
+        );
+        this.discoveryStaleCounter = this.metricService?.getCounter(
+            "chained_as_discovery_cache_stale_total",
+            {
+                description:
+                    "Total stale hits on Chained AS upstream discovery cache",
+            },
+        );
+        this.discoveryFetchesCounter = this.metricService?.getCounter(
+            "chained_as_discovery_fetches_total",
+            {
+                description:
+                    "Total outbound Chained AS upstream discovery fetches",
+            },
+        );
+    }
 
     /**
      * Get the base URL for this tenant's Chained AS.
      */
     private getChainedAsBaseUrl(tenantId: string): string {
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         return `${publicUrl}/issuers/${tenantId}/chained-as`;
+    }
+
+    /** Verification of DPoP proofs sent to this tenant's Chained AS. */
+    private dpopVerification(tenantId: string): ChainedAsDpopVerification {
+        return {
+            issuer: this.getChainedAsBaseUrl(tenantId),
+            callbacks: this.cryptoService.getCallbackContext(tenantId),
+            replayRegistry: this.dpopProofs,
+        };
     }
 
     /**
@@ -116,8 +191,12 @@ export class ChainedAsService {
             enabled?: boolean;
             type: "chained";
             upstream: ChainedAsConfig["upstream"];
-            token?: ChainedAsConfig["token"];
-            requireDPoP?: ChainedAsConfig["requireDPoP"];
+            token?: NonNullable<ChainedAsConfig["token"]>;
+            requireDPoP?: NonNullable<ChainedAsConfig["requireDPoP"]>;
+            walletAttestationRequired?: NonNullable<
+                ChainedAsConfig["walletAttestationRequired"]
+            >;
+            walletProviderTrustLists?: TrustListRef[];
         };
 
         const chainedServer = (issuanceConfig.authorizationServers ?? []).find(
@@ -139,6 +218,10 @@ export class ChainedAsService {
                 upstream: chainedServer.upstream,
                 token: chainedServer.token,
                 requireDPoP: chainedServer.requireDPoP,
+                walletAttestationRequired:
+                    chainedServer.walletAttestationRequired,
+                walletProviderTrustLists:
+                    chainedServer.walletProviderTrustLists,
             } as ChainedAsConfig;
         }
 
@@ -176,34 +259,61 @@ export class ChainedAsService {
             federationTrustSource,
         );
 
+        const now = Date.now();
         const cached = this.discoveryCache.get(issuer);
-        if (cached && cached.expiresAt > Date.now()) {
+        if (cached && cached.expiresAt > now) {
+            this.discoveryHitsCounter?.add(1, { issuer });
+            this.logger.debug(`OIDC discovery cache hit for ${issuer}`);
             return cached.doc;
         }
 
-        const wellKnownUrl = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+        const inFlight = this.inFlightDiscoveryRequests.get(issuer);
+        if (inFlight) {
+            this.logger.debug(
+                `Deduplicating in-flight OIDC discovery fetch for ${issuer}`,
+            );
+            return inFlight;
+        }
+
+        this.discoveryMissesCounter?.add(1, { issuer });
+
+        const fetchPromise = (async (): Promise<OidcDiscoveryDocument> => {
+            this.discoveryFetchesCounter?.add(1, { issuer });
+
+            try {
+                const doc = await this.oidcDiscoveryResolver.resolve(issuer);
+                // Cache for 5 minutes
+                this.discoveryCache.set(issuer, {
+                    doc,
+                    fetchedAt: Date.now(),
+                    expiresAt: Date.now() + 5 * 60 * 1000,
+                });
+
+                return doc;
+            } catch (error) {
+                if (cached && now - cached.fetchedAt <= 60 * 60 * 1000) {
+                    this.discoveryStaleCounter?.add(1, { issuer });
+                    this.logger.warn(
+                        `Failed to fetch OIDC discovery from ${issuer}, returning stale discovery document: ${String(error)}`,
+                    );
+                    return cached.doc;
+                }
+                this.logger.error(
+                    `Failed to fetch OIDC discovery from ${issuer}`,
+                    error,
+                );
+                throw new BadRequestException(
+                    "Failed to fetch upstream OIDC configuration",
+                );
+            }
+        })();
+
+        this.inFlightDiscoveryRequests.set(issuer, fetchPromise);
 
         try {
-            const response = await firstValueFrom(
-                this.httpService.get<OidcDiscoveryDocument>(wellKnownUrl),
-            );
-
-            const doc = response.data;
-            // Cache for 5 minutes
-            this.discoveryCache.set(issuer, {
-                doc,
-                expiresAt: Date.now() + 5 * 60 * 1000,
-            });
-
-            return doc;
-        } catch (error) {
-            this.logger.error(
-                `Failed to fetch OIDC discovery from ${wellKnownUrl}`,
-                error,
-            );
-            throw new BadRequestException(
-                "Failed to fetch upstream OIDC configuration",
-            );
+            return await fetchPromise;
+        } finally {
+            this.inFlightDiscoveryRequests.delete(issuer);
         }
     }
 
@@ -240,7 +350,7 @@ export class ChainedAsService {
     async handlePar(
         tenantId: string,
         request: ChainedAsParRequestDto,
-        dpopJkt?: string,
+        dpopJwt?: string,
         clientAttestation?: {
             clientAttestationJwt: string;
             clientAttestationPopJwt: string;
@@ -258,27 +368,46 @@ export class ChainedAsService {
             );
         }
 
-        // Validate PKCE if required
+        // PKCE with S256 is mandatory (HAIP 1.0 Section 4)
+        assertPkceCodeChallenge(
+            request.code_challenge,
+            request.code_challenge_method,
+        );
+
+        // RFC 9449 Section 10: a valid DPoP proof binds the code to its key.
+        const dpopJkt = await verifyChainedAsDpopProof(
+            this.dpopVerification(tenantId),
+            "par",
+            dpopJwt,
+        );
         if (config.requireDPoP && !dpopJkt) {
             throw new BadRequestException("DPoP is required");
         }
 
         // Verify wallet attestation if provided or required
         const chainedAsUrl = this.getChainedAsBaseUrl(tenantId);
+        const walletAttestationPolicy = resolveWalletAttestationPolicy(
+            issuanceConfig,
+            config,
+        );
+
         await this.walletAttestationService.verifyWalletAttestation(
             tenantId,
             clientAttestation,
             chainedAsUrl,
-            issuanceConfig.walletAttestationRequired ?? false,
-            issuanceConfig.walletProviderTrustLists ?? [],
+            walletAttestationPolicy.walletAttestationRequired,
+            walletAttestationPolicy.walletProviderTrustLists,
         );
 
         // Find the session for the issuer_state (if provided)
         let issuerState = request.issuer_state;
         if (issuerState) {
-            // Verify the issuer_state exists in our session store
+            // The issuer_state must name an offer that can still be redeemed
             try {
-                await this.sessionService.get(issuerState);
+                assertSessionUsable(
+                    await this.sessionStore.getForTenant(tenantId, issuerState),
+                    new Date(),
+                );
             } catch {
                 throw new BadRequestException("Invalid issuer_state");
             }
@@ -354,13 +483,11 @@ export class ChainedAsService {
         const sessionId = requestUri.slice(this.REQUEST_URI_PREFIX.length);
 
         // Find the session
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: sessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_AUTHORIZE,
-            },
-        });
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            sessionId,
+            ChainedAsSessionStatus.PENDING_AUTHORIZE,
+        );
 
         if (!session) {
             throw new BadRequestException("Invalid or expired request_uri");
@@ -431,23 +558,6 @@ export class ChainedAsService {
     /**
      * Build error redirect URL for wallet.
      */
-    private buildErrorRedirect(
-        redirectUri: string,
-        error: string,
-        errorDescription?: string,
-        walletState?: string,
-    ): string {
-        const redirectUrl = new URL(redirectUri);
-        redirectUrl.searchParams.set("error", error);
-        if (errorDescription) {
-            redirectUrl.searchParams.set("error_description", errorDescription);
-        }
-        if (walletState) {
-            redirectUrl.searchParams.set("state", walletState);
-        }
-        return redirectUrl.toString();
-    }
-
     /**
      * Handle upstream OIDC error in callback.
      */
@@ -458,13 +568,14 @@ export class ChainedAsService {
         errorDescription?: string,
     ): Promise<string> {
         this.logger.warn(`Upstream OIDC error: ${error} - ${errorDescription}`);
-        const session = await this.sessionRepository.findOne({
-            where: { tenantId, upstreamState: state },
-        });
+        const session = await this.sessionRepository.findByUpstreamState(
+            tenantId,
+            state,
+        );
         if (session) {
             session.status = ChainedAsSessionStatus.EXPIRED;
             await this.sessionRepository.save(session);
-            return this.buildErrorRedirect(
+            return buildAuthorizationErrorRedirect(
                 session.redirectUri,
                 error,
                 errorDescription,
@@ -478,45 +589,31 @@ export class ChainedAsService {
      * Exchange authorization code with upstream OIDC provider.
      */
     private async exchangeUpstreamCode(
-        session: ChainedAsSessionEntity,
+        session: ChainedAsSession,
         code: string,
         config: ChainedAsConfig,
         discovery: OidcDiscoveryDocument,
         callbackUrl: string,
     ): Promise<void> {
-        const tokenResponse = await firstValueFrom(
-            this.httpService.post(
-                discovery.token_endpoint,
-                new URLSearchParams({
-                    grant_type: "authorization_code",
-                    code,
-                    redirect_uri: callbackUrl,
-                    client_id: config.upstream!.clientId,
-                    client_secret: config.upstream!.clientSecret || "",
-                    code_verifier: session.upstreamCodeVerifier || "",
-                }).toString(),
-                {
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                },
-            ),
-        );
+        const tokens = await this.oidcTokenExchanger.exchange({
+            tokenEndpoint: discovery.token_endpoint,
+            code,
+            redirectUri: callbackUrl,
+            clientId: config.upstream!.clientId,
+            clientSecret: config.upstream!.clientSecret,
+            codeVerifier: session.upstreamCodeVerifier,
+        });
 
-        const tokens = tokenResponse.data as {
-            access_token: string;
-            id_token?: string;
-        };
-
-        if (tokens.id_token) {
-            session.upstreamIdTokenClaims = decodeJwt(
-                tokens.id_token,
-            ) as Record<string, unknown>;
+        if (tokens.idToken) {
+            session.upstreamIdTokenClaims = decodeJwt(tokens.idToken) as Record<
+                string,
+                unknown
+            >;
         }
 
         try {
             session.upstreamAccessTokenClaims = decodeJwt(
-                tokens.access_token,
+                tokens.accessToken,
             ) as Record<string, unknown>;
         } catch {
             session.upstreamAccessTokenClaims = {};
@@ -543,13 +640,11 @@ export class ChainedAsService {
             );
         }
 
-        const session = await this.sessionRepository.findOne({
-            where: {
-                tenantId,
-                upstreamState: state,
-                status: ChainedAsSessionStatus.PENDING_UPSTREAM_CALLBACK,
-            },
-        });
+        const session = await this.sessionRepository.findByUpstreamState(
+            tenantId,
+            state,
+            ChainedAsSessionStatus.PENDING_UPSTREAM_CALLBACK,
+        );
 
         if (!session) {
             throw new BadRequestException("Invalid or expired callback state");
@@ -588,7 +683,7 @@ export class ChainedAsService {
             this.logger.error("Failed to exchange code at upstream", err);
             session.status = ChainedAsSessionStatus.EXPIRED;
             await this.sessionRepository.save(session);
-            return this.buildErrorRedirect(
+            return buildAuthorizationErrorRedirect(
                 session.redirectUri,
                 "server_error",
                 "Failed to exchange code with upstream provider",
@@ -609,12 +704,11 @@ export class ChainedAsService {
             `Upstream auth completed for session ${session.id}, redirecting to wallet`,
         );
 
-        const redirectUrl = new URL(session.redirectUri);
-        redirectUrl.searchParams.set("code", authorizationCode);
-        if (session.walletState) {
-            redirectUrl.searchParams.set("state", session.walletState);
-        }
-        return redirectUrl.toString();
+        return buildAuthorizationCodeRedirect(
+            session.redirectUri,
+            authorizationCode,
+            session.walletState,
+        );
     }
 
     /**
@@ -622,37 +716,22 @@ export class ChainedAsService {
      */
     private buildTokenPayload(
         tenantId: string,
-        session: ChainedAsSessionEntity,
+        session: ChainedAsSession,
         tokenLifetime: number,
         jti: string,
         dpopJkt?: string,
     ): Record<string, unknown> {
-        const now = Math.floor(Date.now() / 1000);
-        const payload: Record<string, unknown> = {
-            iss: this.getChainedAsBaseUrl(tenantId),
-            sub: session.clientId,
-            aud: `${this.configService.getOrThrow<string>("PUBLIC_URL")}/issuers/${tenantId}`,
-            iat: now,
-            exp: now + tokenLifetime,
+        const payload = buildAccessTokenPayload({
+            issuer: this.getChainedAsBaseUrl(tenantId),
+            audience: `${this.settings.publicUrl}/issuers/${tenantId}`,
+            session,
+            tokenLifetime,
             jti,
-            issuer_state: session.issuerState,
-            client_id: session.clientId,
-        };
-        if (dpopJkt) {
-            payload.cnf = { jkt: dpopJkt };
-        }
+            dpopJkt,
+        });
         if (session.upstreamIdTokenClaims) {
             payload.upstream_sub = session.upstreamIdTokenClaims.sub;
             payload.upstream_iss = session.upstreamIdTokenClaims.iss;
-        }
-        // Bind the access token to the Credential(s) the Wallet is
-        // authorized to request, per OID4VCI Section 6. The resource server
-        // enforces this when handling the Credential Request.
-        if (
-            Array.isArray(session.authorizationDetails) &&
-            session.authorizationDetails.length > 0
-        ) {
-            payload.authorization_details = session.authorizationDetails;
         }
         return payload;
     }
@@ -665,7 +744,13 @@ export class ChainedAsService {
         tenantId: string,
         request: ChainedAsTokenRequestDto,
         dpopJwt?: string,
+        clientAttestation?: {
+            clientAttestationJwt: string;
+            clientAttestationPopJwt: string;
+        },
     ): Promise<ChainedAsTokenResponseDto> {
+        const config = await this.getChainedAsConfig(tenantId);
+
         if (
             request.grant_type !== "authorization_code" &&
             request.grant_type !== "refresh_token"
@@ -675,10 +760,26 @@ export class ChainedAsService {
             );
         }
 
+        const issuanceConfig =
+            await this.issuanceService.getIssuanceConfiguration(tenantId);
+        const chainedAsUrl = this.getChainedAsBaseUrl(tenantId);
+        const walletAttestationPolicy = resolveWalletAttestationPolicy(
+            issuanceConfig,
+            config,
+        );
+        await this.walletAttestationService.verifyWalletAttestation(
+            tenantId,
+            clientAttestation,
+            chainedAsUrl,
+            walletAttestationPolicy.walletAttestationRequired,
+            walletAttestationPolicy.walletProviderTrustLists,
+        );
+
         const session = await resolveSessionForTokenRequest(
             this.sessionRepository,
             tenantId,
             request,
+            refreshTokenPolicy(config.token),
         );
 
         // Add session context to span for trace correlation
@@ -695,8 +796,8 @@ export class ChainedAsService {
             request,
         );
 
-        const config = await this.getChainedAsConfig(tenantId);
-        const { tokenType, dpopJkt } = resolveTokenBinding(
+        const { tokenType, dpopJkt } = await resolveTokenBinding(
+            this.dpopVerification(tenantId),
             config.requireDPoP,
             session,
             dpopJwt,
@@ -737,7 +838,12 @@ export class ChainedAsService {
         session.accessTokenJti = jti;
         const refreshToken = issueRefreshTokenIfEnabled(
             session,
-            config.token ?? {},
+            config.token,
+            request.grant_type,
+        );
+        retainSessionForIssuedTokens(
+            session,
+            new Date(Date.now() + tokenLifetime * 1000),
         );
 
         await this.sessionRepository.save(session);
@@ -787,12 +893,14 @@ export class ChainedAsService {
     async getMetadata(tenantId: string): Promise<Record<string, unknown>> {
         const config = await this.getChainedAsConfig(tenantId);
         const baseUrl = this.getChainedAsBaseUrl(tenantId);
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         const issuanceConfig =
             await this.issuanceService.getIssuanceConfiguration(tenantId);
-        const walletAttestationRequired =
-            issuanceConfig.walletAttestationRequired ?? false;
-        const refreshTokensEnabled = config.token?.refreshTokenEnabled ?? true;
+        const walletAttestationPolicy = resolveWalletAttestationPolicy(
+            issuanceConfig,
+            config,
+        );
+        const refreshTokensEnabled = refreshTokenPolicy(config.token).enabled;
 
         return buildAuthorizationServerMetadata({
             issuer: baseUrl,
@@ -805,33 +913,28 @@ export class ChainedAsService {
                 : ["authorization_code"],
             dpopSigningAlgValuesSupported:
                 DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
-            ...buildWalletAttestationMetadata(walletAttestationRequired),
+            ...buildWalletAttestationMetadata(
+                walletAttestationPolicy.walletAttestationRequired,
+            ),
         });
-    }
-
-    /**
-     * Clean up expired sessions.
-     */
-    async cleanupExpiredSessions(): Promise<number> {
-        const result = await this.sessionRepository.delete({
-            expiresAt: LessThan(new Date()),
-        });
-        return result.affected || 0;
     }
 
     /**
      * Get upstream identity claims by issuer state.
      * Used to retrieve the upstream OIDC provider's claims for webhook calls.
      *
+     * @param tenantId Tenant of the issuance session
      * @param issuerState The issuer_state from the credential offer session
      * @returns Upstream identity with issuer, subject, and all token claims, or undefined if not found
      */
     async getUpstreamIdentityByIssuerState(
+        tenantId: string,
         issuerState: string,
     ): Promise<AuthorizationIdentity | undefined> {
-        const chainedSession = await this.sessionRepository.findOne({
-            where: { issuerState },
-        });
+        const chainedSession = await this.sessionRepository.findByIssuerState(
+            tenantId,
+            issuerState,
+        );
 
         if (
             !chainedSession?.upstreamIdTokenClaims &&

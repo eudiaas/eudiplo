@@ -1,23 +1,24 @@
 import { decodeProtectedHeader } from "jose";
-import { TrustStoreService } from "../../../trust/trust-store.service";
+import { TrustStoreService } from "../../../trust/trust-store.service.js";
 import {
     normalizeTrustListRefs,
     ServiceTypeIdentifiers,
     TrustListSource,
     walletSolutionServiceTypes,
-} from "../../../trust/types";
-import { CredentialRequestException } from "./exceptions";
-import { TrustListRef } from "../../../verifier/presentations/entities/presentation-config.entity";
-import { X509ValidationService } from "../../../trust/x509-validation.service";
+} from "../../../trust/types.js";
+import { X509ValidationService } from "../../../trust/x509-validation.service.js";
+import { TrustListRef } from "../../../verifier/presentations/entities/presentation-config.entity.js";
+import { CredentialRequestException } from "./exceptions/index.js";
 
 export interface AttestationProofTrustValidationDeps {
+    tenantId?: string;
     trustStoreService: TrustStoreService;
     x509ValidationService: X509ValidationService;
 }
 
 /**
  * Validate attestation proof signer chain against configured trusted wallet providers.
- * If no trust list is configured, this check is skipped for backward compatibility.
+ * An attestation must always have a trusted signer, even when it is optional.
  */
 export async function validateAttestationProofTrust(
     keyAttestationJwt: string,
@@ -27,7 +28,10 @@ export async function validateAttestationProofTrust(
     const trustListRefs = normalizeTrustListRefs(trustListRefsInput);
 
     if (trustListRefs.length === 0) {
-        return;
+        throw new CredentialRequestException(
+            "invalid_proof",
+            "No wallet provider trust lists configured for key attestation verification",
+        );
     }
 
     try {
@@ -42,6 +46,7 @@ export async function validateAttestationProofTrust(
 
         const trustListSource: TrustListSource = {
             lotes: trustListRefs,
+            tenantId: deps.tenantId,
             acceptedServiceTypes: [...walletSolutionServiceTypes],
         };
 
@@ -98,11 +103,32 @@ export async function validateAttestationProofTrust(
     }
 }
 
+/**
+ * Validate the provider of a key attestation embedded in a holder's JWT proof.
+ * Signature verification and holder-key binding are handled by the OID4VCI library.
+ */
+export async function validateJwtProofAttestationTrust(
+    proofJwt: string,
+    trustListRefs: TrustListRef[],
+    deps: AttestationProofTrustValidationDeps,
+): Promise<void> {
+    const keyAttestation = decodeProtectedHeader(proofJwt).key_attestation;
+    if (keyAttestation === undefined) return;
+    if (typeof keyAttestation !== "string" || !keyAttestation) {
+        throw new CredentialRequestException(
+            "invalid_proof",
+            "JWT proof key_attestation must be a compact JWT",
+        );
+    }
+    await validateAttestationProofTrust(keyAttestation, trustListRefs, deps);
+}
+
 /** The part of WalletAttestationService used here, to keep this util testable. */
 export interface KeyAttestationStatusVerifier {
     verifyKeyAttestationStatus(
         keyAttestationJwt: string,
         walletProviderTrustLists: TrustListRef[],
+        tenantId: string,
     ): Promise<void>;
 }
 
@@ -116,6 +142,7 @@ export async function verifyProofKeyAttestationStatus(
     proofType: "jwt" | "attestation",
     trustListRefs: TrustListRef[],
     verifier: KeyAttestationStatusVerifier,
+    tenantId: string,
 ): Promise<void> {
     const keyAttestation =
         proofType === "jwt"
@@ -126,6 +153,7 @@ export async function verifyProofKeyAttestationStatus(
         await verifier.verifyKeyAttestationStatus(
             keyAttestation,
             trustListRefs,
+            tenantId,
         );
     } catch (error) {
         throw new CredentialRequestException(

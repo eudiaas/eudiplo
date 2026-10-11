@@ -6,27 +6,28 @@ import {
     getSchemaPath,
 } from "@nestjs/swagger";
 import { Column, Entity, JoinColumn, ManyToOne } from "typeorm";
-import { TenantEntity } from "../../../../auth/tenant/entities/tenant.entity";
-import { KeyChainEntity } from "../../../../crypto/key/entities/key-chain.entity";
-import { VCT } from "../../../issuance/oid4vci/metadata/dto/vct.dto";
-import { AttributeProviderEntity } from "../../attribute-provider/entities/attribute-provider.entity";
-import { KeyAttestationsRequired } from "../../issuance/dto/key-attestations-required.dto";
-import { WebhookEndpointEntity } from "../../webhook-endpoint/entities/webhook-endpoint.entity";
-import { ClaimFieldDefinitionDto } from "../dto/claim-field-definition.dto";
-import { CredentialReusePolicy } from "../dto/credential-reuse-policy.dto";
-import { SchemaMetaConfig } from "../dto/schema-meta-config.dto";
+import { TenantEntity } from "../../../../auth/tenant/entities/tenant.entity.js";
+import { KeyChainEntity } from "../../../../crypto/key/entities/key-chain.entity.js";
+import { VCT } from "../../../issuance/oid4vci/metadata/dto/vct.dto.js";
+import { AttributeProviderEntity } from "../../attribute-provider/entities/attribute-provider.entity.js";
+import { KeyAttestationsRequired } from "../../issuance/dto/key-attestations-required.dto.js";
+import { WebhookEndpointEntity } from "../../webhook-endpoint/entities/webhook-endpoint.entity.js";
+import { ActiveCredentialPolicy } from "../dto/active-credential-policy.dto.js";
+import { ClaimFieldDefinitionDto } from "../dto/claim-field-definition.dto.js";
+import { CredentialReusePolicy } from "../dto/credential-reuse-policy.dto.js";
+import { SchemaMetaConfig } from "../dto/schema-meta-config.dto.js";
 import {
     IaeAction,
     IaeActionOpenid4vpPresentation,
     IaeActionRedirectToWeb,
-} from "./iae-action.dto";
+} from "./iae-action.dto.js";
 import {
     AllowListPolicy,
     AttestationBasedPolicy,
     EmbeddedDisclosurePolicy,
     NoneTrustPolicy,
     RootOfTrustPolicy,
-} from "./policies.dto";
+} from "./policies.dto.js";
 
 export class DisplayImage {
     uri!: string;
@@ -41,10 +42,12 @@ export class Display {
     logo?: DisplayImage;
 }
 
-export enum CredentialFormat {
-    MSO_MDOC = "mso_mdoc",
-    SD_JWT_VC = "dc+sd-jwt",
-}
+export const CredentialFormat = {
+    MSO_MDOC: "mso_mdoc",
+    SD_JWT_VC: "dc+sd-jwt",
+} as const;
+export type CredentialFormat =
+    (typeof CredentialFormat)[keyof typeof CredentialFormat];
 
 /**
  * Determines how SD-JWT credentials are signed and trust is established.
@@ -52,15 +55,19 @@ export enum CredentialFormat {
  * - "federation": Include issuer entity ID in 'iss' claim (federation-based trust)
  * - "auto": Legacy mode kept for backward compatibility (treated like x5c)
  */
-export enum SdJwtTrustFormat {
-    X5C = "x5c",
-    FEDERATION = "federation",
-}
+export const SdJwtTrustFormat = {
+    X5C: "x5c",
+    FEDERATION: "federation",
+} as const;
+export type SdJwtTrustFormat =
+    (typeof SdJwtTrustFormat)[keyof typeof SdJwtTrustFormat];
 
-export enum CredentialProofType {
-    JWT = "jwt",
-    ATTESTATION = "attestation",
-}
+export const CredentialProofType = {
+    JWT: "jwt",
+    ATTESTATION: "attestation",
+} as const;
+export type CredentialProofType =
+    (typeof CredentialProofType)[keyof typeof CredentialProofType];
 
 export class IssuerMetadataCredentialConfig {
     format!: CredentialFormat;
@@ -197,6 +204,20 @@ export class CredentialConfig {
 
     @Column("boolean", { default: false })
     statusManagement?: boolean;
+
+    /**
+     * Optional issuer-side policy limiting how many credentials of this
+     * configuration a subject may hold active at once. When enabled, issuing a
+     * new credential to a subject revokes that subject's previously issued
+     * credentials for this configuration.
+     *
+     * Requires `statusManagement`, since revocation relies on status entries.
+     *
+     * Distinct from `credentialReusePolicy` (issuer metadata published to
+     * wallets); this one is enforced by the issuer at issuance time.
+     */
+    @Column("json", { nullable: true })
+    activeCredentials?: ActiveCredentialPolicy | null;
 
     /**
      * List of Interactive Authorization Endpoint (IAE) actions to execute

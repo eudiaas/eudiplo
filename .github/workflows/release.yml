@@ -15,11 +15,16 @@ on:
         required: false
         type: string
         default: ''
+      deploy_site_only:
+        description: 'Deploy the website and docs of main to production without a release (fails if a release is pending)'
+        required: false
+        type: boolean
+        default: false
 
-  workflow_run:
-    workflows: ['CI / Docker']
-    types: [completed]
+  push:
     branches: [main]
+
+permissions: {}
 
 concurrency:
   group: ${{ github.event_name == 'workflow_dispatch' && 'versioned-release' || 'npm-prerelease-main' }}
@@ -34,29 +39,55 @@ jobs:
     name: Publish npm Pre-release
     if: >-
       github.repository == 'openwallet-foundation/eudiplo' &&
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Checkout successful CI commit
-        uses: actions/checkout@v7
+      - name: Wait for successful CI
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          script: |
+            for (let attempt = 0; attempt < 60; attempt += 1) {
+              const response = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                event: 'push',
+                head_sha: context.sha,
+                per_page: 100,
+              });
+              const ciRun = response.data.workflow_runs.find(
+                (run) => run.name === 'CI / Docker' && run.id !== context.runId
+              );
+
+              if (ciRun?.conclusion === 'success') {
+                core.info(`Using successful CI run ${ciRun.html_url}`);
+                return;
+              }
+
+              if (ciRun?.conclusion && ciRun.conclusion !== 'success') {
+                core.setFailed(`CI / Docker did not succeed: ${ciRun.conclusion}`);
+                return;
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, 10000));
+            }
+
+            core.setFailed(`Timed out waiting for CI / Docker for ${context.sha}.`);
+
+      - name: Checkout CI commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -68,35 +99,29 @@ jobs:
       - name: Build SDK
         run: pnpm --filter @eudiplo/sdk-core build
 
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
+
       - name: Build CLI
         run: pnpm --filter @eudiplo/cli build
 
       - name: Set pre-release version
         working-directory: packages/eudiplo-sdk-core
         env:
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
-          # Base the prerelease on the latest repository semver tag (e.g., v5.1.0 -> 5.1.0).
-          # Fall back to package.json if tags are not available.
-          LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
-          if [ -n "$LATEST_TAG" ]; then
-            CURRENT_VERSION="${LATEST_TAG#v}"
-          else
-            CURRENT_VERSION=$(node -p "require('./package.json').version")
-          fi
-
-          SHORT_SHA=$(echo "$SOURCE_SHA" | cut -c1-7)
-          PRE_VERSION="${CURRENT_VERSION}-main.${SHORT_SHA}"
+          # Same version string as the main Docker images (e.g. 5.1.0-main.abc1234).
+          PRE_VERSION=$(../../scripts/ci-version.sh "$SOURCE_SHA")
           echo "Publishing version: ${PRE_VERSION}"
           npm version "${PRE_VERSION}" --no-git-tag-version
-          node ../../scripts/sync-cli-version.js "${PRE_VERSION}"
+          node ../../apps/cli/scripts/sync-cli-version.cjs "${PRE_VERSION}"
 
       - name: Publish SDK to npm with main tag
         working-directory: packages/eudiplo-sdk-core
         run: npm publish --tag main --access public --provenance
 
       - name: Publish CLI to npm with main tag
-        run: node scripts/publish-cli.js main
+        run: node apps/cli/scripts/publish-cli.cjs main
 
   prepare-release:
     name: Prepare versioned release
@@ -114,7 +139,7 @@ jobs:
       next_version: ${{ steps.version_check.outputs.next_version }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -125,21 +150,23 @@ jobs:
           exit 1
 
       - name: Verify successful CI for this commit
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
-            const response = await github.rest.actions.listWorkflowRuns({
+            const response = await github.rest.actions.listWorkflowRunsForRepo({
               owner,
               repo,
-              workflow_id: 'ci-and-release.yml',
               event: 'push',
               status: 'completed',
               per_page: 100,
             });
 
             const successfulRun = response.data.workflow_runs.find(
-              (run) => run.head_sha === context.sha && run.conclusion === 'success',
+              (run) =>
+                run.name === 'CI / Docker' &&
+                run.head_sha === context.sha &&
+                run.conclusion === 'success'
             );
 
             if (!successfulRun) {
@@ -149,13 +176,13 @@ jobs:
 
             core.info(`Releasing artifacts from ${successfulRun.html_url}`);
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -206,9 +233,17 @@ jobs:
           fi
 
       - name: Abort when no release is pending
-        if: steps.version_check.outputs.has_release != 'true'
+        if: steps.version_check.outputs.has_release != 'true' && !inputs.deploy_site_only
         run: |
           echo "No releasable commits were found since the latest version."
+          echo "To deploy documentation-only changes, run this workflow with deploy_site_only."
+          exit 1
+
+      - name: Abort a site-only deploy when a release is pending
+        if: steps.version_check.outputs.has_release == 'true' && inputs.deploy_site_only
+        run: |
+          echo "main contains releasable commits, so its documentation may describe unreleased behavior."
+          echo "Run this workflow without deploy_site_only to release; the release deploys the website and docs."
           exit 1
 
       - name: Abort if major release not confirmed
@@ -242,15 +277,15 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -258,10 +293,13 @@ jobs:
 
       - name: Sync CLI version
         shell: bash
-        run: node scripts/sync-cli-version.js "${{ needs.prepare-release.outputs.next_version }}"
+        run: node apps/cli/scripts/sync-cli-version.cjs "${{ needs.prepare-release.outputs.next_version }}"
 
       - name: Install dependencies
         run: pnpm --filter @eudiplo/cli... install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: Build CLI
         shell: bash
@@ -294,7 +332,7 @@ jobs:
           fi
 
       - name: Upload packaged CLI artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cli-${{ matrix.target }}
           path: release/*
@@ -311,16 +349,16 @@ jobs:
       packages: write
       pull-requests: write
       actions: read
-      pages: write
       id-token: write
+      attestations: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Download packaged CLI artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: cli-*
           path: release
@@ -335,13 +373,13 @@ jobs:
           echo "Generated checksums:"
           cat release/SHA256SUMS.txt
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         name: Install pnpm
         with:
           run_install: false
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
           cache: 'pnpm'
@@ -350,16 +388,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
+
       - name: Set release version
         id: release_version
         run: |
           echo "version=${{ needs.prepare-release.outputs.next_version }}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -367,9 +408,8 @@ jobs:
 
       - name: Verify immutable Docker source images
         run: |
-          docker buildx imagetools inspect "ghcr.io/openwallet-foundation/eudiplo:sha-${GITHUB_SHA}"
-          docker buildx imagetools inspect "ghcr.io/openwallet-foundation/eudiplo-client:sha-${GITHUB_SHA}"
-          docker buildx imagetools inspect "ghcr.io/openwallet-foundation/eudiplo-demo:sha-${GITHUB_SHA}"
+          docker buildx imagetools inspect "ghcr.io/eudiplo/eudiplo:sha-${GITHUB_SHA}"
+          docker buildx imagetools inspect "ghcr.io/eudiplo/eudiplo-client:sha-${GITHUB_SHA}"
 
       - name: Verify release assets
         shell: bash
@@ -382,6 +422,20 @@ jobs:
           test -s "release/eudiplo-v${VERSION}-macos-arm64.tar.gz"
           test -s "release/eudiplo-v${VERSION}-windows-x64.zip"
           test -s "release/SHA256SUMS.txt"
+
+      - name: Attest release artifacts
+        id: attest_release
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'release/*'
+
+      - name: Include attestation bundle in release assets
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest_release.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -s "$ATTESTATION_BUNDLE"
+          cp "$ATTESTATION_BUNDLE" release/provenance.sigstore.json
 
       - name: Run semantic-release
         id: semantic_release
@@ -406,73 +460,27 @@ jobs:
           echo "new_release=true" >> "$GITHUB_OUTPUT"
           echo "version=${EXPECTED_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Python for docs
-        if: steps.semantic_release.outputs.new_release == 'true'
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.11'
-
-      - name: Install Python dependencies for docs
-        if: steps.semantic_release.outputs.new_release == 'true'
-        run: pip install -r requirements.txt
-
-      - name: Copy env file for docs
-        if: steps.semantic_release.outputs.new_release == 'true'
-        run: cp .env.example .env
-
-      - name: Configure git for mike
-        if: steps.semantic_release.outputs.new_release == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Build and deploy release docs
-        if: steps.semantic_release.outputs.new_release == 'true'
-        run: |
-          export MASTER_SECRET="$(openssl rand -base64 32)"
-          export AUTH_CLIENT_ID="ci-docs-client"
-          export AUTH_CLIENT_SECRET="$(openssl rand -hex 32)"
-          export ENCRYPTION_KEY="$(openssl rand -hex 32)"
-          FULL_VERSION="${{ steps.semantic_release.outputs.version }}"
-          RELEASE_VERSION="${FULL_VERSION#v}"
-          MINOR_VERSION="v${RELEASE_VERSION%.*}"
-
-          pnpm run doc:generate
-          pnpm run compodoc
-
-          git fetch origin gh-pages:gh-pages
-
-          mike deploy \
-            --branch gh-pages \
-            --deploy-prefix docs \
-            --alias-type copy \
-            --update-aliases \
-            "$MINOR_VERSION" latest
-
-          mike set-default \
-            --branch gh-pages \
-            --deploy-prefix docs \
-            latest
-
-          git worktree add gh-pages-out gh-pages
-
-          rsync -a --delete \
-            --exclude docs \
-            --exclude .git \
-            website/. gh-pages-out/
-
-          test -s gh-pages-out/install.sh
-          bash -n gh-pages-out/install.sh
-
-          touch gh-pages-out/.nojekyll
-
-          if [ -n "$(git -C gh-pages-out status --porcelain)" ]; then
-            git -C gh-pages-out add .
-            git -C gh-pages-out commit -m "docs: sync website for $FULL_VERSION"
-          fi
-
-          git push origin gh-pages
-
-      - name: Cleanup temporary docs worktree
-        if: always()
-        run: git worktree remove gh-pages-out --force || true
+  # Production deploy of the website and documentation: after a published
+  # release, or for deploy_site_only. prepare-release only lets the latter pass
+  # when no release is pending, so main differs from the latest release only by
+  # commits that need none (docs, test, chore, ci, build) and its documentation
+  # matches the released code.
+  deploy-site:
+    name: Deploy Website & Documentation
+    needs: [prepare-release, publish-release]
+    if: >-
+      !cancelled() &&
+      needs.prepare-release.result == 'success' &&
+      (needs.publish-release.result == 'success' || inputs.deploy_site_only)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy-site.yml
+    with:
+      environment: production
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ALGOLIA_APP_ID: ${{ secrets.ALGOLIA_APP_ID }}
+      ALGOLIA_SEARCH_API_KEY: ${{ secrets.ALGOLIA_SEARCH_API_KEY }}
+      ALGOLIA_INDEX_NAME: ${{ secrets.ALGOLIA_INDEX_NAME }}
+      DOCSEARCH_AGENT_ID: ${{ secrets.DOCSEARCH_AGENT_ID }}

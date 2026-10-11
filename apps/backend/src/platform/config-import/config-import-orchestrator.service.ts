@@ -1,6 +1,9 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { Injectable, Logger, OnApplicationBootstrap } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import type { ConfigImportMode } from "../config-portability/config-resource.types.js";
+import { ConfigImportModeService } from "./config-import-mode.service.js";
 
 /**
  * Import phase definitions with their order.
@@ -34,6 +37,11 @@ interface TenantSetupFn {
     setup: (tenantId: string) => Promise<boolean>;
 }
 
+interface PortableImportRunner {
+    name: string;
+    run: (tenantId: string, mode: ConfigImportMode) => Promise<void>;
+}
+
 /**
  * Centralized orchestrator for configuration imports.
  * Imports are processed tenant-by-tenant to provide better log clarity
@@ -46,18 +54,23 @@ interface TenantSetupFn {
  *    b. Run all import phases in order (CORE → CONFIGURATION → REFERENCES → FINAL)
  * 3. Continue with next tenant even if current tenant fails
  *
- * Services should register their import functions during construction.
+ * Composition modules should register importer functions while constructing
+ * capability providers, before application bootstrap.
  * The orchestrator automatically runs imports during onApplicationBootstrap.
  */
 @Injectable()
 export class ConfigImportOrchestratorService implements OnApplicationBootstrap {
     private readonly importers: RegisteredImporter[] = [];
     private tenantSetup: TenantSetupFn | null = null;
+    private portableRunner: PortableImportRunner | null = null;
     private hasRun = false;
     private runPromise: Promise<void> | null = null;
     private readonly logger = new Logger(ConfigImportOrchestratorService.name);
 
-    constructor(private readonly configService: ConfigService) {}
+    constructor(
+        private readonly configService: ConfigService,
+        private readonly importModeService: ConfigImportModeService,
+    ) {}
 
     /**
      * Lifecycle hook - automatically triggers import orchestration.
@@ -99,6 +112,18 @@ export class ConfigImportOrchestratorService implements OnApplicationBootstrap {
         this.importers.push({ name, phase, importForTenant: importFn });
     }
 
+    registerPortableRunner(
+        name: string,
+        runner: (tenantId: string, mode: ConfigImportMode) => Promise<void>,
+    ): void {
+        if (this.portableRunner) {
+            throw new Error(
+                `Portable config import runner is already registered by ${this.portableRunner.name}`,
+            );
+        }
+        this.portableRunner = { name, run: runner };
+    }
+
     /**
      * Execute all registered imports tenant-by-tenant.
      * Safe to call multiple times - only runs once.
@@ -122,6 +147,8 @@ export class ConfigImportOrchestratorService implements OnApplicationBootstrap {
 
     /**
      * Discover all tenant folders in the config directory.
+     * Symlinked tenant folders are followed, so a tenant config kept elsewhere
+     * can be linked in without changing CONFIG_FOLDER.
      */
     private discoverTenants(): string[] {
         const configPath = this.configService.get<string>("CONFIG_FOLDER");
@@ -130,12 +157,20 @@ export class ConfigImportOrchestratorService implements OnApplicationBootstrap {
         }
 
         return readdirSync(configPath, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory())
+            .filter(
+                (entry) =>
+                    entry.isDirectory() ||
+                    (entry.isSymbolicLink() &&
+                        statSync(join(configPath, entry.name), {
+                            throwIfNoEntry: false,
+                        })?.isDirectory()),
+            )
             .map((entry) => entry.name);
     }
 
     private async executeImports(): Promise<void> {
-        if (!this.configService.get<boolean>("CONFIG_IMPORT")) {
+        const mode = this.importModeService.resolve();
+        if (mode === "disabled") {
             this.hasRun = true;
             this.logger.log("Config import is disabled");
             return;
@@ -170,27 +205,58 @@ export class ConfigImportOrchestratorService implements OnApplicationBootstrap {
                     }
                 }
 
-                // Step 2: Run all import phases for this tenant
-                for (const importer of sortedImporters) {
+                // Step 2: Prefer the versioned bundle plan/apply pipeline.
+                if (this.portableRunner) {
                     this.logger.debug(
-                        `[${tenantId}] Running ${importer.name} (phase ${importer.phase})`,
+                        `[${tenantId}] Running ${this.portableRunner.name} in ${mode} mode`,
                     );
-                    try {
-                        await importer.importForTenant(tenantId);
-                    } catch (error: any) {
-                        this.logger.error(
-                            { error: error.message },
-                            `[${tenantId}] Failed to import ${importer.name}: ${error.message}`,
+                    await this.portableRunner.run(tenantId, mode);
+                } else {
+                    for (const importer of sortedImporters) {
+                        this.logger.debug(
+                            `[${tenantId}] Running ${importer.name} (phase ${importer.phase})`,
                         );
-                        // Continue with next importer for this tenant
+                        try {
+                            await importer.importForTenant(tenantId);
+                        } catch (error: any) {
+                            this.logger.error(
+                                { error: error.message },
+                                `[${tenantId}] Failed to import ${importer.name}: ${error.message}`,
+                            );
+                            // Continue with next importer for this tenant
+                        }
                     }
                 }
 
                 this.logger.log(`[${tenantId}] Import completed`);
             } catch (error: any) {
+                const response =
+                    error?.getResponse?.() ?? error?.response ?? undefined;
+                const failedOperation = response?.failedOperation;
+                const operationId = response?.operationId;
+                const planIssues = response?.plan?.issues;
+                const report = operationId
+                    ? `; operation report: GET /config-bundles/operations/${operationId}`
+                    : "";
+                const failure = failedOperation
+                    ? `; failed operation: ${failedOperation.stage}/${failedOperation.kind ?? ""}/${failedOperation.id ?? ""}`
+                    : "";
+                const issues = Array.isArray(planIssues)
+                    ? `; blocking issues: ${planIssues
+                          .filter((issue: any) => issue.severity !== "warning")
+                          .map(
+                              (issue: any) =>
+                                  `${issue.code} at ${issue.path}: ${issue.message}`,
+                          )
+                          .join(" | ")}`
+                    : "";
                 this.logger.error(
-                    { error: error.message },
-                    `[${tenantId}] Failed to import tenant: ${error.message}`,
+                    {
+                        error: error.message,
+                        ...(operationId ? { operationId } : {}),
+                        ...(failedOperation ? { failedOperation } : {}),
+                    },
+                    `[${tenantId}] Failed to import tenant: ${error.message}${failure}${issues}${report}`,
                 );
                 failedTenants.push(tenantId);
                 // Continue with next tenant

@@ -14,6 +14,7 @@ import {
   Component,
   forwardRef,
   OnChanges,
+  OnDestroy,
   Input,
   SimpleChanges,
   ChangeDetectionStrategy,
@@ -22,6 +23,8 @@ import { MatInputModule } from '@angular/material/input';
 import { SchemaValidation } from '../schemas';
 import schemas from '../schemas.json';
 import { FlexLayoutModule } from 'ngx-flexible-layout';
+import { Subscription } from 'rxjs';
+import { ThemeService } from '../../services/theme.service';
 
 let editorInstanceCounter = 0;
 
@@ -37,7 +40,6 @@ export function extractSchema(obj: any) {
   }
   return element;
 }
-
 @Component({
   selector: 'app-editor',
   standalone: true,
@@ -50,24 +52,33 @@ export function extractSchema(obj: any) {
     { provide: NG_VALIDATORS, useExisting: forwardRef(() => EditorComponent), multi: true },
   ],
 })
-export class EditorComponent implements ControlValueAccessor, Validator, OnChanges {
+export class EditorComponent implements ControlValueAccessor, Validator, OnChanges, OnDestroy {
   @Input() schema?: SchemaValidation;
   @Input() editorOptions: any = { language: 'json', automaticLayout: true };
   @Input() errors?: ValidationErrors | null = null;
 
+  themedEditorOptions: any;
   model?: NgxEditorModel;
 
   value = '';
   disabled = false;
 
-  private readonly ajv = new Ajv();
+  private readonly ajv = new Ajv({ allowUnionTypes: true });
   private validateFn?: ValidateFunction;
   private schemaValidationError?: string;
   private readonly instanceId = ++editorInstanceCounter;
   private modelVersion = 0;
   private editorInitialized = false;
+  private themeSubscription: Subscription;
+  private markerListener?: { dispose(): void };
+  monacoSchemaError?: string;
 
-  constructor() {
+  constructor(private readonly themeService: ThemeService) {
+    this.themedEditorOptions = this.withTheme(this.editorOptions);
+    this.themeSubscription = this.themeService.themeChanges.subscribe(() => {
+      this.themedEditorOptions = this.withTheme(this.editorOptions);
+    });
+
     addFormats(this.ajv);
     for (const schema of schemas) {
       const key = (schema.schema as any)['$id'].split('/').pop() || '';
@@ -83,11 +94,10 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
   writeValue(obj: any): void {
     this.value = obj == null ? '' : typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
 
-    // Avoid tearing down/recreating Monaco models on every form value write.
     if (!this.model) {
       this.rebuildModel();
     } else {
-      this.model.value = this.value;
+      this.model = { ...this.model, value: this.value };
     }
   }
   registerOnChange = (fn: any) => (this._onChange = fn);
@@ -112,12 +122,12 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
     }
 
     //if only the schema is included, return null
-    if (Object.keys(parsed).length === 1 && parsed.$schema) {
+    if (parsed && Object.keys(parsed).length === 1 && parsed.$schema) {
       return null;
     }
 
     if (this.validateFn && !this.validateFn(parsed)) {
-      const msg = this.ajv.errorsText(this.validateFn.errors || undefined, { separator: ' | ' });
+      const msg = this.formatValidationErrors(this.validateFn.errors);
       return { invalidSchema: msg || 'Schema validation failed' };
     }
 
@@ -129,6 +139,28 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
   }
   registerOnValidatorChange?(fn: () => void): void {
     this._validatorChange = fn;
+  }
+
+  /**
+   * Turn Ajv errors into readable messages, naming the offending property
+   * instead of Ajv's generic root "data" placeholder.
+   */
+  private formatValidationErrors(errors: ValidateFunction['errors']): string {
+    if (!errors?.length) {
+      return '';
+    }
+
+    return errors
+      .map((error) => {
+        const path = error.instancePath?.replace(/^\//, '').replaceAll('/', '.') || 'root';
+        if (error.keyword === 'additionalProperty' || error.keyword === 'additionalProperties') {
+          const extra = (error.params as { additionalProperty?: string })?.additionalProperty;
+          const suffix = extra ? ` "${extra}"` : '';
+          return `${path}: must NOT have additional property${suffix}`;
+        }
+        return `${path} ${error.message}`;
+      })
+      .join(' | ');
   }
 
   // Handlers
@@ -144,8 +176,13 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
     this._onTouched();
   }
 
-  onEditorInit(): void {
+  onEditorInit(editor: any): void {
     this.editorInitialized = true;
+    this.markerListener?.dispose();
+    this.markerListener = editor.onDidChangeModelDecorations(() => {
+      this.updateMonacoSchemaError(editor);
+    });
+    this.updateMonacoSchemaError(editor);
 
     // If URI could not be created before Monaco finished loading,
     // rebuild once so schema fileMatch can attach for autocomplete.
@@ -155,6 +192,10 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    if ('editorOptions' in changes) {
+      this.themedEditorOptions = this.withTheme(this.editorOptions);
+    }
+
     if ('editorOptions' in changes || 'schema' in changes) {
       this.rebuildModel();
     }
@@ -163,6 +204,9 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
       this.schemaValidationError = undefined;
       try {
         const schemaUrl = this.schema?.getSchemaUrl();
+        if (this.schema && schemaUrl && !this.ajv.getSchema(schemaUrl)) {
+          this.ajv.addSchema(this.schema.getSchema());
+        }
         this.validateFn = schemaUrl ? this.ajv.getSchema(schemaUrl) : undefined;
         if (this.schema && !this.validateFn) {
           this.schemaValidationError = `Schema ${schemaUrl || 'unknown'} could not be compiled`;
@@ -174,6 +218,11 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
       }
       this._validatorChange?.();
     }
+  }
+
+  ngOnDestroy(): void {
+    this.themeSubscription.unsubscribe();
+    this.markerListener?.dispose();
   }
 
   private _onChange: (v: any) => void = () => {};
@@ -193,6 +242,13 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
     };
   }
 
+  private withTheme(options: any): any {
+    return {
+      ...options,
+      theme: this.themeService.isDarkMode ? 'vs-dark' : 'vs-light',
+    };
+  }
+
   private toMonacoUri(uri: string): any {
     try {
       const monacoGlobal = (globalThis as any).__eudiploMonaco ?? (globalThis as any).monaco;
@@ -209,5 +265,18 @@ export class EditorComponent implements ControlValueAccessor, Validator, OnChang
     }
 
     return undefined;
+  }
+
+  private updateMonacoSchemaError(editor: any): void {
+    const monacoGlobal = (globalThis as any).__eudiploMonaco ?? (globalThis as any).monaco;
+    const model = editor.getModel?.();
+    if (!monacoGlobal?.editor?.getModelMarkers || !model?.uri) {
+      return;
+    }
+
+    const marker = monacoGlobal.editor
+      .getModelMarkers({ resource: model.uri })
+      .find((candidate: any) => candidate.severity === monacoGlobal.MarkerSeverity.Error);
+    this.monacoSchemaError = marker?.message;
   }
 }

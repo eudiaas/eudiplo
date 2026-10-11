@@ -1,9 +1,5 @@
-import {
-    ConfigImportOrchestratorService,
-    ImportPhase,
-} from "../../platform/config-import/config-import-orchestrator.service";
-import { ClientEntity } from "./entities/client.entity";
-import type { CreateClient, UpdateClient } from "./schemas/client.schema";
+import type { ClientData, CreatedClient } from "./domain/client-data.js";
+import type { CreateClient, UpdateClient } from "./schemas/client.schema.js";
 
 export const CLIENTS_PROVIDER = "CLIENTS_PROVIDER";
 
@@ -24,12 +20,14 @@ export abstract class ClientsProvider {
         tenantId: string | null,
         clientId: string,
     ): Promise<string>;
-
-    abstract getClients(tenantId: string): Promise<ClientEntity[]>;
-    abstract getClient(
+    abstract setClientSecret(
         tenantId: string,
         clientId: string,
-    ): Promise<ClientEntity>;
+        secret: string,
+    ): Promise<void>;
+
+    abstract getClients(tenantId: string): Promise<ClientData[]>;
+    abstract getClient(tenantId: string, clientId: string): Promise<ClientData>;
 
     /**
      * Get a client by its clientId only (without tenant context).
@@ -37,12 +35,12 @@ export abstract class ClientsProvider {
      * @param clientId The client ID (may be namespaced with tenant prefix for Keycloak)
      * @returns The client entity or null if not found
      */
-    abstract getClientById(clientId: string): Promise<ClientEntity | null>;
+    abstract getClientById(clientId: string): Promise<ClientData | null>;
 
     abstract addClient(
         tenantId: string,
         dto: CreateClient,
-    ): Promise<ClientEntity>;
+    ): Promise<CreatedClient>;
     abstract removeClient(tenantId: string, clientId: string): Promise<void>;
     abstract importForTenant(tenantId: string): Promise<void>;
 
@@ -50,13 +48,5 @@ export abstract class ClientsProvider {
     validateClientCredentials?(
         clientId: string,
         clientSecret: string,
-    ): Promise<ClientEntity | null>;
-
-    constructor(configImportOrchestrator: ConfigImportOrchestratorService) {
-        configImportOrchestrator.register(
-            "clients",
-            ImportPhase.CORE,
-            (tenantId) => this.importForTenant(tenantId),
-        );
-    }
+    ): Promise<ClientData | null>;
 }

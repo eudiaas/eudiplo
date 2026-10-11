@@ -1,17 +1,24 @@
 import { ApiExtraModels, ApiProperty, getSchemaPath } from "@nestjs/swagger";
 import { createZodDto } from "nestjs-zod";
 import { z } from "zod";
+import type { WebhookConfiguration } from "./domain/webhook-configuration.js";
+import { WebhookAuthType as AuthConfig } from "./domain/webhook-configuration.js";
+import {
+    ApiKeyConfigSchema,
+    WebHookAuthConfigHeaderSchema,
+    WebHookAuthConfigNoneSchema,
+    WebHookAuthConfigSchema,
+    WebhookConfigSchema,
+} from "./webhook.dto.schema.js";
+
+export {
+    WebHookAuthConfigSchema,
+    WebhookConfigSchema,
+} from "./webhook.dto.schema.js";
 
 /**
  * Configuration for API key authentication in webhooks.
  */
-const ApiKeyConfigSchema = z
-    .object({
-        headerName: z.string(),
-        value: z.string(),
-    })
-    .strict();
-
 export class ApiKeyConfig extends createZodDto(ApiKeyConfigSchema) {
     /**
      * The name of the header where the API key will be sent.
@@ -26,28 +33,18 @@ export class ApiKeyConfig extends createZodDto(ApiKeyConfigSchema) {
 /**
  * Enum for the type of authentication used in webhooks.
  */
-export enum AuthConfig {
-    API_KEY = "apiKey",
-    NONE = "none",
-}
+export { WebhookAuthType as AuthConfig } from "./domain/webhook-configuration.js";
 
 /**
  * Configuration for webhook authentication.
  */
-const WebHookAuthConfigHeaderSchema = z
-    .object({
-        type: z.literal(AuthConfig.API_KEY),
-        config: ApiKeyConfigSchema,
-    })
-    .strict();
-
 export class WebHookAuthConfigHeader extends createZodDto(
     WebHookAuthConfigHeaderSchema,
 ) {
     /**
      * The type of authentication used for the webhook.
      */
-    type!: AuthConfig.API_KEY;
+    type!: typeof AuthConfig.API_KEY;
     /**
      * Configuration for API key authentication.
      * This is required if the type is 'apiKey'.
@@ -55,40 +52,23 @@ export class WebHookAuthConfigHeader extends createZodDto(
     config!: ApiKeyConfig;
 }
 
-const WebHookAuthConfigNoneSchema = z
-    .object({
-        type: z.literal(AuthConfig.NONE),
-    })
-    .strict();
-
 export class WebHookAuthConfigNone extends createZodDto(
     WebHookAuthConfigNoneSchema,
 ) {
     /**
      * The type of authentication used for the webhook.
      */
-    type!: AuthConfig.NONE;
+    type!: typeof AuthConfig.NONE;
 }
-
-export const WebHookAuthConfigSchema = z.discriminatedUnion("type", [
-    WebHookAuthConfigNoneSchema,
-    WebHookAuthConfigHeaderSchema,
-]);
-
-export const WebhookConfigSchema = z
-    .object({
-        url: z.string(),
-        auth: WebHookAuthConfigSchema,
-        includeRawTokensFor: z.array(z.string()).optional(),
-        notifyOnFailure: z.boolean().optional(),
-    })
-    .strict();
 
 /**
  * Configuration for webhooks used in various services.
  */
 @ApiExtraModels(WebHookAuthConfigNone, WebHookAuthConfigHeader)
-export class WebhookConfig extends createZodDto(WebhookConfigSchema) {
+export class WebhookConfig
+    extends createZodDto(WebhookConfigSchema)
+    implements WebhookConfiguration
+{
     /**
      * The URL to which the webhook will send notifications.
      */
@@ -119,15 +99,15 @@ export class WebhookConfig extends createZodDto(WebhookConfigSchema) {
     includeRawTokensFor?: string[];
 
     /**
-     * When true, the webhook is also called on verification failure with the
-     * structured outcome (code + short message), not only on success. Defaults
-     * to false to preserve existing behaviour.
+     * espuni fork (PATCHES.md §1.7) — deprecated, accepted and ignored.
+     * Presentation webhooks are always sent, also on failure (upstream #1133).
      */
     @ApiProperty({
         required: false,
         type: Boolean,
+        deprecated: true,
         description:
-            "Also POST the structured failure outcome to the webhook when verification fails (default false).",
+            "Deprecated and ignored: presentation webhooks are always sent, also on failure (read `status`). Accepted only for backwards compatibility.",
     })
     notifyOnFailure?: boolean;
 }

@@ -1,8 +1,14 @@
 import { X509Certificate } from "node:crypto";
-import { BadRequestException, Injectable } from "@nestjs/common";
+import {
+    BadRequestException,
+    ConflictException,
+    Injectable,
+    Logger,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
     createLoTE,
+    type LoTE,
     type LoTEDocument,
     type TrustedEntity as LoTETrustedEntity,
     service,
@@ -11,50 +17,62 @@ import {
 } from "@owf/eudi-lote";
 import { Repository } from "typeorm";
 import { v4 } from "uuid";
-import { TenantEntity } from "../../auth/tenant/entities/tenant.entity";
+import { TenantEntity } from "../../auth/tenant/entities/tenant.entity.js";
 import {
     CertificateInfo,
     CertService,
-} from "../../crypto/key/cert/cert.service";
-import { KeyUsageType } from "../../crypto/key/types/key-usage-type";
-import { KeyChainService } from "../../crypto/key/key-chain.service";
-import { loadConfigDto } from "../../shared/utils/config-file-loader.util";
-import { ConfigImportService } from "../../platform/config-import/config-import.service";
+} from "../../crypto/key/cert/cert.service.js";
+import { KeyChainService } from "../../crypto/key/key-chain.service.js";
+import { KeyUsageType } from "../../crypto/key/types/key-usage-type.js";
+import { ConfigImportService } from "../../platform/config-import/config-import.service.js";
 import {
     ConfigImportOrchestratorService,
     ImportPhase,
-} from "../../platform/config-import/config-import-orchestrator.service";
+} from "../../platform/config-import/config-import-orchestrator.service.js";
+import { loadConfigDto } from "../../shared/utils/config-file-loader.util.js";
+import {
+    isTrustListRenewalDue,
+    trustListNextUpdate,
+} from "./domain/trust-list-validity.js";
 import {
     TrustListCreateDto,
+    TrustListEntity,
     TrustListEntityInfo,
-} from "./dto/trust-list-create.dto";
-import { TrustList } from "./entities/trust-list.entity";
-import { TrustListVersion } from "./entities/trust-list-version.entity";
-import { TrustListCreateSchema } from "./schemas/trust-list.schema";
+} from "./dto/trust-list-create.dto.js";
+import { TrustList } from "./entities/trust-list.entity.js";
+import { TrustListVersion } from "./entities/trust-list-version.entity.js";
+import { TrustListCreateSchema } from "./schemas/trust-list.schema.js";
 
-export enum ServiceTypeIdentifier {
+enum ServiceTypeIdentifier {
+    WalletIssuance = "http://uri.etsi.org/19602/SvcType/WalletSolution/Issuance",
+    WalletRevocation = "http://uri.etsi.org/19602/SvcType/WalletSolution/Revocation",
     PIDIssuance = "http://uri.etsi.org/19602/SvcType/PID/Issuance",
     EaaIssuance = "http://uri.etsi.org/19602/SvcType/EAA/Issuance",
     EaaRevocation = "http://uri.etsi.org/19602/SvcType/EAA/Revocation",
-    // espuni fork: the service type a Pub-EAA providers list declares for its
-    // issuance services (ETSI TS 119 602 V1.1.1, Annex H, Table H.3), i.e. the
-    // attestations issued by or on behalf of a public sector body responsible
-    // for an authentic source. Annex H admits this URI and its /Revocation
-    // sibling "to the exclusion of any other", so a conformant Pub-EAA list
-    // can never present its services as EAA/Issuance.
-    //
-    // Worth noting which of the two is the odd one: TS 119 602 registers
-    // exactly six service types — PID, PubEAA, WRPAC, WRPRC, WalletSolution
-    // and Register. `SvcType/EAA` is not among them and the standard defines
-    // no "EAA providers list" profile at all; it comes from @owf/eudi-lote.
-    PubEAAIssuance = "http://uri.etsi.org/19602/SvcType/PubEAA/Issuance",
 }
 
 /** Default language for trust list entries */
 const DEFAULT_LANG = "en";
 
+/** Fields that change when a new version of a trust list is published. */
+type TrustListVersionChanges = Pick<
+    TrustList,
+    "sequenceNumber" | "data" | "jwt"
+> &
+    Partial<Pick<TrustList, "description" | "keyChainId" | "entityConfig">>;
+
+/** Stored list content; lists created by older releases lack the `LoTE` wrapper. */
+function storedLoTE(data: object | undefined): LoTE | undefined {
+    const content = (data as { LoTE?: LoTE } | undefined)?.LoTE ?? data;
+    return (content as LoTE | undefined)?.ListAndSchemeInformation
+        ? (content as LoTE)
+        : undefined;
+}
+
 @Injectable()
 export class TrustListService {
+    private readonly logger = new Logger(TrustListService.name);
+
     constructor(
         @InjectRepository(TrustList)
         private readonly trustListRepo: Repository<TrustList>,
@@ -82,7 +100,7 @@ export class TrustListService {
      */
     create(
         values: TrustListCreateDto,
-        tenant: TenantEntity,
+        tenant: Pick<TenantEntity, "id" | "name">,
     ): Promise<TrustList> {
         return this.buildAndSaveTrustList(values, tenant);
     }
@@ -92,7 +110,7 @@ export class TrustListService {
      * @param tenant
      * @returns
      */
-    findAll(tenant: TenantEntity): Promise<TrustList[]> {
+    findAll(tenant: Pick<TenantEntity, "id" | "name">): Promise<TrustList[]> {
         return this.trustListRepo.findBy({ tenantId: tenant.id });
     }
 
@@ -122,7 +140,7 @@ export class TrustListService {
 
     /**
      * Update a trust list with new entities
-     * Increments the sequence number and stores a version for audit
+     * Increments the sequence number and stores the previous version for audit
      * @param tenantId
      * @param id
      * @param values
@@ -138,11 +156,41 @@ export class TrustListService {
             id: tenantId,
         });
 
-        // Store the current version for audit before updating
-        await this.saveVersion(existing);
-
-        // Update the trust list
         return this.buildAndSaveTrustList(values, tenant, existing);
+    }
+
+    /**
+     * Re-issue every managed trust list, across all tenants, whose `NextUpdate`
+     * is within the renewal window or already passed. Each list keeps its
+     * entities and gets the next sequence number, a fresh `NextUpdate` and a
+     * new signature; the previous version is kept in the version history.
+     *
+     * Safe to run on several replicas at once: a list is only replaced while
+     * its sequence number is unchanged, so exactly one renewal wins.
+     * @returns the number of lists this call renewed
+     */
+    async renewDueTrustLists(now = new Date()): Promise<number> {
+        let renewed = 0;
+        for (const trustList of await this.trustListRepo.find()) {
+            const lote = storedLoTE(trustList.data);
+            if (
+                !lote ||
+                !isTrustListRenewalDue(
+                    lote.ListAndSchemeInformation.NextUpdate,
+                    now,
+                )
+            ) {
+                continue;
+            }
+            try {
+                if (await this.renew(trustList, lote, now)) renewed++;
+            } catch (error) {
+                this.logger.error(
+                    `Failed to renew trust list ${trustList.id} of tenant ${trustList.tenantId}: ${error}`,
+                );
+            }
+        }
+        return renewed;
     }
 
     /**
@@ -230,7 +278,7 @@ export class TrustListService {
      */
     private async buildAndSaveTrustList(
         config: TrustListCreateDto,
-        tenant: TenantEntity,
+        tenant: Pick<TenantEntity, "id" | "name">,
         existing?: TrustList,
     ): Promise<TrustList> {
         // Validate PEM certificates for external entities
@@ -265,10 +313,17 @@ export class TrustListService {
             });
         }
 
+        // Keep the stored state: it becomes the previous version on updates
+        const previous = existing ? { ...existing } : undefined;
+
         // Use existing trust list or create new
         const trustList =
             existing ??
-            this.trustListRepo.create({ tenant, id: config.id ?? v4() });
+            this.trustListRepo.create({
+                tenant,
+                tenantId: tenant.id,
+                id: config.id ?? v4(),
+            });
 
         // Update properties
         trustList.description = config.description;
@@ -315,6 +370,7 @@ export class TrustListService {
                         issuerCert,
                         revocationCert,
                         entity.info,
+                        entity.providerType,
                     ),
                 );
             } else {
@@ -324,6 +380,7 @@ export class TrustListService {
                         entity.issuerCertPem,
                         entity.revocationCertPem,
                         entity.info,
+                        entity.providerType,
                     ),
                 );
             }
@@ -333,24 +390,107 @@ export class TrustListService {
             tenant,
             entries,
             trustList.sequenceNumber,
+            config.entities.every(
+                (entity) => entity.providerType === "wallet-provider",
+            ),
         );
         trustList.jwt = await this.generateJwt(trustList);
-        return this.trustListRepo.save(trustList);
+        if (!previous) {
+            return this.trustListRepo.save(trustList);
+        }
+
+        const published = await this.publishNextVersion(previous, {
+            description: trustList.description,
+            keyChainId: trustList.keyChainId,
+            entityConfig: trustList.entityConfig,
+            sequenceNumber: trustList.sequenceNumber,
+            data: trustList.data,
+            jwt: trustList.jwt,
+        });
+        if (!published) {
+            throw new ConflictException(
+                `Trust list ${previous.id} was modified concurrently; retry the update`,
+            );
+        }
+        return this.findOne(previous.tenantId, previous.id);
     }
 
     /**
-     * Save the current state of a trust list as a version for audit
+     * Re-issue a trust list with unchanged entities, the next sequence number
+     * and a fresh validity period.
+     * @returns false when another writer published a new version first
      */
-    private saveVersion(trustList: TrustList): Promise<TrustListVersion> {
-        const version = this.trustListVersionRepo.create({
-            trustListId: trustList.id,
-            tenantId: trustList.tenantId,
-            sequenceNumber: trustList.sequenceNumber || 1,
-            data: trustList.data ?? {},
-            entityConfig: trustList.entityConfig,
-            jwt: trustList.jwt,
+    private async renew(
+        trustList: TrustList,
+        lote: LoTE,
+        now: Date,
+    ): Promise<boolean> {
+        const sequenceNumber = (trustList.sequenceNumber || 1) + 1;
+        const data: LoTEDocument = {
+            LoTE: {
+                ...lote,
+                ListAndSchemeInformation: {
+                    ...lote.ListAndSchemeInformation,
+                    LoTESequenceNumber: sequenceNumber,
+                    ListIssueDateTime: now.toISOString(),
+                    NextUpdate: trustListNextUpdate(now).toISOString(),
+                },
+            },
+        };
+        const jwt = await this.generateJwt({ ...trustList, data });
+
+        const published = await this.publishNextVersion(trustList, {
+            sequenceNumber,
+            data,
+            jwt,
         });
-        return this.trustListVersionRepo.save(version);
+        if (published) {
+            this.logger.log(
+                `Renewed trust list ${trustList.id} of tenant ${trustList.tenantId} (sequence number ${sequenceNumber}, next update ${data.LoTE.ListAndSchemeInformation.NextUpdate})`,
+            );
+        } else {
+            this.logger.debug(
+                `Trust list ${trustList.id} of tenant ${trustList.tenantId} was already re-issued by another writer`,
+            );
+        }
+        return published;
+    }
+
+    /**
+     * Replace a trust list with its next version and keep the previous one in
+     * the version history, atomically. The write only applies while the stored
+     * sequence number still equals `previous.sequenceNumber` (compare-and-set),
+     * so concurrent writers such as renewals on other replicas or API updates
+     * never publish two lists with the same sequence number.
+     * @returns false when the list changed since `previous` was read
+     */
+    private publishNextVersion(
+        previous: TrustList,
+        changes: TrustListVersionChanges,
+    ): Promise<boolean> {
+        return this.trustListRepo.manager.transaction(async (manager) => {
+            const result = await manager.update(
+                TrustList,
+                {
+                    tenantId: previous.tenantId,
+                    id: previous.id,
+                    sequenceNumber: previous.sequenceNumber,
+                },
+                changes,
+            );
+            if (result.affected !== 1) {
+                return false;
+            }
+            await manager.insert(TrustListVersion, {
+                trustListId: previous.id,
+                tenantId: previous.tenantId,
+                sequenceNumber: previous.sequenceNumber || 1,
+                data: previous.data ?? {},
+                entityConfig: previous.entityConfig,
+                jwt: previous.jwt,
+            });
+            return true;
+        });
     }
 
     /**
@@ -396,7 +536,8 @@ export class TrustListService {
             tenantId,
             trustList.keyChainId,
         );
-        return this.formatCertEntity(cert);
+        // Pin the certificate whose key signs the JWT, rather than its root CA.
+        return this.formatPem(cert.crt[0]);
     }
 
     /**
@@ -405,10 +546,10 @@ export class TrustListService {
      * @returns Signed JWT string
      */
     async generateJwt(trustList: TrustList): Promise<string> {
-        const cert = await this.certService.find({
-            tenantId: trustList.tenantId,
-            type: KeyUsageType.TrustList,
-        });
+        const cert = await this.certService.getCertificateById(
+            trustList.tenantId,
+            trustList.keyChainId,
+        );
 
         // Get the signer from key chain service
         const signer = await this.keyChainService.signer(
@@ -434,11 +575,13 @@ export class TrustListService {
         issuerCert: CertificateInfo,
         revocationCert: CertificateInfo,
         info: TrustListEntityInfo,
+        providerType?: TrustListEntity["providerType"],
     ): LoTETrustedEntity {
         return this.createEntityFromData(
             this.formatCertEntity(issuerCert),
             this.formatCertEntity(revocationCert),
             info,
+            providerType,
         );
     }
 
@@ -449,11 +592,13 @@ export class TrustListService {
         issuerCertPem: string,
         revocationCertPem: string,
         info: TrustListEntityInfo,
+        providerType?: TrustListEntity["providerType"],
     ): LoTETrustedEntity {
         return this.createEntityFromData(
             this.formatPem(issuerCertPem),
             this.formatPem(revocationCertPem),
             info,
+            providerType,
         );
     }
 
@@ -464,20 +609,40 @@ export class TrustListService {
         issuerCertBase64: string,
         revocationCertBase64: string,
         info: TrustListEntityInfo,
+        providerType?: TrustListEntity["providerType"],
     ): LoTETrustedEntity {
         const lang = info.lang || DEFAULT_LANG;
+        const walletProvider = providerType === "wallet-provider";
 
         // Build the issuance service
         const issuanceService = service()
-            .name("EAA-Issuance-Service", lang)
-            .type(ServiceTypeIdentifier.EaaIssuance)
+            .name(
+                walletProvider
+                    ? "Wallet-Issuance-Service"
+                    : "EAA-Issuance-Service",
+                lang,
+            )
+            .type(
+                walletProvider
+                    ? ServiceTypeIdentifier.WalletIssuance
+                    : ServiceTypeIdentifier.EaaIssuance,
+            )
             .addCertificate(issuerCertBase64)
             .build();
 
         // Build the revocation service
         const revocationService = service()
-            .name("EAA-Revocation-Service", lang)
-            .type(ServiceTypeIdentifier.EaaRevocation)
+            .name(
+                walletProvider
+                    ? "Wallet-Revocation-Service"
+                    : "EAA-Revocation-Service",
+                lang,
+            )
+            .type(
+                walletProvider
+                    ? ServiceTypeIdentifier.WalletRevocation
+                    : ServiceTypeIdentifier.EaaRevocation,
+            )
             .addCertificate(revocationCertBase64)
             .build();
 
@@ -515,12 +680,13 @@ export class TrustListService {
      * Create a LoTE document using @owf/eudi-lote
      */
     createList(
-        tenant: TenantEntity,
+        tenant: Pick<TenantEntity, "id" | "name">,
         entities: LoTETrustedEntity[],
         sequenceNumber = 1,
+        walletProviders = false,
     ): LoTEDocument {
-        const nextUpdate = new Date();
-        nextUpdate.setDate(nextUpdate.getDate() + 30);
+        const issuedAt = new Date();
+        const nextUpdate = trustListNextUpdate(issuedAt);
 
         return createLoTE(
             {
@@ -530,18 +696,22 @@ export class TrustListService {
                         value: tenant.name,
                     },
                 ],
-                LoTEType:
-                    "http://uri.etsi.org/19602/LoTEType/EUEAAProvidersList",
-                StatusDeterminationApproach:
-                    "http://uri.etsi.org/19602/EUEAAProvidersList/StatusDetn/EU",
+                LoTEType: walletProviders
+                    ? "http://uri.etsi.org/19602/LoTEType/EUWalletProvidersList"
+                    : "http://uri.etsi.org/19602/LoTEType/EUEAAProvidersList",
+                StatusDeterminationApproach: walletProviders
+                    ? "http://uri.etsi.org/19602/WalletProvidersList/StatusDetn/EU"
+                    : "http://uri.etsi.org/19602/EUEAAProvidersList/StatusDetn/EU",
                 SchemeTypeCommunityRules: [
                     {
                         lang: DEFAULT_LANG,
-                        uriValue:
-                            "http://uri.etsi.org/19602/EUEAAProviders/schemerules/EU",
+                        uriValue: walletProviders
+                            ? "http://uri.etsi.org/19602/WalletProvidersList/schemerules/EU"
+                            : "http://uri.etsi.org/19602/EUEAAProviders/schemerules/EU",
                     },
                 ],
                 SchemeTerritory: "EU",
+                ListIssueDateTime: issuedAt.toISOString(),
                 NextUpdate: nextUpdate.toISOString(),
                 LoTESequenceNumber: sequenceNumber,
             },

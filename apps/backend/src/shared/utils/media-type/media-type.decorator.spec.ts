@@ -1,7 +1,7 @@
 import express, { Request } from "express";
 import { describe, expect, it } from "vitest";
-import { resolveAcceptedMediaType } from "./media-type.decorator";
-import { MediaType } from "./media-type.enum";
+import { resolveAcceptedMediaType } from "./media-type.decorator.js";
+import { MediaType } from "./media-type.enum.js";
 
 /**
  * Builds a request that negotiates exactly like a real one: `req.accepts()`

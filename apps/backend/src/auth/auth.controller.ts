@@ -1,19 +1,19 @@
 import { Body, Controller, Get, Headers, Post } from "@nestjs/common";
 import {
     ApiBody,
-    ApiExtraModels,
     ApiConsumes,
+    ApiExtraModels,
     ApiOperation,
     ApiResponse,
     ApiTags,
 } from "@nestjs/swagger";
-import { KeyResponseDto } from "../crypto/key/dto/key-response.dto";
-import { AuthService } from "./auth.service";
-import { ClientCredentialsDto } from "./dto/client-credentials.dto";
-import { OidcDiscoveryDto } from "./dto/oidc-discovery.dto";
-import { OAuthTokenErrorResponseDto } from "./dto/oauth-token-error-response.dto";
-import { RoleDto } from "./dto/role.dto";
-import { TokenResponse } from "./dto/token-response.dto";
+import { KeyResponseDto } from "../crypto/key/dto/key-response.dto.js";
+import { AuthService } from "./auth.service.js";
+import { ClientCredentialsDto } from "./dto/client-credentials.dto.js";
+import { OAuthTokenErrorResponseDto } from "./dto/oauth-token-error-response.dto.js";
+import { OidcDiscoveryDto } from "./dto/oidc-discovery.dto.js";
+import { RoleDto } from "./dto/role.dto.js";
+import { TokenResponse } from "./dto/token-response.dto.js";
 
 /**
  * Authentication Controller

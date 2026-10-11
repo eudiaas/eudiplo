@@ -1,7 +1,8 @@
-FROM node:24 AS base
+FROM node:26@sha256:a723b54c35a76e947095a20a67d39585bb09c862e6b1adeb8a9f518f95e34fb0 AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
+# Node 25 and later no longer bundle corepack, so install it before enabling it.
+RUN npm install -g corepack@0.36.0 && corepack enable
 
 FROM base AS build
 COPY . /usr/src/app
@@ -10,6 +11,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
 FROM build AS build-backend
 # Build backend only
+RUN pnpm --filter @eudiplo/config-format build
 RUN pnpm --filter @eudiplo/backend build
 RUN pnpm deploy --filter=@eudiplo/backend --prod /prod/backend
 
@@ -21,16 +23,23 @@ RUN pnpm --filter @eudiplo/client build
 FROM base AS eudiplo
 # Copy production dependencies for backend and built dist
 COPY --from=build-backend /prod/backend /app
-COPY --from=build-backend /usr/src/app/dist/backend /app/dist
+COPY --from=build-backend /usr/src/app/apps/backend/dist /app/dist
 
-# Accept VERSION as build argument and set as environment variable
-ARG VERSION=latest
+# Accept VERSION and REVISION (git commit) as build arguments and set as environment variables.
+# The client compares both against the backend to detect incompatible deployments.
+ARG VERSION=dev
 ENV VERSION=$VERSION
+ARG REVISION=
+ENV REVISION=$REVISION
 
 # Set production environment
 ENV NODE_ENV=production
 
-# Set the default FOLDER environment variable
+# /app/config is the data volume: FOLDER holds the SQLite database and, by
+# default, the local uploads folder. Tenant config folders and kms.json live in
+# its config/ subfolder, because every folder in CONFIG_FOLDER is treated as a
+# tenant folder (mirrors the repository's assets/ folder). Setups that mount a
+# config-only folder at /app/config must set CONFIG_FOLDER=/app/config.
 ENV FOLDER=/app/config
 ENV CONFIG_FOLDER=/app/config/config
 
@@ -48,35 +57,25 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Run compiled NestJS app
 CMD [ "node", "dist/main.js" ]
 
-FROM eudiplo AS eudiplo-demo
-# Opt-in demo bootstrap from embedded sample config.
-ENV BOOTSTRAP_DEMO=true
-
-# Bundle demo configuration so users can run without downloading repo config files.
-COPY assets/config/demo /app/demo-config/demo
-
-# Seed demo config only when the target config folder is empty.
-COPY apps/backend/docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD [ "node", "dist/main.js" ]
-
-FROM nginx:alpine AS client
+FROM nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2 AS client
 # Copy the Angular build output into the nginx html directory.
 # The Angular output path is configured as apps/client/dist/apps/client in angular.json.
 COPY --from=build-frontend /usr/src/app/apps/client/dist/apps/client/browser /usr/share/nginx/html
 
 # Copy nginx configuration
 COPY apps/client/nginx.conf /etc/nginx/nginx.conf
+COPY apps/client/nginx-security-headers.conf /etc/nginx/snippets/security-headers.conf
 
 # Copy entrypoint script
 COPY apps/client/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
-# Accept VERSION as build argument and set as environment variable
-ARG VERSION=latest
+# Accept VERSION and REVISION (git commit) as build arguments and set as environment variables.
+# The client compares both against the backend to detect incompatible deployments.
+ARG VERSION=dev
 ENV VERSION=$VERSION
+ARG REVISION=
+ENV REVISION=$REVISION
 
 # Environment variables with defaults
 ENV API_BASE_URL=http://localhost:3000

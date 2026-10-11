@@ -6,33 +6,8 @@ import {
     PrimaryColumn,
     UpdateDateColumn,
 } from "typeorm";
-import { TenantEntity } from "../../../../auth/tenant/entities/tenant.entity";
-
-/**
- * Status of a deferred credential transaction.
- */
-export enum DeferredTransactionStatus {
-    /**
-     * Credential issuance is pending - external system is processing.
-     */
-    Pending = "pending",
-    /**
-     * Credential is ready for retrieval.
-     */
-    Ready = "ready",
-    /**
-     * Credential has been retrieved by the wallet.
-     */
-    Retrieved = "retrieved",
-    /**
-     * Transaction has expired.
-     */
-    Expired = "expired",
-    /**
-     * Credential issuance failed.
-     */
-    Failed = "failed",
-}
+import { TenantEntity } from "../../../../auth/tenant/entities/tenant.entity.js";
+import { DeferredTransactionStatus } from "../domain/deferred-transaction-status.js";
 
 /**
  * Entity for tracking deferred credential issuance transactions.
@@ -74,6 +49,14 @@ export class DeferredTransactionEntity {
      */
     @Column("varchar")
     credentialConfigurationId!: string;
+
+    /**
+     * Opaque HMAC fingerprint of the access token that authorized this
+     * transaction. Preserves active-credential batch grouping when deferred
+     * issuance is completed after the original request has ended.
+     */
+    @Column("varchar", { nullable: true })
+    issuanceSetId?: string | null;
 
     /**
      * The holder's public key (CNF) for key binding.

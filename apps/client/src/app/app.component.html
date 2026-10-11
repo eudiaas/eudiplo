@@ -9,6 +9,24 @@
     <!-- Spacer -->
     <span fxFlex></span>
 
+    <a
+      matIconButton
+      href="https://docs.eudiplo.dev/"
+      target="_blank"
+      rel="noopener"
+      aria-label="Open documentation"
+      matTooltip="Documentation"
+    >
+      <mat-icon>help</mat-icon>
+    </a>
+    <button
+      matIconButton
+      (click)="themeService.toggle()"
+      [attr.aria-label]="themeService.isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'"
+      [matTooltip]="themeService.isDarkMode ? 'Light mode' : 'Dark mode'"
+    >
+      <mat-icon>{{ themeService.isDarkMode ? 'light_mode' : 'dark_mode' }}</mat-icon>
+    </button>
     <button matIconButton [matMenuTriggerFor]="menu" aria-label="Example icon-button with a menu">
       <mat-icon>more_vert</mat-icon>
     </button>
@@ -21,15 +39,6 @@
         <mat-icon>business</mat-icon>
         <span>Instance: {{ apiService.getBaseUrl() }}</span>
       </button>
-      <a
-        mat-menu-item
-        href="https://openwallet-foundation.github.io/eudiplo/docs/main/"
-        target="_blank"
-        rel="noopener"
-      >
-        <mat-icon>help</mat-icon>
-        Documentation
-      </a>
 
       <button mat-menu-item (click)="logout()" matTooltip="Logout">
         <mat-icon>logout</mat-icon>
@@ -65,6 +74,17 @@
           <mat-icon matListItemIcon>settings_ethernet</mat-icon>
           <span matListItemTitle>Connection Settings</span>
         </mat-list-item>
+
+        @if (jwtService.hasTenantContext() && hasRole(['tenants:manage', 'tenant:admin'])) {
+          <mat-list-item
+            [routerLink]="['/settings/config-portability']"
+            routerLinkActive="active-link"
+            (click)="closeSidenavOnMobile()"
+          >
+            <mat-icon matListItemIcon>move_up</mat-icon>
+            <span matListItemTitle>Config Portability</span>
+          </mat-list-item>
+        }
 
         <!-- Administration Section -->
         @if (hasRole(['tenants:manage', 'clients:manage', 'users:manage'])) {
@@ -143,6 +163,24 @@
           >
             <mat-icon matListItemIcon>dns</mat-icon>
             <span matListItemTitle>KMS Providers</span>
+          </mat-list-item>
+        }
+
+        <!-- Integrations Section: webhook endpoints serve issuance and verification -->
+        @if (hasRole(['issuance:manage', 'presentation:manage'])) {
+          <mat-divider></mat-divider>
+          <div mat-subheader>
+            <mat-icon class="subheader-icon">hub</mat-icon>
+            Integrations
+          </div>
+
+          <mat-list-item
+            [routerLink]="['/webhook-endpoints']"
+            routerLinkActive="active-link"
+            (click)="closeSidenavOnMobile()"
+          >
+            <mat-icon matListItemIcon>webhook</mat-icon>
+            <span matListItemTitle>Webhook Endpoints</span>
           </mat-list-item>
         }
 
@@ -231,12 +269,12 @@
           </mat-list-item>
 
           <mat-list-item
-            [routerLink]="['/schema-metadata']"
+            [routerLink]="['/schema']"
             routerLinkActive="active-link"
             (click)="closeSidenavOnMobile()"
           >
             <mat-icon matListItemIcon>schema</mat-icon>
-            <span matListItemTitle>Schema Metadata</span>
+            <span matListItemTitle>Schema</span>
           </mat-list-item>
         }
 
@@ -267,15 +305,6 @@
             >
               <mat-icon matListItemIcon>tune</mat-icon>
               <span matListItemTitle>Verification Configs</span>
-            </mat-list-item>
-
-            <mat-list-item
-              [routerLink]="['/webhook-endpoints']"
-              routerLinkActive="active-link"
-              (click)="closeSidenavOnMobile()"
-            >
-              <mat-icon matListItemIcon>webhook</mat-icon>
-              <span matListItemTitle>Webhook Endpoints</span>
             </mat-list-item>
           }
         }
@@ -314,6 +343,26 @@
 
     <!-- Main Content -->
     <mat-sidenav-content class="main-content">
+      @if (versionService.showWarning) {
+        <div class="version-warning" role="alert">
+          <mat-icon>warning</mat-icon>
+          <span fxFlex>
+            Client version <strong>{{ versionService.client.version }}</strong> does not match
+            backend version <strong>{{ versionService.backend?.version }}</strong
+            >. Some features may not work as expected. Use the client image with the same tag as the
+            backend.
+          </span>
+          <button
+            matIconButton
+            type="button"
+            (click)="versionService.dismiss()"
+            aria-label="Dismiss version warning"
+            matTooltip="Dismiss"
+          >
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+      }
       <!-- Top Toolbar -->
       <router-outlet></router-outlet>
     </mat-sidenav-content>

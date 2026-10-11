@@ -12,9 +12,9 @@ import {
     expect,
     test,
 } from "vitest";
-import { FederationTrustMode } from "../../src/issuer/configuration/issuance/dto/federation-config.dto";
-import { IssuanceDto } from "../../src/issuer/configuration/issuance/dto/issuance.dto";
-import { IssuanceTestContext, setupIssuanceTestApp } from "../utils";
+import { FederationTrustMode } from "../../src/issuer/configuration/issuance/dto/federation-config.dto.js";
+import { IssuanceDto } from "../../src/issuer/configuration/issuance/dto/issuance.dto.js";
+import { IssuanceTestContext, setupIssuanceTestApp } from "../utils.js";
 
 setGlobalDispatcher(
     new Agent({
@@ -46,7 +46,7 @@ describe("Issuance - OpenID Federation", () => {
     });
 
     afterAll(async () => {
-        await app.close();
+        await app?.close();
     });
 
     async function updateIssuanceConfig(update: Partial<IssuanceDto>) {

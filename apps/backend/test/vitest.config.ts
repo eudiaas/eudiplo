@@ -1,13 +1,23 @@
+import { fileURLToPath } from "node:url";
 import swc from "unplugin-swc";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
     test: {
+        name: "backend-e2e",
         include: ["**/*.e2e-spec.ts"],
         exclude: ["**/oidf/**"],
         globals: true,
-        root: "./",
+        root: fileURLToPath(new URL("..", import.meta.url)),
         fileParallelism: false,
+        // The first verifier offer / signed metadata request of a suite can
+        // take several seconds; the 5s default makes local runs flaky.
+        testTimeout: 15_000,
+        // Fails fast when port 3000 is taken and detects Docker for the
+        // Testcontainers suites.
+        globalSetup: ["./test/global-setup.ts"],
+        // Ignores apps/backend/.env so developer settings do not leak in.
+        setupFiles: ["./test/setup-e2e.ts"],
         coverage: {
             provider: "v8",
             reportsDirectory: "./coverage/e2e",
@@ -32,6 +42,10 @@ export default defineConfig({
             // Use synchronize for tests (fresh DB each run), skip migrations
             DB_SYNCHRONIZE: "true",
             DB_MIGRATIONS_RUN: "false",
+            // Suites call webhooks, attribute providers and metadata served
+            // over HTTP on localhost.
+            OUTBOUND_URL_ALLOW_HTTP: "true",
+            OUTBOUND_URL_ALLOW_PRIVATE_NETWORK: "true",
         },
     },
     plugins: [swc.vite()],

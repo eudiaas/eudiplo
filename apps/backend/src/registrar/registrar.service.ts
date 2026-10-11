@@ -1,16 +1,19 @@
 import { Injectable } from "@nestjs/common";
-import { TenantEntity } from "../auth/tenant/entities/tenant.entity";
-import { AccessCertificateService } from "./access-certificate.service";
-import { RegistrarConfigEntity } from "./entities/registrar-config.entity";
-import { type RegistrationCertificateCreation } from "./generated";
-import { RegistrarConfigService } from "./registrar-config.service";
-import { RegistrationCertificateService } from "./registration-certificate.service";
-import { SchemaMetadataService } from "./schema-metadata/schema-metadata.service";
+import { TenantEntity } from "../auth/tenant/entities/tenant.entity.js";
+import { AccessCertificateService } from "./access-certificate.service.js";
+import { RegistrarConfigEntity } from "./entities/registrar-config.entity.js";
+import { type RegistrationCertificateCreation } from "./generated/index.js";
+import { RegistrarConfigService } from "./registrar-config.service.js";
+import {
+    type RegistrationCertificateOptions,
+    RegistrationCertificateService,
+} from "./registration-certificate.service.js";
+import { SchemaMetadataService } from "./schema-metadata/schema-metadata.service.js";
 import type {
     CreateAccessCertificate,
     CreateRegistrarConfig,
     UpdateRegistrarConfig,
-} from "./schemas/registrar.schema";
+} from "./schemas/registrar.schema.js";
 
 /**
  * Facade that preserves the original public API of the registrar domain.
@@ -37,7 +40,7 @@ export class RegistrarService {
         return this.configSvc.isEnabledForTenant(tenantId);
     }
 
-    onTenantInit(tenant: TenantEntity): Promise<void> {
+    onTenantInit(tenant: Pick<TenantEntity, "id" | "name">): Promise<void> {
         return this.configSvc.onTenantInit(tenant);
     }
 
@@ -87,12 +90,14 @@ export class RegistrarService {
         dcqlQuery: any,
         requestId: string,
         tenantId: string,
+        options?: RegistrationCertificateOptions,
     ): Promise<string> {
         return this.regCertSvc.addRegistrationCertificate(
             req,
             dcqlQuery,
             requestId,
             tenantId,
+            options,
         );
     }
 
@@ -105,6 +110,7 @@ export class RegistrarService {
         dcqlQuery: any,
         requestId: string,
         tenantId: string,
+        options?: RegistrationCertificateOptions,
     ): Promise<{
         jwt: string;
         payload: Record<string, any>;
@@ -115,6 +121,7 @@ export class RegistrarService {
             dcqlQuery,
             requestId,
             tenantId,
+            options,
         );
     }
 

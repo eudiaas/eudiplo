@@ -7,7 +7,7 @@ import {
     AuditActionType,
     AuditActorType,
     AuditLogEntity,
-} from "./entities/audit-log.entity";
+} from "./entities/audit-log.entity.js";
 
 export interface AuditLogActor {
     type: AuditActorType;
@@ -15,7 +15,7 @@ export interface AuditLogActor {
     display?: string;
 }
 
-interface AuditLogRequestMeta {
+export interface AuditLogRequestMeta {
     requestId?: string;
 }
 

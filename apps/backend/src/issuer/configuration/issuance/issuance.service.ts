@@ -1,32 +1,46 @@
 import { createHash } from "node:crypto";
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { decodeJwt } from "jose";
-import { Request } from "express";
-import { v4 } from "uuid";
-import { Repository } from "typeorm";
-import { AuditLogService } from "../../../audit-log/audit-log.service";
-import { TokenPayload } from "../../../auth/token.decorator";
-import { RegistrarService } from "../../../registrar/registrar.service";
-import { normalizeTrustListRefs } from "../../../trust/types";
 import {
-    extractRequestMeta,
+    BadRequestException,
+    Inject,
+    Injectable,
+    Logger,
+} from "@nestjs/common";
+import { decodeJwt } from "jose";
+import { v4 } from "uuid";
+import type { AuditLogRequestMeta } from "../../../audit-log/audit-log.service.js";
+import { AuditLogService } from "../../../audit-log/audit-log.service.js";
+import {
     getChangedFields,
     resolveAuditActor,
-} from "../../../audit-log/audit-log-context.util";
-import { loadConfigDto } from "../../../shared/utils/config-file-loader.util";
-import { ConfigImportService } from "../../../platform/config-import/config-import.service";
+} from "../../../audit-log/audit-log-context.util.js";
+import { TokenPayload } from "../../../auth/token.decorator.js";
+import { ConfigImportService } from "../../../platform/config-import/config-import.service.js";
 import {
     ConfigImportOrchestratorService,
     ImportPhase,
-} from "../../../platform/config-import/config-import-orchestrator.service";
-import { FilesService } from "../../../storage/files.service";
-import { CredentialConfigService } from "../credentials/credential-config/credential-config.service";
-import { IssuerProvidedAttestation } from "./dto/issuer-registration-certificate.dto";
-import { DisplayInfo } from "./dto/display.dto";
-import { IssuanceDto } from "./dto/issuance.dto";
-import { IssuanceConfig } from "./entities/issuance-config.entity";
-import { IssuanceConfigSchema } from "./schemas/issuance.schema";
+} from "../../../platform/config-import/config-import-orchestrator.service.js";
+import { RegistrarService } from "../../../registrar/registrar.service.js";
+import { loadConfigDto } from "../../../shared/utils/config-file-loader.util.js";
+import { FilesService } from "../../../storage/files.service.js";
+import { normalizeTrustListRefs } from "../../../trust/types.js";
+import type { TrustListRef } from "../../../verifier/presentations/entities/presentation-config.entity.js";
+import { CredentialConfigService } from "../credentials/credential-config/credential-config.service.js";
+import type { IssuanceConfiguration as IssuanceConfig } from "./domain/issuance-configuration.js";
+import {
+    REMOVED_CHAINED_VP_MESSAGE,
+    usesRemovedChainedVp,
+} from "./domain/removed-authorization-servers.js";
+import { DisplayInfo } from "./dto/display.dto.js";
+import { IssuanceDto } from "./dto/issuance.dto.js";
+import { IssuerProvidedAttestation } from "./dto/issuer-registration-certificate.dto.js";
+import {
+    ISSUANCE_CONFIG_REPOSITORY,
+    type IssuanceConfigRepository,
+} from "./ports/issuance-config.repository.js";
+import {
+    IssuanceConfigSchema,
+    unsupportedFederationOption,
+} from "./schemas/issuance.schema.js";
 /**
  * Service for managing issuance configurations.
  * It provides methods to get, store, and delete issuance configurations.
@@ -41,8 +55,8 @@ export class IssuanceService {
      * @param credentialsConfigService
      */
     constructor(
-        @InjectRepository(IssuanceConfig)
-        private readonly issuanceConfigRepo: Repository<IssuanceConfig>,
+        @Inject(ISSUANCE_CONFIG_REPOSITORY)
+        private readonly issuanceConfigRepo: IssuanceConfigRepository,
         private readonly filesService: FilesService,
         private readonly credentialConfigService: CredentialConfigService,
         private readonly registrarService: RegistrarService,
@@ -77,7 +91,7 @@ export class IssuanceService {
                 },
                 deleteExisting: (tid) =>
                     this.issuanceConfigRepo
-                        .delete({ tenantId: tid })
+                        .deleteForTenant(tid)
                         .then(() => undefined),
                 loadData: (filePath) =>
                     loadConfigDto(filePath, IssuanceConfigSchema),
@@ -122,7 +136,7 @@ export class IssuanceService {
      * @returns
      */
     public getIssuanceConfiguration(tenantId: string) {
-        return this.issuanceConfigRepo.findOneByOrFail({ tenantId });
+        return this.issuanceConfigRepo.getForTenant(tenantId);
     }
 
     /**
@@ -132,11 +146,10 @@ export class IssuanceService {
         tenantId: string,
         registrationCertificateCache: IssuanceConfig["registrationCertificateCache"],
     ): Promise<void> {
-        await this.issuanceConfigRepo.save({
-            ...(await this.getIssuanceConfiguration(tenantId)),
+        await this.issuanceConfigRepo.updateRegistrationCertificateCache(
             tenantId,
             registrationCertificateCache,
-        });
+        );
     }
 
     /**
@@ -257,7 +270,7 @@ export class IssuanceService {
         tenantId: string,
         value: Partial<IssuanceDto>,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         if (value.display) {
             value.display = await this.replaceUrl(value.display, tenantId);
@@ -287,6 +300,14 @@ export class IssuanceService {
             Object.entries(value).filter(([, v]) => v !== undefined),
         );
 
+        // The HTTP API does not validate `federation` against the schema.
+        const federationProblem = unsupportedFederationOption(
+            (filteredValue as Partial<IssuanceDto>).federation,
+        );
+        if (federationProblem) {
+            throw new BadRequestException(federationProblem);
+        }
+
         const hasIncomingAuthorizationServers =
             Object.prototype.hasOwnProperty.call(
                 filteredValue,
@@ -311,6 +332,14 @@ export class IssuanceService {
         if (configuredAuthorizationServers.length < 1) {
             throw new BadRequestException(
                 "At least one authorization server must be configured",
+            );
+        }
+
+        const removedServer =
+            configuredAuthorizationServers.find(usesRemovedChainedVp);
+        if (removedServer) {
+            throw new BadRequestException(
+                `Authorization server '${removedServer.id}': ${REMOVED_CHAINED_VP_MESSAGE}`,
             );
         }
 
@@ -373,7 +402,7 @@ export class IssuanceService {
                 ),
                 before,
                 after: this.sanitizeIssuanceConfigForLog(saved),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -383,6 +412,38 @@ export class IssuanceService {
     private sanitizeIssuanceConfigForLog(
         config: IssuanceConfig,
     ): Record<string, unknown> {
+        const sanitizeWalletProviderTrustLists = (
+            value: TrustListRef[] | null | undefined,
+        ) => {
+            let walletProviderTrustListsRaw: ReturnType<
+                typeof normalizeTrustListRefs
+            >;
+            try {
+                walletProviderTrustListsRaw = normalizeTrustListRefs(value);
+            } catch {
+                walletProviderTrustListsRaw = [];
+            }
+            return walletProviderTrustListsRaw.map((ref) => ({
+                url: ref.url,
+                hasVerifierKey: !!ref.verifierKey,
+                hasVerifierKeyPem: !!ref.verifierKeyPem,
+                hasVerifierX509Der: !!ref.verifierX509Der,
+            }));
+        };
+
+        const authorizationServers = config.authorizationServers?.map(
+            (server) => ({
+                ...server,
+                walletProviderTrustLists: sanitizeWalletProviderTrustLists(
+                    (
+                        server as typeof server & {
+                            walletProviderTrustLists?: TrustListRef[];
+                        }
+                    ).walletProviderTrustLists,
+                ),
+            }),
+        );
+
         let walletProviderTrustListsRaw: ReturnType<
             typeof normalizeTrustListRefs
         >;
@@ -397,6 +458,7 @@ export class IssuanceService {
             (ref) => ({
                 url: ref.url,
                 hasVerifierKey: !!ref.verifierKey,
+                hasVerifierKeyPem: !!ref.verifierKeyPem,
                 hasVerifierX509Der: !!ref.verifierX509Der,
             }),
         );
@@ -424,7 +486,7 @@ export class IssuanceService {
             walletAttestationRequired: config.walletAttestationRequired,
             walletProviderTrustLists,
             signingKeyId: config.signingKeyId,
-            authorizationServers: config.authorizationServers,
+            authorizationServers,
             federation: config.federation,
             registrationCertificate,
             registrationCertificateCache,
@@ -432,6 +494,7 @@ export class IssuanceService {
             credentialResponseEncryption: config.credentialResponseEncryption,
             credentialRequestEncryption: config.credentialRequestEncryption,
             txCodeMaxAttempts: config.txCodeMaxAttempts,
+            offerLifetimeSeconds: config.offerLifetimeSeconds,
         };
     }
 

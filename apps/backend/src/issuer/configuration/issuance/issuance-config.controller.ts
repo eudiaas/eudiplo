@@ -1,13 +1,26 @@
-import { Body, Controller, Get, Post, Req } from "@nestjs/common";
+import { Body, Controller, Get, Post } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Request } from "express";
-import { Role } from "../../../auth/roles/role.enum";
-import { Secured } from "../../../auth/secure.decorator";
-import { Token, TokenPayload } from "../../../auth/token.decorator";
-import { IssuanceDto } from "./dto/issuance.dto";
-import { UpdateIssuanceDto } from "./dto/update-issuance.dto";
-import { IssuanceConfig } from "./entities/issuance-config.entity";
-import { IssuanceService } from "./issuance.service";
+import type { AuditLogRequestMeta } from "../../../audit-log/audit-log.service.js";
+import { AuditMeta } from "../../../audit-log/audit-log-context.util.js";
+import { Role } from "../../../auth/roles/role.enum.js";
+import { Secured } from "../../../auth/secure.decorator.js";
+import { Token, TokenPayload } from "../../../auth/token.decorator.js";
+import { createConfigBodyPipe } from "../../../shared/common/zod/zod-schema.util.js";
+import type { IssuanceConfiguration } from "./domain/issuance-configuration.js";
+import { IssuanceDto } from "./dto/issuance.dto.js";
+import { UpdateIssuanceDto } from "./dto/update-issuance.dto.js";
+import { IssuanceConfig } from "./entities/issuance-config.entity.js";
+import { IssuanceService } from "./issuance.service.js";
+import { IssuanceConfigSchema } from "./schemas/issuance.schema.js";
+
+/** Fields a GET response adds to the configuration. */
+const readOnly = [
+    "tenantId",
+    "tenant",
+    "registrationCertificateCache",
+    "createdAt",
+    "updatedAt",
+];
 
 @ApiTags("Issuer")
 @Secured([Role.Issuances])
@@ -24,7 +37,7 @@ export class IssuanceConfigController {
     @ApiResponse({ status: 200, type: IssuanceConfig })
     getIssuanceConfigurations(
         @Token() user: TokenPayload,
-    ): Promise<IssuanceConfig> {
+    ): Promise<IssuanceConfiguration> {
         return this.issuanceService
             .getIssuanceConfiguration(user.entity!.id)
             .catch(() =>
@@ -45,15 +58,22 @@ export class IssuanceConfigController {
     @ApiBody({ type: UpdateIssuanceDto })
     @ApiResponse({ status: 200, type: IssuanceConfig })
     storeIssuanceConfiguration(
-        @Body() config: UpdateIssuanceDto,
+        // The stored configuration is updated field by field.
+        @Body(
+            createConfigBodyPipe(IssuanceConfigSchema, {
+                readOnly,
+                partial: true,
+            }),
+        )
+        config: UpdateIssuanceDto,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
         return this.issuanceService.storeIssuanceConfiguration(
             user.entity!.id,
             config,
             user,
-            req,
+            requestMeta,
         );
     }
 
@@ -78,7 +98,7 @@ export class IssuanceConfigController {
     })
     reissueRegistrationCertificate(
         @Token() user: TokenPayload,
-    ): Promise<IssuanceConfig> {
+    ): Promise<IssuanceConfiguration> {
         return this.issuanceService.reissueRegistrationCertificate(
             user.entity!.id,
         );

@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { AppModule } from "../src/app.module";
+import { AppModule } from "../src/app.module.js";
 
 describe("Authentication (e2e)", () => {
     let app: INestApplication;
@@ -25,7 +25,7 @@ describe("Authentication (e2e)", () => {
     });
 
     afterAll(async () => {
-        await app.close();
+        await app?.close();
     });
 
     test("should get OAuth2 token with valid client credentials in request body", async () => {

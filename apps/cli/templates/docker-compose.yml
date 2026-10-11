@@ -2,12 +2,12 @@
 #
 # Usage:
 #   docker compose up                              # Minimal: just EUDIPLO (SQLite, local storage)
-#   docker compose --profile standard up           # Standard: + Postgres + MinIO
-#   docker compose --profile full up               # Full: + Postgres + MinIO + Vault
+#   docker compose --profile standard up           # Standard: + Postgres + RustFS
+#   docker compose --profile full up               # Full: + Postgres + RustFS + Vault
 #   docker compose --profile postgres --profile s3 up  # Custom components
 #
 # For more information, see the documentation:
-# https://openwallet-foundation.github.io/eudiplo/docs/latest/deployment/docker-compose/
+# https://docs.eudiplo.dev/operate/docker-compose/
 
 services:
   # =============================================================================
@@ -15,7 +15,7 @@ services:
   # =============================================================================
 
   eudiplo:
-    image: ${EUDIPLO_IMAGE:-ghcr.io/openwallet-foundation/eudiplo:latest}
+    image: ${EUDIPLO_IMAGE:-ghcr.io/eudiplo/eudiplo:latest}
     restart: always
     env_file:
       - ${EUDIPLO_ENV_FILE:-.env}
@@ -28,8 +28,8 @@ services:
       postgres:
         condition: service_healthy
         required: false
-      minio:
-        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
         required: false
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
@@ -41,7 +41,7 @@ services:
       - eudiplo-network
 
   eudiplo-client:
-    image: ${EUDIPLO_CLIENT_IMAGE:-ghcr.io/openwallet-foundation/eudiplo-client:latest}
+    image: ${EUDIPLO_CLIENT_IMAGE:-ghcr.io/eudiplo/eudiplo-client:latest}
     restart: always
     ports:
       - '${EUDIPLO_BIND_ADDRESS:-0.0.0.0}:4200:8080'
@@ -49,9 +49,10 @@ services:
       eudiplo:
         condition: service_healthy
     environment:
-      - API_BASE_URL=http://eudiplo:3000
-      # Uncomment to serve the client from a subpath behind a reverse proxy:
-      # - CLIENT_BASE_HREF=/eudiplo-client/
+      # Used by the browser only, to prefill the backend URL on the login page.
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:3000}
+      # Subpath behind a reverse proxy, for example /eudiplo-client/
+      - CLIENT_BASE_HREF=${CLIENT_BASE_HREF:-/}
     healthcheck:
       test: ['CMD', 'wget', '-qO', '/dev/null', 'http://localhost:8080']
       interval: 30s
@@ -62,7 +63,7 @@ services:
       - eudiplo-network
 
   # =============================================================================
-  # STANDARD PROFILE: PostgreSQL + MinIO
+  # STANDARD PROFILE: PostgreSQL + RustFS
   # =============================================================================
 
   postgres:
@@ -87,21 +88,23 @@ services:
     networks:
       - eudiplo-network
 
-  minio:
-    image: quay.io/minio/minio:latest
+  rustfs:
+    image: rustfs/rustfs:1.0.0
     restart: always
     profiles: ['s3', 'standard', 'full']
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      - '${EUDIPLO_BIND_ADDRESS:-0.0.0.0}:9000:9000'
+      - '${EUDIPLO_BIND_ADDRESS:-0.0.0.0}:9001:9001'
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
     volumes:
-      - minio-data:/data
-    command: server /data --console-address ":9001"
+      - rustfs-data:/data
+    command: ["/data"]
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/health/ready']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -109,24 +112,29 @@ services:
     networks:
       - eudiplo-network
 
-  # MinIO bucket initialization job
-  minio-init:
-    image: quay.io/minio/mc:latest
+  # S3 bucket initialization using the AWS CLI
+  rustfs-init:
+    image: amazon/aws-cli:2.37.4
     profiles: ['s3', 'standard', 'full']
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      MINIO_BUCKET: ${S3_BUCKET:-uploads}
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
-      mc mb -p local/$$MINIO_BUCKET || true;
-      mc anonymous set download local/$$MINIO_BUCKET || true;
-      echo 'Bucket created successfully';
-      "
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${S3_REGION:-us-east-1}
+      AWS_CONFIG_FILE: /tmp/aws-config
+      S3_BUCKET: ${S3_BUCKET:-uploads}
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        aws configure set default.s3.addressing_style path
+        s3() { aws --endpoint-url http://rustfs:9000 s3api "$$@"; }
+        s3 head-bucket --bucket "$$S3_BUCKET" 2>/dev/null || s3 create-bucket --bucket "$$S3_BUCKET"
+        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/*"]}]}' "$$S3_BUCKET" > /tmp/bucket-policy.json
+        s3 put-bucket-policy --bucket "$$S3_BUCKET" --policy file:///tmp/bucket-policy.json
+        echo 'Bucket initialized successfully'
     networks:
       - eudiplo-network
 
@@ -134,12 +142,16 @@ services:
   # FULL PROFILE: + HashiCorp Vault
   # =============================================================================
 
+  # Development mode: Vault keeps all data in memory, so the encryption key and
+  # any signing keys in it are lost when the container restarts. Nothing creates
+  # the encryption key, see
+  # https://docs.eudiplo.dev/operate/docker-compose#create-the-encryption-key-for-full
   vault:
     image: hashicorp/vault:latest
     restart: always
     profiles: ['vault', 'full']
     ports:
-      - '8200:8200'
+      - '${EUDIPLO_BIND_ADDRESS:-0.0.0.0}:8200:8200'
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-root}
       VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
@@ -164,7 +176,7 @@ volumes:
     driver: local
   postgres-data:
     driver: local
-  minio-data:
+  rustfs-data:
     driver: local
   vault-data:
     driver: local

@@ -38,14 +38,19 @@ export async function runDemo(
     const force = parsed.flags.force === true;
     const reset = parsed.flags.reset === true;
     const imageTagOverride =
-        readStringFlag(parsed.flags, "image-tag") ?? context.env.EUDIPLO_IMAGE_TAG;
+        readStringFlag(parsed.flags, "image-tag") ??
+        context.env.EUDIPLO_IMAGE_TAG;
 
     if (reset && !force) {
-        throw new Error("demo --reset requires --force to remove managed demo data.");
+        throw new Error(
+            "demo --reset requires --force to remove managed demo data.",
+        );
     }
 
     if (reset && (await demoProjectExists(projectDirectory))) {
-        context.stdout.write("Resetting demo deployment and removing managed demo volumes...\n");
+        context.stdout.write(
+            "Resetting demo deployment and removing managed demo volumes...\n",
+        );
         await drivers.compose.down?.({
             instanceName: "local",
             instance: {
@@ -58,6 +63,7 @@ export async function runDemo(
                 projectDirectory,
             },
             args: ["--volumes", "--remove-orphans"],
+            flags: {},
             context,
         });
     }
@@ -70,12 +76,13 @@ export async function runDemo(
     });
     const nextConfig = upsertInstance(config, "local", instance);
     await saveConfig(configPath, nextConfig);
-    context.stdout.write("Starting EUDIPLO demo with Docker Compose...\n");
+    context.stdout.write("Starting EUDIPLO demo with the Compose runtime...\n");
     const exitCode =
         (await drivers.compose.up?.({
             instanceName: "local",
             instance,
             args: [],
+            flags: {},
             context,
         })) ?? 1;
 
@@ -86,7 +93,9 @@ export async function runDemo(
         context.stdout.write("Demo credentials:\n");
         context.stdout.write("  Client ID: root\n");
         context.stdout.write("  Client Secret: root\n");
-        context.stdout.write(`Editable demo config: ${projectDirectory}/config/demo\n`);
+        context.stdout.write(
+            `Editable demo config: ${projectDirectory}/config/demo\n`,
+        );
     }
 
     return exitCode;

@@ -3,7 +3,7 @@ import type {
     ClaimFieldDefinition,
     ClaimMetadata,
     JsonSchema,
-} from "./types";
+} from "./types.js";
 
 const JSON_SCHEMA_DRAFT_2020_12 =
     "https://json-schema.org/draft/2020-12/schema";
@@ -13,6 +13,7 @@ type PathCursor = Record<string, unknown> | unknown[];
 
 function resolveChildPath(
     parentPath: Segment[],
+    parentType: ClaimFieldDefinition["type"],
     childPath: Segment[],
 ): Segment[] {
     if (childPath.length >= parentPath.length) {
@@ -22,6 +23,11 @@ function resolveChildPath(
         if (startsWithParent) {
             return childPath;
         }
+    }
+    // Children of an array field describe its items, as in the SDK: insert the
+    // item step unless the relative path already starts with one
+    if (parentType === "array" && typeof childPath[0] === "string") {
+        return [...parentPath, null, ...childPath];
     }
     return [...parentPath, ...childPath];
 }
@@ -37,7 +43,7 @@ function flattenFields(fields: ClaimFieldDefinition[]): ClaimFieldDefinition[] {
             const resolvedChildren: ClaimFieldDefinition[] = children.map(
                 (child) => ({
                     ...child,
-                    path: resolveChildPath(field.path, child.path),
+                    path: resolveChildPath(field.path, field.type, child.path),
                 }),
             );
             result.push(...flattenFields(resolvedChildren));
@@ -180,10 +186,29 @@ function mergeLeafSchema(existing: JsonSchema, next: JsonSchema): JsonSchema {
     if (existing.properties && Object.keys(existing.properties).length > 0) {
         merged.properties = existing.properties;
     }
+    // An explicit `additionalProperties` from the field's constraints wins over the strict default
+    if (
+        !Object.hasOwn(next, "additionalProperties") &&
+        Object.hasOwn(existing, "additionalProperties")
+    ) {
+        merged.additionalProperties = existing.additionalProperties;
+    }
     if (Array.isArray(existing.required) && existing.required.length > 0) {
         merged.required = existing.required;
     }
+    stripNonObjectKeywords(merged);
     return merged;
+}
+
+function stripNonObjectKeywords(schema: JsonSchema): void {
+    const type = typeof schema.type === "string" ? schema.type : undefined;
+    if (!type || type === "object") {
+        return;
+    }
+
+    delete schema.properties;
+    delete schema.additionalProperties;
+    delete schema.required;
 }
 
 function buildLeafSchema(field: ClaimFieldDefinition): JsonSchema {
@@ -223,6 +248,9 @@ function ensureSchemaNode(
         if (isArrayPathSegment(segment)) {
             if (cursor.type !== "array") {
                 cursor.type = "array";
+                delete cursor.properties;
+                delete cursor.additionalProperties;
+                delete cursor.required;
             }
 
             if (
@@ -233,10 +261,11 @@ function ensureSchemaNode(
                 cursor.items = {
                     type: "object",
                     properties: {},
+                    additionalProperties: false,
                 };
             }
 
-            cursor = cursor.items as JsonSchema;
+            cursor = markObjectStrict(cursor.items as JsonSchema);
             continue;
         }
 
@@ -247,13 +276,25 @@ function ensureSchemaNode(
             cursor.properties[key] = {
                 type: "object",
                 properties: {},
+                additionalProperties: false,
             };
         }
 
-        cursor = cursor.properties[key];
+        cursor = markObjectStrict(cursor.properties[key]);
     }
 
     return cursor;
+}
+
+// Objects with declared child claims reject unknown properties unless the field opted into free-form
+function markObjectStrict(node: JsonSchema): JsonSchema {
+    if (
+        node.type === "object" &&
+        !Object.hasOwn(node, "additionalProperties")
+    ) {
+        node.additionalProperties = false;
+    }
+    return node;
 }
 
 function ensureFrameNode(
@@ -295,6 +336,10 @@ function mergeArrayLeafSchema(
     if (parent.type !== "array") {
         parent.type = "array";
     }
+
+    delete parent.properties;
+    delete parent.additionalProperties;
+    delete parent.required;
 
     const existingItems =
         parent.items &&
@@ -412,6 +457,7 @@ export function buildJsonSchema(fields: ClaimFieldDefinition[]): JsonSchema {
         $schema: JSON_SCHEMA_DRAFT_2020_12,
         type: "object",
         properties: {},
+        additionalProperties: false,
     };
 
     for (const field of flattenFields(fields)) {

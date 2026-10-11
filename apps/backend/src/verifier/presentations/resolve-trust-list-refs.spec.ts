@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { PresentationsService } from "./presentations.service";
+import { TrustedAuthoritiesService } from "./trusted-authorities.service.js";
 
 /**
  * Seam test for the espuni fork's ETSI TS 119 612 XML fields.
  *
- * v7 resolves `trusted_authorities` values through
- * `resolveTrustListRefsForTenant`, which spreads `...ref`. The fork's XML
+ * `trusted_authorities` values are resolved through
+ * `resolveTrustListRefsForTenant` (in `TrustedAuthoritiesService` since v9,
+ * #1081), which spreads `...ref`. The fork's XML
  * settings (format, serviceTypeMap, acceptedServiceStatus) and the pinned
  * signer ride on the ref itself, so they must survive that pass untouched —
  * if they do not, the verifier silently falls back to the LoTE path and the
@@ -17,8 +18,8 @@ import { PresentationsService } from "./presentations.service";
 describe("resolveTrustListRefsForTenant — espuni XML fields", () => {
     // The external-URL path touches no injected dependency.
     const service = Object.create(
-        PresentationsService.prototype,
-    ) as PresentationsService;
+        TrustedAuthoritiesService.prototype,
+    ) as TrustedAuthoritiesService;
     const tenantHost = "https://tenant.example";
 
     it("resolves <TENANT_URL> and preserves the etsi-xml settings", async () => {

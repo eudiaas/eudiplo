@@ -1,41 +1,21 @@
 import { ApiExtraModels, ApiPropertyOptional } from "@nestjs/swagger";
 import { createZodDto } from "nestjs-zod";
 import { z } from "zod";
+import { WebhookConfig } from "../../../webhook/webhook.dto.js";
+import { TransactionData } from "../../presentations/entities/presentation-config.entity.js";
+import { TransactionDataSchema } from "../../presentations/schemas/presentation-config.schema.js";
 import {
-    WebhookConfig,
-    WebhookConfigSchema,
-} from "../../../webhook/webhook.dto";
+    ClientIdScheme,
+    PresentationRequestSchema,
+    ResponseType,
+} from "./presentation-request.schema.js";
 
-/**
- * Values for the type of response expected from the presentation request.
- */
-export const ResponseType = {
-    URI: "uri",
-    DC_API: "dc-api",
-    ISO_18013_7: "iso-18013-7",
-} as const;
+export { ClientIdScheme, ResponseType } from "./presentation-request.schema.js";
 
 export type ResponseTypeValue =
     (typeof ResponseType)[keyof typeof ResponseType];
-
-/**
- * DTO for the presentation request containing the response type and request ID.
- */
-const PresentationRequestSchema = z
-    .object({
-        response_type: z.union([
-            z.literal(ResponseType.URI),
-            z.literal(ResponseType.DC_API),
-            z.literal(ResponseType.ISO_18013_7),
-        ]),
-        requestId: z.string(),
-        webhook: WebhookConfigSchema.optional(),
-        redirectUri: z.string().optional(),
-        expected_origin: z.string().optional(),
-        transaction_data: z.array(z.record(z.string(), z.unknown())).optional(),
-        skewSeconds: z.number().min(0).optional(),
-    })
-    .strict();
+export type ClientIdSchemeValue =
+    (typeof ClientIdScheme)[keyof typeof ClientIdScheme];
 
 type PresentationRequestConstructor = new () => PresentationRequestData;
 
@@ -49,11 +29,14 @@ interface PresentationRequestData {
     webhook?: WebhookConfig;
     redirectUri?: string;
     expected_origin?: string;
-    transaction_data?: Record<string, unknown>[];
+    transaction_data?: z.infer<typeof TransactionDataSchema>[];
     skewSeconds?: number;
+    clientIdScheme?: ClientIdSchemeValue;
+    reference?: string;
 }
 
-@ApiExtraModels(WebhookConfig)
+/** DTO for the presentation request containing the response type and request ID. */
+@ApiExtraModels(WebhookConfig, TransactionData)
 export class PresentationRequest
     extends PresentationRequestBase
     implements PresentationRequestData
@@ -92,13 +75,30 @@ export class PresentationRequest
      * Optional transaction data to include in the OID4VP request.
      * If provided, this will override the transaction_data from the presentation configuration.
      */
-    transaction_data?: Record<string, unknown>[];
+    @ApiPropertyOptional({ type: () => [TransactionData] })
+    transaction_data?: z.infer<typeof TransactionDataSchema>[];
 
     /**
      * Optional clock skew tolerance for this presentation offer, in seconds.
      * If provided, this overrides the presentation configuration for the created session.
      */
     skewSeconds?: number;
+
+    /**
+     * Client identifier scheme for the OID4VP request. Defaults to x509_hash.
+     */
+    @ApiPropertyOptional({
+        enum: ClientIdScheme,
+        default: ClientIdScheme.X509_HASH,
+    })
+    clientIdScheme?: ClientIdSchemeValue;
+
+    /**
+     * Caller reference stored with the session, e.g. an order or case id.
+     * Stored in plaintext and kept on anonymization: never put personal data here.
+     * @example "order-4711"
+     */
+    reference?: string;
 }
 
 export type PresentationRequestOptions = Pick<
@@ -108,6 +108,8 @@ export type PresentationRequestOptions = Pick<
     | "expected_origin"
     | "transaction_data"
     | "skewSeconds"
+    | "clientIdScheme"
+    | "reference"
 > & {
     session?: string;
 };

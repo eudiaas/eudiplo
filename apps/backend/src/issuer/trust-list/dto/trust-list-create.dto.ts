@@ -4,7 +4,7 @@ import {
     getSchemaPath,
     OmitType,
 } from "@nestjs/swagger";
-import { TrustList } from "../entities/trust-list.entity";
+import { TrustList } from "../entities/trust-list.entity.js";
 
 /**
  * Entity information for certificates (metadata for TEInformation)
@@ -38,6 +38,14 @@ class InternalTrustListEntity {
 
     revocationKeyChainId!: string;
 
+    @ApiProperty({
+        enum: ["attestation-provider", "wallet-provider"],
+        required: false,
+        default: "attestation-provider",
+        description: "Provider role published in the trust list.",
+    })
+    providerType?: "attestation-provider" | "wallet-provider";
+
     info!: TrustListEntityInfo;
 }
 
@@ -51,6 +59,14 @@ class ExternalTrustListEntity {
     issuerCertPem!: string;
 
     revocationCertPem!: string;
+
+    @ApiProperty({
+        enum: ["attestation-provider", "wallet-provider"],
+        required: false,
+        default: "attestation-provider",
+        description: "Provider role published in the trust list.",
+    })
+    providerType?: "attestation-provider" | "wallet-provider";
 
     info!: TrustListEntityInfo;
 }

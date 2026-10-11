@@ -16,22 +16,26 @@ import {
     ApiResponse,
     ApiTags,
 } from "@nestjs/swagger";
-import { Role } from "../../auth/roles/role.enum";
-import { Secured } from "../../auth/secure.decorator";
-import { Token, TokenPayload } from "../../auth/token.decorator";
-import { KeyChainCreateDto } from "./dto/key-chain-create.dto";
-import { KeyChainExportDto } from "./dto/key-chain-export.dto";
-import { KeyChainIdResponseDto } from "./dto/key-chain-id-response.dto";
-import { KeyChainImportDto } from "./dto/key-chain-import.dto";
-import { KeyChainResponseDto } from "./dto/key-chain-response.dto";
-import { KeyChainUpdateDto } from "./dto/key-chain-update.dto";
-import { ProviderHealthResponseDto } from "./dto/provider-health-response.dto";
-import { KmsProvidersResponseDto } from "./dto/kms-providers-response.dto";
-import { KmsConfigDto } from "./dto/kms-config.dto";
-import { KmsTenantConfigResponseDto } from "./dto/kms-tenant-config-response.dto";
-import { KeyUsageType } from "./types/key-usage-type";
-import { KeyChainService } from "./key-chain.service";
-import { KmsTenantConfigService } from "./kms/kms-tenant-config.service";
+import { Role } from "../../auth/roles/role.enum.js";
+import { Secured } from "../../auth/secure.decorator.js";
+import { requireTenantContext } from "../../auth/tenant-context.util.js";
+import { Token, TokenPayload } from "../../auth/token.decorator.js";
+import { KeyChainCreateDto } from "./dto/key-chain-create.dto.js";
+import { KeyChainExportDto } from "./dto/key-chain-export.dto.js";
+import { KeyChainIdResponseDto } from "./dto/key-chain-id-response.dto.js";
+import { KeyChainImportDto } from "./dto/key-chain-import.dto.js";
+import { KeyChainResponseDto } from "./dto/key-chain-response.dto.js";
+import { KeyChainUpdateDto } from "./dto/key-chain-update.dto.js";
+import { KmsConfigDto } from "./dto/kms-config.dto.js";
+import { KmsProvidersResponseDto } from "./dto/kms-providers-response.dto.js";
+import { KmsTenantConfigResponseDto } from "./dto/kms-tenant-config-response.dto.js";
+import { ProviderHealthResponseDto } from "./dto/provider-health-response.dto.js";
+import { KeyChainService } from "./key-chain.service.js";
+import { KmsTenantConfigService } from "./kms/kms-tenant-config.service.js";
+import { KeyUsageType } from "./types/key-usage-type.js";
+
+const TENANT_ADMIN_REQUIRED =
+    "The caller lacks the `tenant:admin` or `tenants:manage` role or a tenant context.";
 
 /**
  * KeyChainController manages unified key chains.
@@ -81,31 +85,41 @@ export class KeyChainController {
         return this.keyChainService.getProviderHealth(token.entity!.id);
     }
 
+    /**
+     * The KMS provider configuration contains provider credentials, so it
+     * requires the same roles as the configuration export.
+     */
     @Get("providers/config")
+    @Secured([Role.Tenants, Role.TenantAdmin])
     @ApiOperation({
         summary: "Get tenant KMS provider configuration",
         description:
-            "Returns tenant-specific KMS config (if present) and the effective merged runtime config.",
+            "Returns tenant-specific KMS config (if present) and the effective merged runtime config. Credentials are returned as `<redacted>`; `${ENV_VAR}` placeholders of the tenant file are returned as stored. Requires the `tenant:admin` or `tenants:manage` role.",
     })
     @ApiResponse({
         status: 200,
         description: "Tenant and effective KMS configuration.",
         type: KmsTenantConfigResponseDto,
     })
+    @ApiResponse({ status: 403, description: TENANT_ADMIN_REQUIRED })
     getTenantKmsConfig(
         @Token() token: TokenPayload,
     ): KmsTenantConfigResponseDto {
-        const tenantId = token.entity!.id;
+        const tenantId = requireTenantContext(token);
         return {
-            tenantConfig: this.kmsTenantConfigService.getTenantConfig(tenantId),
+            tenantConfig:
+                this.kmsTenantConfigService.getTenantConfigView(tenantId),
             effectiveConfig:
-                this.kmsTenantConfigService.getEffectiveConfig(tenantId),
+                this.kmsTenantConfigService.getEffectiveConfigView(tenantId),
         };
     }
 
     @Put("providers/config")
+    @Secured([Role.Tenants, Role.TenantAdmin])
     @ApiOperation({
         summary: "Create or replace tenant KMS provider configuration",
+        description:
+            "A credential sent as `<redacted>` keeps the stored value of the provider with the same `id` and `type`; send a new value or a `${ENV_VAR}` placeholder to replace it. `<redacted>` for a credential that is not stored is rejected with 400. The response is redacted like GET. Requires the `tenant:admin` or `tenants:manage` role.",
     })
     @ApiBody({ type: KmsConfigDto })
     @ApiResponse({
@@ -113,42 +127,48 @@ export class KeyChainController {
         description: "Updated tenant KMS config.",
         type: KmsTenantConfigResponseDto,
     })
+    @ApiResponse({ status: 403, description: TENANT_ADMIN_REQUIRED })
     updateTenantKmsConfig(
         @Token() token: TokenPayload,
         @Body() body: KmsConfigDto,
     ): KmsTenantConfigResponseDto {
-        const tenantId = token.entity!.id;
-        const effectiveConfig = this.kmsTenantConfigService.saveTenantConfig(
-            tenantId,
-            body,
-        );
+        const tenantId = requireTenantContext(token);
+        this.kmsTenantConfigService.updateTenantConfig(tenantId, body);
 
         return {
-            tenantConfig: this.kmsTenantConfigService.getTenantConfig(tenantId),
-            effectiveConfig,
+            tenantConfig:
+                this.kmsTenantConfigService.getTenantConfigView(tenantId),
+            effectiveConfig:
+                this.kmsTenantConfigService.getEffectiveConfigView(tenantId),
         };
     }
 
     @Delete("providers/config")
+    @Secured([Role.Tenants, Role.TenantAdmin])
     @ApiOperation({
         summary: "Delete tenant KMS provider configuration",
         description:
-            "Removes <CONFIG_FOLDER>/<tenantId>/kms.json and falls back to global KMS config.",
+            "Removes <CONFIG_FOLDER>/<tenantId>/kms.json and falls back to global KMS config. Requires the `tenant:admin` or `tenants:manage` role.",
     })
     @ApiResponse({
         status: 204,
         description: "Tenant-specific KMS config removed.",
     })
+    @ApiResponse({ status: 403, description: TENANT_ADMIN_REQUIRED })
     @HttpCode(204)
     deleteTenantKmsConfig(@Token() token: TokenPayload): void {
-        this.kmsTenantConfigService.deleteTenantConfig(token.entity!.id);
+        this.kmsTenantConfigService.deleteTenantConfig(
+            requireTenantContext(token),
+        );
     }
 
     /**
-     * List all key chains for the tenant.
+     * List user-manageable signing key chains for the tenant.
      */
     @Get()
-    @ApiOperation({ summary: "List all key chains for the tenant" })
+    @ApiOperation({
+        summary: "List user-manageable signing key chains for the tenant",
+    })
     @ApiResponse({
         status: 200,
         description: "List of key chains",
@@ -188,25 +208,29 @@ export class KeyChainController {
     /**
      * Export a key chain in config-import-compatible format.
      * The response includes private key material and can be saved as a JSON file
-     * for provisioning via the config import mechanism.
+     * for provisioning via the config import mechanism. Because of that it
+     * requires the same roles as the configuration export instead of the
+     * key chain management roles.
      */
     @Get(":id/export")
+    @Secured([Role.Tenants, Role.TenantAdmin])
     @ApiOperation({
         summary: "Export a key chain in config-import format",
         description:
-            "Returns the key chain including private key material in the same format used by config import JSON files.",
+            "Returns the key chain in the same format used by config import JSON files. For keys held in the database (`db` provider) the response includes the private key; for external KMS providers only the public key is returned because the private key never leaves the KMS. Requires the `tenant:admin` or `tenants:manage` role.",
     })
     @ApiResponse({
         status: 200,
         description: "Key chain export data",
         type: KeyChainExportDto,
     })
+    @ApiResponse({ status: 403, description: TENANT_ADMIN_REQUIRED })
     @ApiResponse({ status: 404, description: "Key chain not found" })
     export(
         @Token() token: TokenPayload,
         @Param("id") id: string,
     ): Promise<KeyChainExportDto> {
-        return this.keyChainService.export(token.entity!.id, id);
+        return this.keyChainService.export(requireTenantContext(token), id);
     }
 
     /**

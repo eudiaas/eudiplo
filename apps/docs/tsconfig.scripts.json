@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.scripts.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true
+  },
+  "include": [
+    "scripts/generate-schema-docs.ts",
+    "scripts/generate-roles-docs.ts",
+    "scripts/schema-docs/**/*.ts",
+    "scripts/check-sidebar-orphans.ts"
+  ]
+}

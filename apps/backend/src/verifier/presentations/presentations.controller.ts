@@ -7,28 +7,32 @@ import {
     Param,
     Patch,
     Post,
-    Req,
 } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Request } from "express";
-import { Role } from "../../auth/roles/role.enum";
-import { Secured } from "../../auth/secure.decorator";
-import { Token, TokenPayload } from "../../auth/token.decorator";
-import { CredentialIssuerMetadataDto } from "../../issuer/issuance/oid4vci/well-known/dto/credential-issuer-metadata.dto";
-import { SchemaMetadataResponseDto } from "../../registrar/schema-metadata/dto/schema-metadata.dto";
-import { PresentationConfigCreateDto } from "./dto/presentation-config-create.dto";
-import { ResolvedSchemaMetadataResponseDto } from "./dto/resolved-schema-metadata-response.dto";
-import { PresentationConfigUpdateDto } from "./dto/presentation-config-update.dto";
-import { ResolveIssuerMetadataDto } from "./dto/resolve-issuer-metadata.dto";
-import { ResolveSchemaMetadataDto } from "./dto/resolve-schema-metadata.dto";
-import { ResolveSchemaMetadataJwtDto } from "./dto/resolve-schema-metadata-jwt.dto";
-import { PresentationConfig } from "./entities/presentation-config.entity";
-import { PresentationsService } from "./presentations.service";
+import type { AuditLogRequestMeta } from "../../audit-log/audit-log.service.js";
+import { AuditMeta } from "../../audit-log/audit-log-context.util.js";
+import { Role } from "../../auth/roles/role.enum.js";
+import { Secured } from "../../auth/secure.decorator.js";
+import { Token, TokenPayload } from "../../auth/token.decorator.js";
+import { CredentialIssuerMetadataDto } from "../../issuer/issuance/oid4vci/well-known/dto/credential-issuer-metadata.dto.js";
+import { SchemaMetadataResponseDto } from "../../registrar/schema-metadata/dto/schema-metadata.dto.js";
+import { MetadataImportService } from "./configuration/metadata-import.service.js";
+import { PresentationConfigService } from "./configuration/presentation-config.service.js";
+import { PresentationConfigCreateDto } from "./dto/presentation-config-create.dto.js";
+import { PresentationConfigUpdateDto } from "./dto/presentation-config-update.dto.js";
+import { ResolveIssuerMetadataDto } from "./dto/resolve-issuer-metadata.dto.js";
+import { ResolveSchemaMetadataDto } from "./dto/resolve-schema-metadata.dto.js";
+import { ResolveSchemaMetadataJwtDto } from "./dto/resolve-schema-metadata-jwt.dto.js";
+import { ResolvedSchemaMetadataResponseDto } from "./dto/resolved-schema-metadata-response.dto.js";
+import { PresentationConfig } from "./entities/presentation-config.entity.js";
 
 @ApiTags("Verifier")
 @Controller("verifier/config")
 export class PresentationManagementController {
-    constructor(private readonly presentationsService: PresentationsService) {}
+    constructor(
+        private readonly presentationConfigService: PresentationConfigService,
+        private readonly metadataImportService: MetadataImportService,
+    ) {}
 
     /**
      * Returns the presentation request configurations.
@@ -37,7 +41,7 @@ export class PresentationManagementController {
     @Secured([Role.Presentations, Role.PresentationRequest])
     @Get()
     configuration(@Token() user: TokenPayload) {
-        return this.presentationsService.getPresentationConfigs(
+        return this.presentationConfigService.getPresentationConfigs(
             user.entity!.id,
         );
     }
@@ -64,7 +68,7 @@ export class PresentationManagementController {
         description: "Invalid issuer URL or metadata could not be resolved",
     })
     async resolveIssuerMetadata(@Body() body: ResolveIssuerMetadataDto) {
-        return this.presentationsService.resolveCredentialIssuerMetadata(
+        return this.metadataImportService.resolveCredentialIssuerMetadata(
             body.issuerUrl,
         );
     }
@@ -93,7 +97,7 @@ export class PresentationManagementController {
             "Invalid URL, invalid response, or invalid schema metadata JWT",
     })
     async resolveSchemaMetadata(@Body() body: ResolveSchemaMetadataDto) {
-        return this.presentationsService.resolveSchemaMetadata(
+        return this.metadataImportService.resolveSchemaMetadata(
             body.schemaMetadataUrl,
         );
     }
@@ -121,7 +125,7 @@ export class PresentationManagementController {
         description: "Invalid JWT or invalid schema metadata",
     })
     async resolveSchemaMetadataJwt(@Body() body: ResolveSchemaMetadataJwtDto) {
-        return this.presentationsService.resolveSchemaMetadataJwt(
+        return this.metadataImportService.resolveSchemaMetadataJwt(
             body.signedJwt,
         );
     }
@@ -143,7 +147,7 @@ export class PresentationManagementController {
         type: [SchemaMetadataResponseDto],
     })
     listSchemaMetadataCatalog(@Token() user: TokenPayload) {
-        return this.presentationsService.listSchemaMetadataCatalog(
+        return this.metadataImportService.listSchemaMetadataCatalog(
             user.entity!.id,
         );
     }
@@ -159,13 +163,13 @@ export class PresentationManagementController {
     storePresentationConfig(
         @Body() config: PresentationConfigCreateDto,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
-        return this.presentationsService.storePresentationConfig(
+        return this.presentationConfigService.storePresentationConfig(
             user.entity!.id,
             config,
             user,
-            req,
+            requestMeta,
         );
     }
 
@@ -179,7 +183,7 @@ export class PresentationManagementController {
     @Get(":id")
     @ApiResponse({ status: 200, type: PresentationConfig })
     getConfiguration(@Param("id") id: string, @Token() user: TokenPayload) {
-        return this.presentationsService.getPresentationConfig(
+        return this.presentationConfigService.getPresentationConfig(
             id,
             user.entity!.id,
         );
@@ -199,14 +203,14 @@ export class PresentationManagementController {
         @Param("id") id: string,
         @Body() config: PresentationConfigUpdateDto,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
-        return this.presentationsService.updatePresentationConfig(
+        return this.presentationConfigService.updatePresentationConfig(
             id,
             user.entity!.id,
             config,
             user,
-            req,
+            requestMeta,
         );
     }
 
@@ -225,13 +229,13 @@ export class PresentationManagementController {
     deleteConfiguration(
         @Param("id") id: string,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
-        return this.presentationsService.deletePresentationConfig(
+        return this.presentationConfigService.deletePresentationConfig(
             id,
             user.entity!.id,
             user,
-            req,
+            requestMeta,
         );
     }
 
@@ -260,7 +264,7 @@ export class PresentationManagementController {
         @Param("id") id: string,
         @Token() user: TokenPayload,
     ) {
-        return this.presentationsService.reissueRegistrationCertificate(
+        return this.presentationConfigService.reissueRegistrationCertificate(
             id,
             user.entity!.id,
         );

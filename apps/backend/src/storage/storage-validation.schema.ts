@@ -1,5 +1,5 @@
-import * as Joi from "joi";
 import { join } from "node:path/posix";
+import Joi from "joi";
 
 export const STORAGE_VALIDATION_SCHEMA = Joi.object({
     STORAGE_DRIVER: Joi.string()
@@ -15,7 +15,11 @@ export const STORAGE_VALIDATION_SCHEMA = Joi.object({
             ),
         })
         .description("The directory to store files in when using local storage")
-        .meta({ group: "storage", order: 20 }),
+        .meta({
+            group: "storage",
+            order: 20,
+            defaultText: "`<FOLDER>/uploads`",
+        }),
     S3_REGION: Joi.string()
         .when(Joi.ref("STORAGE_DRIVER"), {
             is: "s3",
@@ -33,16 +37,20 @@ export const STORAGE_VALIDATION_SCHEMA = Joi.object({
     S3_ACCESS_KEY_ID: Joi.string()
         .when(Joi.ref("STORAGE_DRIVER"), {
             is: "s3",
-            then: Joi.required(),
+            then: Joi.optional(),
         })
-        .description("The access key ID for the S3 bucket")
+        .description(
+            "The access key ID for the S3 bucket. Optional when using IRSA or instance profile credentials.",
+        )
         .meta({ group: "storage", order: 50 }),
     S3_SECRET_ACCESS_KEY: Joi.string()
         .when(Joi.ref("STORAGE_DRIVER"), {
             is: "s3",
-            then: Joi.required(),
+            then: Joi.optional(),
         })
-        .description("The secret access key for the S3 bucket")
+        .description(
+            "The secret access key for the S3 bucket. Optional when using IRSA or instance profile credentials.",
+        )
         .meta({ group: "storage", order: 60 }),
     S3_ENDPOINT: Joi.string()
         .when(Joi.ref("STORAGE_DRIVER"), {

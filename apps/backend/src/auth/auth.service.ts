@@ -1,11 +1,11 @@
 import { Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { InternalClientsProvider } from "./client/adapters/internal-clients.service";
-import { CLIENTS_PROVIDER } from "./client/client.provider";
-import { OidcDiscoveryDto } from "./dto/oidc-discovery.dto";
-import { TokenResponse } from "./dto/token-response.dto";
-import { JwtService } from "./jwt.service";
-import { InternalTokenPayload } from "./token.decorator";
+import { InternalClientsProvider } from "./client/adapters/internal-clients.service.js";
+import { CLIENTS_PROVIDER } from "./client/client.provider.js";
+import { OidcDiscoveryDto } from "./dto/oidc-discovery.dto.js";
+import { TokenResponse } from "./dto/token-response.dto.js";
+import { JwtService } from "./jwt.service.js";
+import { InternalTokenPayload } from "./token.decorator.js";
 
 /**
  * Authentication Service
@@ -122,10 +122,13 @@ export class AuthService {
     getOidcDiscovery(): OidcDiscoveryDto {
         const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
         const oidc = this.configService.get<string>("OIDC");
+        const tokenEndpoint = oidc
+            ? `${oidc}/protocol/openid-connect/token`
+            : `${publicUrl}/api/oauth2/token`;
 
         return {
             issuer: oidc ?? publicUrl,
-            token_endpoint: `${publicUrl}/api/oauth2/token`,
+            token_endpoint: tokenEndpoint,
             jwks_uri: `${publicUrl}/.well-known/jwks.json`,
             response_types_supported: ["token"],
             grant_types_supported: ["client_credentials"],
@@ -142,8 +145,7 @@ export class AuthService {
             id_token_signing_alg_values_supported: ["ES256"],
             scopes_supported: ["openid"],
             claims_supported: ["iss", "sub", "aud", "exp", "iat"],
-            service_documentation:
-                "https://openwallet-foundation.github.io/eudiplo/docs/latest/",
+            service_documentation: "https://docs.eudiplo.dev/",
         };
     }
 }

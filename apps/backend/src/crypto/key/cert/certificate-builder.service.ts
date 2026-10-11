@@ -1,16 +1,31 @@
 import { Injectable } from "@nestjs/common";
 import * as x509 from "@peculiar/x509";
 import type { JWK } from "jose";
+import type {
+    KmsAdapter,
+    KmsKeyRef,
+    KmsSigningAlg,
+} from "../kms/kms-adapter.js";
 import {
     importPublicCryptoKey,
     makeKmsSigningKey,
-} from "../kms/kms-crypto-provider";
-import type { KmsAdapter, KmsKeyRef, KmsSigningAlg } from "../kms/kms-adapter";
+} from "../kms/kms-crypto-provider.js";
 
 const ECDSA_P256_SIGNATURE_ALG = {
     name: "ECDSA",
     hash: "SHA-256" as const,
 };
+
+/**
+ * Start of validity for generated certificates, rounded down to the full hour.
+ * Credential timestamps are rounded down to the hour as well, so a certificate
+ * starting at the exact creation time would not cover credentials signed within
+ * its first hour (ISO 18013-5 requires the MSO signed date to lie within it).
+ */
+export function certificateNotBefore(now: Date = new Date()): Date {
+    const hourMs = 60 * 60 * 1000;
+    return new Date(Math.floor(now.getTime() / hourMs) * hourMs);
+}
 
 /**
  * Pure X.509 certificate construction. The certificate signature is

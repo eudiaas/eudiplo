@@ -1,21 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { createZodDto } from "nestjs-zod";
-import { z } from "zod";
-import {
-    WebhookConfig,
-    WebhookConfigSchema,
-} from "../../../../webhook/webhook.dto";
-import {
-    ResponseType,
-    type ResponseTypeValue,
-} from "../../../../verifier/oid4vp/dto/presentation-request.dto";
+import type { SessionOfferRequest } from "../../../../session/domain/session-data.js";
+import type { ResponseTypeValue } from "../../../../verifier/oid4vp/dto/presentation-request.dto.js";
+import type { WebhookConfig } from "../../../../webhook/webhook.dto.js";
+import { type FlowType, OfferRequestSchema } from "./offer-request.schema.js";
 
-export const FlowType = {
-    AUTH_CODE: "authorization_code",
-    PRE_AUTH_CODE: "pre_authorized_code",
-} as const;
-
-export type FlowType = (typeof FlowType)[keyof typeof FlowType];
+export { FlowType } from "./offer-request.schema.js";
 
 /**
  * Inline claims source - claims provided directly in the request.
@@ -26,71 +16,6 @@ class InlineClaimsSource {
     claims!: Record<string, any>;
 }
 
-const InlineClaimsSourceSchema = z
-    .object({
-        type: z.literal("inline"),
-        claims: z.record(z.string(), z.unknown()),
-    })
-    .strict();
-
-const AttributeProviderClaimsSourceSchema = z
-    .object({
-        type: z.literal("attributeProvider"),
-        attributeProviderId: z.string(),
-    })
-    .strict();
-
-const WebhookClaimsSourceSchema = z
-    .object({
-        type: z.literal("webhook"),
-        webhook: WebhookConfigSchema,
-    })
-    .strict();
-
-const ClaimsSourceSchema = z.union([
-    InlineClaimsSourceSchema,
-    AttributeProviderClaimsSourceSchema,
-    WebhookClaimsSourceSchema,
-]);
-
-const OfferRequestSchema = z
-    .object({
-        response_type: z.union([
-            z.literal(ResponseType.URI),
-            z.literal(ResponseType.DC_API),
-            z.literal(ResponseType.ISO_18013_7),
-        ]),
-        flow: z.union([
-            z.literal(FlowType.AUTH_CODE),
-            z.literal(FlowType.PRE_AUTH_CODE),
-        ]),
-        tx_code: z.string().optional(),
-        tx_code_description: z.string().optional(),
-        credentialConfigurationIds: z.array(z.string()),
-        authorization_server: z.string().optional(),
-        credentialClaims: z.record(z.string(), ClaimsSourceSchema).optional(),
-        webhookEndpointId: z.string().optional(),
-    })
-    .strict()
-    .superRefine((data, ctx) => {
-        if (!data.credentialClaims) {
-            return;
-        }
-
-        const allowed = new Set(data.credentialConfigurationIds);
-        const invalidKeys = Object.keys(data.credentialClaims).filter(
-            (key) => !allowed.has(key),
-        );
-
-        if (invalidKeys.length > 0) {
-            ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                path: ["credentialClaims"],
-                message: `credentialClaims contains keys [${invalidKeys.join(", ")}] that are not in credentialConfigurationIds [${data.credentialConfigurationIds.join(", ")}]`,
-            });
-        }
-    });
-
 interface OfferRequestData {
     response_type: ResponseTypeValue;
     flow: FlowType;
@@ -100,6 +25,8 @@ interface OfferRequestData {
     authorization_server?: string;
     credentialClaims?: Record<string, ClaimsSource>;
     webhookEndpointId?: string;
+    offerLifetimeSeconds?: number;
+    reference?: string;
 }
 
 type OfferRequestConstructor = new () => OfferRequestData;
@@ -128,7 +55,10 @@ export type ClaimsSource =
     | AttributeProviderClaimsSource
     | WebhookClaimsSource;
 
-export class OfferRequestDto extends OfferRequestBase {
+export class OfferRequestDto
+    extends OfferRequestBase
+    implements SessionOfferRequest
+{
     @ApiProperty({
         examples: [
             {
@@ -235,6 +165,29 @@ export class OfferRequestDto extends OfferRequestBase {
      * ID of the webhook endpoint to notify about the status of the issuance process.
      */
     webhookEndpointId?: string;
+
+    /**
+     * Lifetime of this offer in seconds, overriding `offerLifetimeSeconds` of
+     * the issuance configuration.
+     */
+    @ApiPropertyOptional({
+        description:
+            "Lifetime of this offer in seconds. Overrides offerLifetimeSeconds of the issuance configuration. Without both, the offer does not expire.",
+        minimum: 1,
+        example: 600,
+    })
+    offerLifetimeSeconds?: number;
+
+    /**
+     * Caller reference stored with the session, e.g. an order or case id.
+     */
+    @ApiPropertyOptional({
+        description:
+            "Your own reference for this offer, e.g. an order or case id. Stored in plaintext, searchable in the session list, included in webhooks and kept when the session is anonymized. Must not contain personal data.",
+        maxLength: 255,
+        example: "order-4711",
+    })
+    reference?: string;
 }
 
 export class OfferResponse {

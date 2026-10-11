@@ -2,11 +2,15 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
 # HashiCorp Vault Component
-# Adds Vault for secure key management
+# Adds a Vault in development mode that holds the encryption key. It keeps all
+# data in memory: when the vault pod restarts, the key is gone and must be
+# restored from a backup. For evaluation only; use a persistent Vault in
+# production. See https://docs.eudiplo.dev/operate/kubernetes
 
 resources:
   - vault-deployment.yaml
   - vault-service.yaml
+  - vault-bootstrap-job.yaml
 
 # Patch EUDIPLO deployment to use Vault for key management
 patches:
@@ -25,18 +29,19 @@ patches:
               drop:
                 - ALL
             readOnlyRootFilesystem: true
+          env:
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: eudiplo-env
+                  key: VAULT_TOKEN
           command:
             - sh
             - -c
             - |
-              until wget -qO- http://vault:8200/v1/sys/health >/dev/null 2>&1; do
-                echo "waiting for vault..."; sleep 3;
+              until wget -qO- --header="X-Vault-Token: $VAULT_TOKEN" http://vault:8200/v1/secret/data/eudiplo/encryption-key >/dev/null 2>&1; do
+                echo "waiting for Vault encryption key..."; sleep 3;
               done
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: KM_TYPE
-          value: "vault"
       - op: add
         path: /spec/template/spec/containers/0/env/-
         value:

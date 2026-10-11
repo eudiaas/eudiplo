@@ -1,36 +1,37 @@
-import { ConflictException, Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
+import { ConflictException, Inject, Injectable } from "@nestjs/common";
 import type { Jwk } from "@openid4vc/oauth2";
 import type { CredentialConfigurationSupported } from "@openid4vc/openid4vci";
-import Ajv from "ajv/dist/2020";
-import { In, Repository } from "typeorm";
-import { CryptoImplementationService } from "../../../crypto/key/crypto-implementation/crypto-implementation.service";
-import { Session } from "../../../session/entities/session.entity";
-import { FederationTrustService } from "../../../trust/federation-trust.service";
-import { WebhookConfig } from "../../../webhook/webhook.dto";
-import { WebhookService } from "../../../webhook/webhook.service";
-import { VCT } from "../../issuance/oid4vci/metadata/dto/vct.dto";
-import { AttributeProviderEntity } from "../attribute-provider/entities/attribute-provider.entity";
-import { IssuanceService } from "../issuance/issuance.service";
-import { AuthorizationIdentity } from "./dto/authorization-identity";
-import { ClaimsWebhookResult } from "./dto/claims-webhook-result";
+import { CryptoImplementationService } from "../../../crypto/key/crypto-implementation/crypto-implementation.service.js";
+import type { SessionData as Session } from "../../../session/domain/session-data.js";
+import { VCT } from "../../issuance/oid4vci/metadata/dto/vct.dto.js";
+import { IssueCredential } from "./application/issue-credential.js";
 import {
-    CredentialConfig,
+    CREDENTIAL_SETTINGS,
+    type CredentialSettings,
+} from "./credential-settings.js";
+import {
+    assertClaimsMatchConfiguration,
+    InvalidCredentialClaims,
+} from "./domain/credential-claims-validation.js";
+import type { CredentialConfiguration as CredentialConfig } from "./domain/credential-configuration.js";
+import {
     CredentialFormat,
     CredentialProofType,
-    IssuerMetadataCredentialConfig,
-} from "./entities/credential.entity";
-import { MdocIssuerService } from "./issuer/mdoc-issuer/mdoc-issuer.service";
-import { SdjwtvcIssuerService } from "./issuer/sdjwtvc-issuer/sdjwtvc-issuer.service";
+} from "./entities/credential.entity.js";
+import { InvalidClaimsException } from "./exceptions/invalid-claims.exception.js";
 import {
+    CREDENTIAL_CONFIGURATION_REPOSITORY,
+    type CredentialConfigurationRepository,
+} from "./ports/credential-configuration.repository.js";
+import {
+    type BuildCredentialConfigOptions,
     buildMsoMdocConfig,
     buildSdJwtDcConfig,
     MSO_MDOC_FORMAT,
     type TypedCredentialConfig,
     toCredentialConfigurationSupported,
-} from "./types/credential-config-types";
-import { buildClaims, buildClaimsMetadata, buildJsonSchema } from "./utils";
+} from "./types/credential-config-types.js";
+import { buildClaimsMetadata } from "./utils/index.js";
 
 /**
  * Service for managing credentials and their configurations.
@@ -48,22 +49,16 @@ export class CredentialsService {
      * @param configService
      * @param credentialConfigRepo
      * @param webhookService
-     * @param sdjwtvcIssuerService
-     * @param mdocIssuerService
+     * @param credentialIssuerFormats
      * @param cryptoImplementationService
      */
     constructor(
-        private readonly configService: ConfigService,
-        @InjectRepository(CredentialConfig)
-        private readonly credentialConfigRepo: Repository<CredentialConfig>,
-        @InjectRepository(AttributeProviderEntity)
-        private readonly attributeProviderRepo: Repository<AttributeProviderEntity>,
-        private readonly webhookService: WebhookService,
-        private readonly sdjwtvcIssuerService: SdjwtvcIssuerService,
-        private readonly mdocIssuerService: MdocIssuerService,
+        @Inject(CREDENTIAL_SETTINGS)
+        private readonly settings: CredentialSettings,
+        @Inject(CREDENTIAL_CONFIGURATION_REPOSITORY)
+        private readonly credentialConfigurationRepository: CredentialConfigurationRepository,
+        private readonly issueCredential: IssueCredential,
         private readonly cryptoImplementationService: CryptoImplementationService,
-        private readonly issuanceService: IssuanceService,
-        private readonly federationTrustService: FederationTrustService,
     ) {}
 
     /**
@@ -76,7 +71,10 @@ export class CredentialsService {
         id: string,
         tenantId: string,
     ): Promise<CredentialConfig | null> {
-        return this.credentialConfigRepo.findOneBy({ id, tenantId });
+        return this.credentialConfigurationRepository.findForTenant(
+            tenantId,
+            id,
+        );
     }
 
     /**
@@ -88,14 +86,17 @@ export class CredentialsService {
         ids?: string[],
     ): Promise<CredentialConfig[]> {
         if (!ids?.length) {
-            return this.credentialConfigRepo.findBy({ tenantId });
+            return this.credentialConfigurationRepository.listForTenant(
+                tenantId,
+            );
         }
 
         const uniqueIds = Array.from(new Set(ids));
-        const configs = await this.credentialConfigRepo.findBy({
-            tenantId,
-            id: In(uniqueIds),
-        });
+        const configs =
+            await this.credentialConfigurationRepository.listForTenant(
+                tenantId,
+                uniqueIds,
+            );
 
         if (configs.length !== uniqueIds.length) {
             const foundIds = new Set(configs.map((config) => config.id));
@@ -121,9 +122,10 @@ export class CredentialsService {
             CredentialConfigurationSupported
         > = {};
 
-        const configs = await this.credentialConfigRepo.findBy({
-            tenantId,
-        });
+        const configs =
+            await this.credentialConfigurationRepository.listForTenant(
+                tenantId,
+            );
 
         for (const entity of configs) {
             const builtConfig = this.buildCredentialConfiguration(
@@ -167,7 +169,7 @@ export class CredentialsService {
     }
 
     private resolveConfiguredProofTypes(
-        config: IssuerMetadataCredentialConfig,
+        config: CredentialConfig["config"],
     ): CredentialProofType[] {
         const configured = config.proofTypesSupported;
         if (!Array.isArray(configured) || configured.length === 0) {
@@ -178,6 +180,57 @@ export class CredentialsService {
         return CredentialsService.DEFAULT_PROOF_TYPES.filter((proofType) =>
             supported.has(proofType),
         );
+    }
+
+    /**
+     * Builds `proof_types_supported` for a credential configuration.
+     *
+     * Both proof types only carry `key_attestations_required` when key attestations
+     * are configured as required, otherwise wallets are not required to attach a
+     * key attestation. Credential requests are checked against the same
+     * requirements.
+     */
+    private buildProofTypesSupported(
+        config: CredentialConfig["config"],
+        algs: string[],
+    ): BuildCredentialConfigOptions["proofTypesSupported"] {
+        const supportedProofTypes = this.resolveConfiguredProofTypes(config);
+        // An empty key_storage / user_authentication list means "no
+        // constraint"; the metadata only allows non-empty arrays, so it is
+        // omitted (an empty object still requires a key attestation).
+        const configuredKeyAttestations = config.keyAttestationsRequired
+            ? Object.fromEntries(
+                  Object.entries(config.keyAttestationsRequired).filter(
+                      ([, values]) =>
+                          Array.isArray(values) && values.length > 0,
+                  ),
+              )
+            : undefined;
+        const proofTypesSupported: Record<string, Record<string, unknown>> = {};
+
+        if (supportedProofTypes.includes(CredentialProofType.ATTESTATION)) {
+            proofTypesSupported.attestation = {
+                proof_signing_alg_values_supported: algs,
+                ...(configuredKeyAttestations && {
+                    key_attestations_required: {
+                        ...configuredKeyAttestations,
+                    },
+                }),
+            };
+        }
+
+        if (supportedProofTypes.includes(CredentialProofType.JWT)) {
+            proofTypesSupported.jwt = {
+                proof_signing_alg_values_supported: algs,
+                ...(configuredKeyAttestations && {
+                    key_attestations_required: {
+                        ...configuredKeyAttestations,
+                    },
+                }),
+            };
+        }
+
+        return proofTypesSupported as BuildCredentialConfigOptions["proofTypesSupported"];
     }
 
     private buildCredentialMetadata(
@@ -197,14 +250,23 @@ export class CredentialsService {
         return Object.keys(metadata).length > 0 ? metadata : undefined;
     }
 
-    async getSupportedProofTypesForCredentialConfig(
+    /**
+     * Proof requirements of a credential configuration: the supported proof
+     * types and, when configured, the key attestation requirements every
+     * proof has to meet.
+     */
+    async getProofRequirementsForCredentialConfig(
         tenantId: string,
         credentialConfigurationId: string,
-    ): Promise<CredentialProofType[]> {
-        const config = await this.credentialConfigRepo.findOneBy({
-            id: credentialConfigurationId,
-            tenantId,
-        });
+    ): Promise<{
+        proofTypes: CredentialProofType[];
+        keyAttestationsRequired?: CredentialConfig["config"]["keyAttestationsRequired"];
+    }> {
+        const config =
+            await this.credentialConfigurationRepository.findForTenant(
+                tenantId,
+                credentialConfigurationId,
+            );
 
         if (!config) {
             throw new ConflictException(
@@ -212,7 +274,11 @@ export class CredentialsService {
             );
         }
 
-        return this.resolveConfiguredProofTypes(config.config);
+        return {
+            proofTypes: this.resolveConfiguredProofTypes(config.config),
+            keyAttestationsRequired:
+                config.config.keyAttestationsRequired ?? undefined,
+        };
     }
 
     /**
@@ -232,35 +298,12 @@ export class CredentialsService {
         // Build credential_metadata with display and claims
         const credentialMetadata = this.buildCredentialMetadata(entity);
 
-        // Build proof_types_supported with optional key_attestations_required
-        const keyAttestationsRequired = entity.config.keyAttestationsRequired;
-        const jwtProofType = {
-            proof_signing_alg_values_supported:
-                this.cryptoImplementationService.getAlgs(
-                    CredentialFormat.SD_JWT_VC,
-                ) as string[],
-            ...(keyAttestationsRequired && {
-                key_attestations_required: { ...keyAttestationsRequired },
-            }),
-        };
-        const attestationProofType = {
-            proof_signing_alg_values_supported:
-                this.cryptoImplementationService.getAlgs(
-                    CredentialFormat.SD_JWT_VC,
-                ) as string[],
-        };
-
-        const supportedProofTypes = this.resolveConfiguredProofTypes(
+        const proofTypesSupported = this.buildProofTypesSupported(
             entity.config,
+            this.cryptoImplementationService.getAlgs(
+                CredentialFormat.SD_JWT_VC,
+            ) as string[],
         );
-        const proofTypesSupported = {
-            ...(supportedProofTypes.includes(CredentialProofType.ATTESTATION)
-                ? { attestation: attestationProofType }
-                : {}),
-            ...(supportedProofTypes.includes(CredentialProofType.JWT)
-                ? { jwt: jwtProofType }
-                : {}),
-        };
 
         const config = buildMsoMdocConfig(
             doctype,
@@ -295,7 +338,7 @@ export class CredentialsService {
         let vct: string;
         if (entity.vct && typeof entity.vct === "object") {
             // Generate URL for object-based vct hosted by EUDIPLO
-            vct = `${this.configService.getOrThrow<string>("PUBLIC_URL")}/issuers/${tenantId}/credentials-metadata/vct/${entity.id}`;
+            vct = `${this.settings.publicUrl}/issuers/${tenantId}/credentials-metadata/vct/${entity.id}`;
         } else if (typeof entity.vct === "string") {
             // Use the string URI directly
             vct = entity.vct;
@@ -308,29 +351,10 @@ export class CredentialsService {
         // Build credential_metadata with display and claims
         const credentialMetadata = this.buildCredentialMetadata(entity);
 
-        // Build proof_types_supported with optional key_attestations_required
-        const keyAttestationsRequired = entity.config.keyAttestationsRequired;
-        const jwtProofType = {
-            proof_signing_alg_values_supported: algs,
-            ...(keyAttestationsRequired && {
-                key_attestations_required: { ...keyAttestationsRequired },
-            }),
-        };
-        const attestationProofType = {
-            proof_signing_alg_values_supported: algs,
-        };
-
-        const supportedProofTypes = this.resolveConfiguredProofTypes(
+        const proofTypesSupported = this.buildProofTypesSupported(
             entity.config,
+            algs,
         );
-        const proofTypesSupported = {
-            ...(supportedProofTypes.includes(CredentialProofType.ATTESTATION)
-                ? { attestation: attestationProofType }
-                : {}),
-            ...(supportedProofTypes.includes(CredentialProofType.JWT)
-                ? { jwt: jwtProofType }
-                : {}),
-        };
 
         const config = buildSdJwtDcConfig(
             vct,
@@ -354,168 +378,24 @@ export class CredentialsService {
     }
 
     /**
-     * Validates the provided claims against the schema defined in the credential configuration.
-     * @param credentialConfigurationId
-     * @param claims
-     * @returns
+     * Validates claims against the schema derived from the credential configuration fields.
+     * @throws InvalidClaimsException (409) naming claim paths, never claim values
      */
-    validateClaimsForCredential(
+    async validateClaimsForCredential(
         credentialConfigurationId: string,
         claims: Record<string, unknown>,
         tenantId: string,
-    ) {
-        // AJV instance with draft 2020-12 meta-schema support.
-        // removeAdditional:"all" ensures only schema-declared properties remain on the claims object.
-        const ajv = new Ajv({
-            allErrors: true,
-            strict: true,
-            removeAdditional: "all", // strip properties not defined in the schema
-            useDefaults: true, // optionally apply default values from schema
-        });
-        //fetch the credential configuration
-        return this.credentialConfigRepo
-            .findOneByOrFail({ id: credentialConfigurationId, tenantId })
-            .then((credentialConfiguration) => {
-                //if a schema is defined, validate the claims against it
-                const schema = buildJsonSchema(
-                    credentialConfiguration.fields as any,
-                );
-                if (schema && Object.keys(schema.properties ?? {}).length > 0) {
-                    const validate = ajv.compile(schema as any);
-                    const valid = validate(claims); // claims mutated: unknown props removed, defaults applied
-                    if (!valid) {
-                        throw new ConflictException(
-                            `Claims do not conform to the schema for credential configuration with id ${credentialConfigurationId}: ${ajv.errorsText(
-                                validate.errors,
-                            )}`,
-                        );
-                    }
-                }
-            });
-    }
-
-    /**
-     * Fetches claims for a credential configuration from webhook.
-     * Unified method that works for both internal and external AS flows.
-     *
-     * Webhook resolution priority:
-     * 1. Webhook passed at offer time via session.credentialPayload.credentialClaims
-     * 2. claimsWebhook configured on the credential configuration
-     *
-     * The webhook receives a unified payload:
-     * - session: Session ID
-     * - credential_configuration_id: The credential being requested
-     * - identity: (optional) Identity context from AS token (iss, sub, token_claims)
-     * - credentials: (optional) Presented credentials from presentation flow
-     *
-     * @param credentialConfigurationId The credential configuration ID
-     * @param session The session associated with this request
-     * @param options Optional parameters for the webhook
-     * @param options.identity Identity context from authorization server (internal or external)
-     * @param options.credentials Presented credentials (for presentation flows)
-     * @param options.requireWebhook If true, throws if no webhook is configured (default: false)
-     * @returns The fetched claims result including deferred flag, or undefined if no webhook is configured
-     */
-    async getClaimsFromWebhook(
-        credentialConfigurationId: string,
-        session: Session,
-        options?: {
-            identity?: AuthorizationIdentity;
-            credentials?: any[];
-            requireWebhook?: boolean;
-        },
-    ): Promise<ClaimsWebhookResult | undefined> {
-        // First check for claims source passed at offer time via credentialClaims
-        const claimsSource =
-            session.credentialPayload?.credentialClaims?.[
-                credentialConfigurationId
-            ];
-        let webhook: WebhookConfig | undefined | null;
-
-        // Handle inline claims - return directly without webhook call
-        if (claimsSource?.type === "inline") {
-            return {
-                deferred: false,
-                claims: claimsSource.claims,
-            };
+    ): Promise<void> {
+        const credentialConfiguration =
+            await this.credentialConfigurationRepository.getForTenant(
+                tenantId,
+                credentialConfigurationId,
+            );
+        try {
+            assertClaimsMatchConfiguration(credentialConfiguration, claims);
+        } catch (error) {
+            throw toInvalidClaimsException(error);
         }
-
-        // Handle webhook config passed directly at offer time
-        if (claimsSource?.type === "webhook") {
-            webhook = claimsSource.webhook;
-        } else if (claimsSource?.type === "attributeProvider") {
-            // Resolve the attribute provider by ID
-            const provider = await this.attributeProviderRepo.findOneBy({
-                id: claimsSource.attributeProviderId,
-                tenantId: session.tenantId,
-            });
-            if (!provider) {
-                throw new ConflictException(
-                    `Attribute provider '${claimsSource.attributeProviderId}' not found`,
-                );
-            }
-            webhook = { url: provider.url, auth: provider.auth };
-        } else {
-            // Fall back to credential config's attributeProviderId
-            const credentialConfiguration =
-                await this.credentialConfigRepo.findOneBy({
-                    tenantId: session.tenantId,
-                    id: credentialConfigurationId,
-                });
-
-            if (!credentialConfiguration) {
-                throw new ConflictException(
-                    `Credential configuration '${credentialConfigurationId}' not found`,
-                );
-            }
-
-            if (credentialConfiguration.attributeProviderId) {
-                const provider = await this.attributeProviderRepo.findOneBy({
-                    id: credentialConfiguration.attributeProviderId,
-                    tenantId: session.tenantId,
-                });
-                if (!provider) {
-                    throw new ConflictException(
-                        `Attribute provider '${credentialConfiguration.attributeProviderId}' not found`,
-                    );
-                }
-                webhook = { url: provider.url, auth: provider.auth };
-            }
-        }
-
-        // No webhook configured
-        if (!webhook) {
-            if (options?.requireWebhook) {
-                throw new ConflictException(
-                    `Authorization code flow requires an attribute provider to be configured on credential '${credentialConfigurationId}' ` +
-                        `or provided at offer time.`,
-                );
-            }
-            return undefined;
-        }
-
-        // Send webhook with unified payload
-        const response = await this.webhookService.sendClaimsWebhook({
-            webhook,
-            session: session.id,
-            credentialConfigurationId,
-            identity: options?.identity,
-            credentials: options?.credentials,
-        });
-
-        // Check if the webhook response indicates deferred issuance
-        if (response.deferred) {
-            return {
-                deferred: true,
-                interval: response.interval ?? 5,
-            };
-        }
-
-        // Return claims for immediate issuance
-        return {
-            deferred: false,
-            claims: response[credentialConfigurationId] as Record<string, any>,
-        };
     }
 
     /**
@@ -524,7 +404,8 @@ export class CredentialsService {
      * @param credentialConfigurationId
      * @param holderCnf
      * @param session
-     * @param preloadedClaims Optional claims fetched from webhook (to avoid redundant calls in batch)
+     * @param preloadedClaims Claims resolved from the session's claim source; without them, the static defaults are issued
+     * @param issuanceSetId Opaque identifier grouping credentials issued with one access token
      * @returns
      */
     async getCredential(
@@ -532,115 +413,19 @@ export class CredentialsService {
         holderCnf: Jwk,
         session: Session,
         preloadedClaims?: Record<string, any>,
+        issuanceSetId?: string,
     ) {
-        const credentialConfiguration =
-            await this.credentialConfigRepo.findOneByOrFail({
-                tenantId: session.tenantId,
-                id: credentialConfigurationId,
-            });
-
-        if (!credentialConfiguration)
-            throw new ConflictException(
-                `Credential configuration with id ${credentialConfigurationId} not found`,
-            );
-
-        /**
-         * Priority of the claims
-         * 1. fetched via passed webhook (preloadedClaims)
-         * 2. inline claims stored in the session
-         * 3. webhook from the credential configuration
-         * 4. static claims from the credential configuration
-         */
-        // Extract claims from the session's credentialClaims (discriminated union)
-        let usedClaims = buildClaims(
-            credentialConfiguration.fields as any,
-        ) as Record<string, any>; // default fallback
-
-        // Use preloaded claims if provided (from webhook or inline)
-        if (preloadedClaims) {
-            usedClaims = preloadedClaims;
-        } else {
-            // Fallback: check if inline claims are in the session
-            const claimsSource =
-                session.credentialPayload?.credentialClaims?.[
-                    credentialConfigurationId
-                ];
-            if (claimsSource?.type === "inline") {
-                usedClaims = claimsSource.claims;
-            } else if (claimsSource?.type === "webhook") {
-                // Use webhook config passed at offer time
-                const webhookResponse = await this.webhookService.sendWebhook({
-                    webhook: claimsSource.webhook,
-                    session,
-                    expectResponse: true,
-                });
-                if (webhookResponse?.[credentialConfigurationId]) {
-                    usedClaims = webhookResponse[
-                        credentialConfigurationId
-                    ] as Record<string, any>;
-                }
-            } else if (credentialConfiguration.attributeProviderId) {
-                const provider = await this.attributeProviderRepo.findOneBy({
-                    id: credentialConfiguration.attributeProviderId,
-                    tenantId: session.tenantId,
-                });
-                if (provider) {
-                    const webhookResponse =
-                        await this.webhookService.sendWebhook({
-                            webhook: {
-                                url: provider.url,
-                                auth: provider.auth,
-                            },
-                            session,
-                            expectResponse: true,
-                        });
-                    if (webhookResponse?.[credentialConfigurationId]) {
-                        usedClaims = webhookResponse[
-                            credentialConfigurationId
-                        ] as Record<string, any>;
-                    }
-                }
-            }
-        }
-
-        // Load issuance config to check for federation settings
-        let federationEntityId: string | undefined;
-        try {
-            const issuanceConfig =
-                await this.issuanceService.getIssuanceConfiguration(
-                    session.tenantId,
-                );
-            if (
-                issuanceConfig.federation &&
-                this.federationTrustService.isEnabled(issuanceConfig.federation)
-            ) {
-                federationEntityId = issuanceConfig.federation.entityId;
-            }
-        } catch {
-            // If issuance config not found, proceed without federation
-        }
-
-        // Delegate to format-specific issuer service
-        const format = credentialConfiguration.config.format;
-
-        if (format === "mso_mdoc") {
-            // For mDOC, holderCnf is the device key
-            return this.mdocIssuerService.issue({
-                credentialConfiguration,
-                deviceKey: holderCnf,
+        return this.issueCredential
+            .execute({
+                credentialConfigurationId,
+                holderKey: holderCnf,
                 session,
-                claims: usedClaims,
+                preloadedClaims,
+                issuanceSetId,
+            })
+            .catch((error: unknown) => {
+                throw toInvalidClaimsException(error);
             });
-        } else {
-            // Default to SD-JWT VC (handles "dc+sd-jwt" and "vc+sd-jwt" formats)
-            return this.sdjwtvcIssuerService.issue({
-                credentialConfiguration,
-                holderCnf,
-                session,
-                claims: usedClaims,
-                federationEntityId,
-            });
-        }
     }
 
     /**
@@ -650,11 +435,8 @@ export class CredentialsService {
      * @returns
      */
     async getVCT(credentialId: string, tenantId: string): Promise<VCT> {
-        const credentialConfig = await this.credentialConfigRepo
-            .findOneByOrFail({
-                id: credentialId,
-                tenantId,
-            })
+        const credentialConfig = await this.credentialConfigurationRepository
+            .getForTenant(tenantId, credentialId)
             .catch(() => {
                 throw new ConflictException(
                     `Credential configuration with id ${credentialId} not found`,
@@ -671,8 +453,15 @@ export class CredentialsService {
                 `VCT for credential configuration with id ${credentialId} is a URI, not hosted by this server`,
             );
         }
-        const host = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const host = this.settings.publicUrl;
         credentialConfig.vct.vct = `${host}/issuers/${tenantId}/credentials-metadata/vct/${credentialConfig.id}`;
         return credentialConfig.vct;
     }
+}
+
+/** Maps the domain error to the HTTP-facing exception; other errors pass through. */
+function toInvalidClaimsException(error: unknown): unknown {
+    return error instanceof InvalidCredentialClaims
+        ? new InvalidClaimsException(error.message)
+        : error;
 }

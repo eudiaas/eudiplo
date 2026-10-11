@@ -25,7 +25,10 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { FlexLayoutModule } from 'ngx-flexible-layout';
 import { IssuanceConfig, UpdateIssuanceDto } from '@eudiplo/sdk-core';
-import { IssuanceConfigService } from '../issuance-config.service';
+import {
+  defaultAccessTokenLifetimeSeconds,
+  IssuanceConfigService,
+} from '../issuance-config.service';
 import { issuanceConfigSchema } from '../../../utils/schemas';
 import { JsonViewDialogComponent } from '../../credential-config/credential-config-create/json-view-dialog/json-view-dialog.component';
 import { MatDialog } from '@angular/material/dialog';
@@ -34,6 +37,8 @@ import { ImageFieldComponent } from '../../../utils/image-field/image-field.comp
 import { MatCardModule } from '@angular/material/card';
 import { PresentationManagementService } from '../../../presentation/presentation-config/presentation-management.service';
 import { RegistrarService } from '../../../registrar/registrar.service';
+import { ConfigOwnershipDirective } from '../../../config-portability/config-ownership.directive';
+import { ConfigOwnershipNoticeComponent } from '../../../config-portability/config-ownership-notice.component';
 
 @Component({
   selector: 'app-issuance-config-create',
@@ -58,15 +63,20 @@ import { RegistrarService } from '../../../registrar/registrar.service';
     MatSlideToggleModule,
     MatSlideToggle,
     ImageFieldComponent,
+    ConfigOwnershipDirective,
+    ConfigOwnershipNoticeComponent,
   ],
   templateUrl: './issuance-config-create.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './issuance-config-create.component.scss',
 })
 export class IssuanceConfigCreateComponent implements OnInit {
+  private static readonly SPKI_PEM_PATTERN =
+    /^\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\s]+-----END PUBLIC KEY-----\s*$/;
+
   private static jsonValidator(control: AbstractControl): ValidationErrors | null {
     const value = control.value as string;
-    if (!value || !value.trim()) return null;
+    if (!value?.trim()) return null;
     try {
       JSON.parse(value);
       return null;
@@ -77,35 +87,249 @@ export class IssuanceConfigCreateComponent implements OnInit {
 
   private trustListVerifierValidator(control: AbstractControl): ValidationErrors | null {
     const value = control.value as {
+      trustListId?: string;
+      url?: string;
       verifierKey?: unknown;
+      verifierKeyPem?: unknown;
       verifierX509Der?: unknown;
     };
 
+    if (value?.trustListId?.trim()) return null;
+    if (!value?.url?.trim()) return { missingUrl: true };
     const keyStr = value?.verifierKey;
     const hasVerifierKey = !!keyStr && typeof keyStr === 'string' && keyStr.trim().length > 0;
+    const hasVerifierKeyPem =
+      typeof value?.verifierKeyPem === 'string' && value.verifierKeyPem.trim().length > 0;
     const hasVerifierX509Der =
       !!value?.verifierX509Der &&
       typeof value.verifierX509Der === 'string' &&
       (value.verifierX509Der as string).trim().length > 0;
 
-    return hasVerifierKey || hasVerifierX509Der ? null : { missingVerifier: true };
+    return hasVerifierKey || hasVerifierKeyPem || hasVerifierX509Der
+      ? null
+      : { missingVerifier: true };
   }
 
   private createWalletProviderTrustListGroup(value?: {
+    trustListId?: string;
     url?: string;
     verifierKey?: string;
+    verifierKeyPem?: string;
     verifierX509Der?: string;
   }): FormGroup {
     return this.fb.group(
       {
-        url: [value?.url ?? '', [Validators.required]],
+        trustListId: [value?.trustListId ?? ''],
+        url: [value?.url ?? ''],
         verifierKey: [value?.verifierKey ?? '', [IssuanceConfigCreateComponent.jsonValidator]],
+        verifierKeyPem: [
+          value?.verifierKeyPem ?? '',
+          [Validators.pattern(IssuanceConfigCreateComponent.SPKI_PEM_PATTERN)],
+        ],
         verifierX509Der: [value?.verifierX509Der ?? ''],
       },
       {
         validators: [this.trustListVerifierValidator.bind(this)],
       }
     );
+  }
+
+  private createWalletProviderTrustListArray(entries?: any[]): FormArray {
+    const trustLists = this.fb.array<FormGroup>([]);
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (typeof entry === 'string') {
+          trustLists.push(this.createWalletProviderTrustListGroup({ url: entry }));
+          continue;
+        }
+
+        trustLists.push(
+          this.createWalletProviderTrustListGroup({
+            trustListId: entry?.trustListId ?? '',
+            url: entry?.url ?? '',
+            verifierKey:
+              typeof entry?.verifierKey === 'string'
+                ? entry.verifierKey
+                : entry?.verifierKey
+                  ? JSON.stringify(entry.verifierKey, null, 2)
+                  : '',
+            verifierKeyPem: entry?.verifierKeyPem ?? '',
+            verifierX509Der: entry?.verifierX509Der ?? '',
+          })
+        );
+      }
+    }
+    return trustLists;
+  }
+
+  private createAuthorizationServerWalletAttestationControls(value?: any) {
+    const trustLists = this.createWalletProviderTrustListArray(value?.walletProviderTrustLists);
+    const inherit = new FormControl(
+      value?.inheritWalletProviderTrustLists ?? value?.walletProviderTrustLists == null
+    );
+    const updateTrustListValidation = () => {
+      if (inherit.value) {
+        trustLists.disable({ emitEvent: false });
+      } else {
+        trustLists.enable({ emitEvent: false });
+      }
+    };
+    updateTrustListValidation();
+    inherit.valueChanges.subscribe(updateTrustListValidation);
+    return {
+      walletAttestationRequired: new FormControl(value?.walletAttestationRequired ?? 'inherit'),
+      inheritWalletProviderTrustLists: inherit,
+      walletProviderTrustLists: trustLists,
+    };
+  }
+
+  private buildWalletProviderTrustLists(value: any[] | undefined): any[] {
+    return value?.length
+      ? value
+          .map((entry: any) => {
+            if (entry?.trustListId?.trim()) return { trustListId: entry.trustListId.trim() };
+            let verifierKey: Record<string, unknown> | undefined;
+            if (typeof entry?.verifierKey === 'string' && entry.verifierKey.trim()) {
+              verifierKey = JSON.parse(entry.verifierKey) as Record<string, unknown>;
+            }
+
+            return {
+              url: entry?.url?.trim() || undefined,
+              verifierKey,
+              verifierKeyPem: entry?.verifierKeyPem?.trim() || undefined,
+              verifierX509Der: entry?.verifierX509Der?.trim() || undefined,
+            };
+          })
+          .filter((entry: any) => !!entry.trustListId || !!entry.url)
+      : [];
+  }
+
+  guidedMode = false;
+  activeStep = 0;
+  furthestStep = 0;
+  stepError = '';
+  loadingConfig = true;
+  loadError = '';
+  readonly stepNames = ['Identity', 'Wallet access', 'Trust', 'Review'];
+  expandedSections = new Set<string>();
+  expandedServers = new Set<AbstractControl>();
+
+  toggleGuidedMode(): void {
+    this.guidedMode = !this.guidedMode;
+    this.activeStep = 0;
+    this.furthestStep = 0;
+    this.stepError = '';
+  }
+
+  private validateStep(step: number): boolean {
+    let error = '';
+    const controls =
+      step === 0
+        ? ['display']
+        : step === 1
+          ? [
+              'authorizationServers',
+              'batchSize',
+              'dPopRequired',
+              'credentialResponseEncryption',
+              'credentialRequestEncryption',
+              'notificationEndpointEnabled',
+            ]
+          : [
+              'txCodeMaxAttempts',
+              'walletAttestationRequired',
+              'walletProviderTrustLists',
+              'federation',
+              'registrationCertificate',
+            ];
+    if (step === 0 && !this.displays.length) error = 'Add an issuer name and language.';
+    if (step === 1) {
+      const servers = this.authorizationServers.controls;
+      if (
+        !servers.some(
+          (server) =>
+            server.get('type')?.value === 'external' || server.get('enabled')?.value !== false
+        )
+      )
+        error = 'Add at least one enabled authorization server.';
+      const ids = servers.map((server) => `${server.get('id')?.value || ''}`.trim());
+      if (ids.some((id) => !id)) error = 'Enter an ID for every authorization server.';
+      if (ids.some((id) => ['built-in', 'chained-as'].includes(id)))
+        error = 'The IDs built-in and chained-as are reserved. Choose another server ID.';
+      if (new Set(ids).size !== ids.length) error = 'Authorization server IDs must be unique.';
+      for (const server of servers) {
+        const value = server.value;
+        if (value.enabled === false) continue;
+        if (value.type === 'oid4vp' && !value.oid4vp?.presentationConfigId)
+          error = 'Choose a presentation configuration for each hosted presentation flow.';
+        if (
+          value.type === 'chained' &&
+          (!value.chained?.issuer?.trim() || !value.chained?.clientId?.trim())
+        )
+          error = 'Enter an upstream issuer and client ID for each chained authorization server.';
+      }
+    }
+    if (step === 2) {
+      if (this.federationEnabled && !this.trustAnchors.length)
+        error = 'Add a trust anchor or turn off OpenID Federation.';
+      if (
+        this.registrationCertificateEnabled &&
+        this.registrationCertificateMode === 'import' &&
+        !this.registrationCertificate.get('jwt')?.value?.trim()
+      )
+        error = 'Paste a registration certificate JWT or choose automatic generation.';
+    }
+    const invalid = controls.filter((name) => this.form.get(name)?.invalid);
+    if (!error && !invalid.length) {
+      this.stepError = '';
+      return true;
+    }
+    controls.forEach((name) => this.form.get(name)?.markAllAsTouched());
+    if (step === 1) {
+      this.expandedSections.add('behavior');
+      this.authorizationServers.controls.forEach((server) => this.expandedServers.add(server));
+    }
+    if (step === 2)
+      ['wallet', 'federation', 'registration'].forEach((key) => this.expandedSections.add(key));
+    this.activeStep = step;
+    this.furthestStep = Math.max(this.furthestStep, step);
+    this.stepError = error || `Check the highlighted fields in ${this.stepNames[step]}.`;
+    return false;
+  }
+
+  nextStep(): void {
+    if (this.loading || this.loadingConfig || !this.validateStep(this.activeStep)) return;
+    if (this.activeStep === 2)
+      for (let step = 0; step < 2; step++) if (!this.validateStep(step)) return;
+    this.activeStep = Math.min(3, this.activeStep + 1);
+    this.furthestStep = Math.max(this.furthestStep, this.activeStep);
+  }
+
+  previousStep(): void {
+    this.activeStep = Math.max(0, this.activeStep - 1);
+    this.stepError = '';
+  }
+
+  submitSettings(): void {
+    if (this.guidedMode && this.activeStep < 3) this.nextStep();
+    else this.onSubmit();
+  }
+
+  onInputEnter(event: Event): void {
+    const key = event as KeyboardEvent;
+    if (key.isComposing || key.altKey || key.ctrlKey || key.metaKey || key.shiftKey) return;
+    key.preventDefault();
+    key.stopPropagation();
+    this.submitSettings();
+  }
+
+  get behaviorSummary(): string {
+    const value = this.form.value;
+    return `Batch size: ${value.batchSize} · DPoP: ${value.dPopRequired ? 'Required' : 'Optional'} · Request encryption: ${value.credentialRequestEncryption ? 'Required' : 'Off'} · Response encryption: ${value.credentialResponseEncryption ? 'Advertised' : 'Off'} · Notifications: ${value.notificationEndpointEnabled ? 'On' : 'Off'}`;
+  }
+
+  get trustSummary(): string {
+    return `Wallet attestation default: ${this.form.get('walletAttestationRequired')?.value ? 'Required' : 'Optional'} · Wallet provider trust lists: ${this.walletProviderTrustLists.length} · Federation: ${this.federationEnabled ? 'On' : 'Off'} · Registration certificate: ${this.registrationCertificateEnabled ? this.registrationCertificateMode : 'Off'} · PIN attempt limit: ${this.form.get('txCodeMaxAttempts')?.value ?? 5}`;
   }
 
   public form: FormGroup;
@@ -137,7 +361,7 @@ export class IssuanceConfigCreateComponent implements OnInit {
     this.form = new FormGroup({
       display: this.fb.array([]),
       authorizationServers: this.fb.array([]),
-      batchSize: new FormControl(1, [Validators.min(1)]),
+      batchSize: new FormControl(1, [Validators.required, Validators.min(1)]),
       dPopRequired: new FormControl(false),
       txCodeMaxAttempts: new FormControl<number | null>(null, [Validators.min(1)]),
       credentialResponseEncryption: new FormControl(false),
@@ -147,10 +371,8 @@ export class IssuanceConfigCreateComponent implements OnInit {
       walletProviderTrustLists: this.fb.array([]),
       federation: this.fb.group({
         enabled: [false],
-        role: ['leaf'],
         mode: ['hybrid'],
         entityId: [''],
-        enforceSigningPolicy: [true],
         cacheTtlSeconds: [300],
         trustAnchors: this.fb.array([]),
       }),
@@ -162,6 +384,12 @@ export class IssuanceConfigCreateComponent implements OnInit {
         supportUri: [''],
       }),
     } as any);
+    const updateFederationValidation = () => {
+      if (this.federationEnabled) this.trustAnchors.enable({ emitEvent: false });
+      else this.trustAnchors.disable({ emitEvent: false });
+    };
+    this.federation.get('enabled')!.valueChanges.subscribe(updateFederationValidation);
+    updateFederationValidation();
   }
 
   ngOnInit(): void {
@@ -245,218 +473,236 @@ export class IssuanceConfigCreateComponent implements OnInit {
     }
   }
 
-  private async loadConfigForEdit(): Promise<void> {
+  async loadConfigForEdit(): Promise<void> {
+    this.loadingConfig = true;
+    this.loadError = '';
     try {
       const config = await this.issuanceConfigService.getConfig();
-      if (!config) {
-        this.snackBar.open('Configuration not found', 'Close', {
-          duration: 3000,
-        });
-        this.router.navigate(['../'], { relativeTo: this.route });
-        return;
-      }
+      if (!config) throw new Error('Issuer settings unavailable');
+      await this.applyConfiguration(config);
+      // No identity yet: offer the onboarding flow while retaining the server defaults.
+      this.guidedMode =
+        !config.display?.length || this.route.snapshot.queryParamMap?.get('setup') === 'true';
+      if (!this.displays.length) this.addDisplay();
+    } catch {
+      this.loadError = 'Could not load issuer settings. Retry before making changes.';
+    } finally {
+      this.loadingConfig = false;
+    }
+  }
 
-      // Load display configurations
-      const displayArray = this.form.get('display') as FormArray;
-      displayArray.clear();
-      if (config.display && Array.isArray(config.display)) {
-        for (const [index, entry] of config.display.entries()) {
-          const displayEntry = this.asRecord(entry);
-          const logo = this.asRecord(displayEntry['logo']);
-          displayArray.push(
-            this.fb.group({
-              name: [
-                typeof displayEntry['name'] === 'string' ? displayEntry['name'] : '',
-                Validators.required,
-              ],
-              locale: [
-                typeof displayEntry['locale'] === 'string' ? displayEntry['locale'] : '',
-                Validators.required,
-              ],
-              logo: this.fb.group({
-                uri: [typeof logo['uri'] === 'string' ? logo['uri'] : '', Validators.required],
-              }),
+  private async applyConfiguration(config: IssuanceConfig): Promise<void> {
+    // Load display configurations
+    const displayArray = this.form.get('display') as FormArray;
+    displayArray.clear();
+    if (config.display && Array.isArray(config.display)) {
+      for (const [index, entry] of config.display.entries()) {
+        const displayEntry = this.asRecord(entry);
+        const logo = this.asRecord(displayEntry['logo']);
+        displayArray.push(
+          this.fb.group({
+            name: [
+              typeof displayEntry['name'] === 'string' ? displayEntry['name'] : '',
+              Validators.required,
+            ],
+            locale: [
+              typeof displayEntry['locale'] === 'string' ? displayEntry['locale'] : '',
+              Validators.required,
+            ],
+            logo: this.fb.group({
+              uri: [typeof logo['uri'] === 'string' ? logo['uri'] : ''],
+            }),
+          })
+        );
+
+        if (index > 0 && index % 5 === 0) {
+          await this.yieldToUi();
+        }
+      }
+    }
+
+    await this.yieldToUi();
+
+    const authorizationServersArray = this.form.get('authorizationServers') as FormArray;
+    authorizationServersArray.clear();
+    if (
+      (config as any).authorizationServers &&
+      Array.isArray((config as any).authorizationServers)
+    ) {
+      const allServers = (config as any).authorizationServers;
+      for (const [index, server] of allServers.entries()) {
+        if (server?.type === 'external') {
+          authorizationServersArray.push(
+            this.createAuthorizationServerGroup({
+              type: 'external',
+              id: server.id ?? `external-${index + 1}`,
+              issuer: server.issuer ?? '',
+              label: server.label ?? server.issuer ?? '',
             })
           );
-
-          if (index > 0 && index % 5 === 0) {
-            await this.yieldToUi();
-          }
-        }
-      }
-
-      await this.yieldToUi();
-
-      const authorizationServersArray = this.form.get('authorizationServers') as FormArray;
-      authorizationServersArray.clear();
-      if (
-        (config as any).authorizationServers &&
-        Array.isArray((config as any).authorizationServers)
-      ) {
-        const allServers = (config as any).authorizationServers;
-        for (const [index, server] of allServers.entries()) {
-          if (server?.type === 'external') {
-            authorizationServersArray.push(
-              this.createAuthorizationServerGroup({
-                type: 'external',
-                id: server.id ?? `external-${index + 1}`,
-                issuer: server.issuer ?? '',
-                label: server.label ?? server.issuer ?? '',
-              })
-            );
-          } else if (server?.type === 'oid4vp' || server?.type === 'chained') {
-            authorizationServersArray.push(
-              this.createAuthorizationServerGroup({
-                id: server.id ?? `${server.type || 'auth'}-${index + 1}`,
-                label:
-                  server.label ??
-                  `${server.type === 'chained' ? 'Chained' : 'Hosted'} AS ${index + 1}`,
-                type: server.type ?? 'oid4vp',
-                enabled: server.enabled ?? true,
-                requireDPoP: server.requireDPoP ?? false,
-                oid4vp: {
-                  presentationConfigId:
-                    server.presentationConfigId ?? server.oid4vp?.presentationConfigId ?? '',
-                  immediateWalletRedirect:
-                    server.immediateWalletRedirect ??
-                    server.oid4vp?.immediateWalletRedirect ??
-                    true,
-                },
-                chained: {
-                  issuer: server.upstream?.issuer ?? '',
-                  clientId: server.upstream?.clientId ?? '',
-                  clientSecret: server.upstream?.clientSecret ?? '',
-                  scopes: server.upstream?.scopes ?? ['openid', 'profile', 'email'],
-                },
-                token: {
-                  lifetimeSeconds: server.token?.lifetimeSeconds ?? 3600,
-                  signingKeyId: server.token?.signingKeyId ?? '',
-                  refreshTokenEnabled: server.token?.refreshTokenEnabled ?? true,
-                  refreshTokenExpiresInSeconds:
-                    server.token?.refreshTokenExpiresInSeconds ?? 2592000,
-                },
-              })
-            );
-          } else if (server?.type === 'built-in') {
-            authorizationServersArray.push(
-              this.createAuthorizationServerGroup({
-                type: 'built-in',
-                id: server.id ?? 'issuer-built-in',
-                label: server.label ?? 'Built-in Authorization Server',
-                enabled: server.enabled ?? true,
-                requireDPoP: server.requireDPoP ?? false,
-                token: {
-                  lifetimeSeconds: server.token?.lifetimeSeconds ?? 3600,
-                  signingKeyId: server.token?.signingKeyId ?? '',
-                  refreshTokenEnabled: server.token?.refreshTokenEnabled ?? true,
-                  refreshTokenExpiresInSeconds:
-                    server.token?.refreshTokenExpiresInSeconds ?? 2592000,
-                },
-              })
-            );
-          }
-
-          if (index > 0 && index % 5 === 0) {
-            await this.yieldToUi();
-          }
-        }
-      }
-
-      await this.yieldToUi();
-
-      // Load wallet provider trust lists
-      const walletTrustListsArray = this.form.get('walletProviderTrustLists') as FormArray;
-      walletTrustListsArray.clear();
-      if (config.walletProviderTrustLists && Array.isArray(config.walletProviderTrustLists)) {
-        for (const entry of config.walletProviderTrustLists as any[]) {
-          if (typeof entry === 'string') {
-            walletTrustListsArray.push(this.createWalletProviderTrustListGroup({ url: entry }));
-            continue;
-          }
-
-          walletTrustListsArray.push(
-            this.createWalletProviderTrustListGroup({
-              url: entry?.url ?? '',
-              verifierKey:
-                entry?.verifierKey && typeof entry.verifierKey === 'object'
-                  ? JSON.stringify(entry.verifierKey, null, 2)
-                  : '',
-              verifierX509Der:
-                typeof entry?.verifierX509Der === 'string' ? entry.verifierX509Der : '',
+        } else if (server?.type === 'oid4vp' || server?.type === 'chained') {
+          authorizationServersArray.push(
+            this.createAuthorizationServerGroup({
+              id: server.id ?? `${server.type || 'auth'}-${index + 1}`,
+              label:
+                server.label ??
+                `${server.type === 'chained' ? 'Chained' : 'Hosted'} AS ${index + 1}`,
+              type: server.type ?? 'oid4vp',
+              enabled: server.enabled ?? true,
+              requireDPoP: server.requireDPoP ?? false,
+              walletAttestationRequired: server.walletAttestationRequired ?? 'inherit',
+              walletProviderTrustLists: server.walletProviderTrustLists,
+              oid4vp: {
+                presentationConfigId:
+                  server.presentationConfigId ?? server.oid4vp?.presentationConfigId ?? '',
+                immediateWalletRedirect:
+                  server.immediateWalletRedirect ?? server.oid4vp?.immediateWalletRedirect ?? true,
+              },
+              chained: {
+                issuer: server.upstream?.issuer ?? '',
+                clientId: server.upstream?.clientId ?? '',
+                clientSecret: server.upstream?.clientSecret ?? '',
+                scopes: server.upstream?.scopes ?? ['openid', 'profile', 'email'],
+              },
+              token: {
+                lifetimeSeconds:
+                  server.token?.lifetimeSeconds ?? defaultAccessTokenLifetimeSeconds(server.type),
+                signingKeyId: server.token?.signingKeyId ?? '',
+                refreshTokenEnabled: server.token?.refreshTokenEnabled ?? true,
+                refreshTokenExpiresInSeconds: server.token?.refreshTokenExpiresInSeconds ?? 2592000,
+              },
+            })
+          );
+        } else if (server?.type === 'built-in') {
+          authorizationServersArray.push(
+            this.createAuthorizationServerGroup({
+              type: 'built-in',
+              id: server.id ?? 'issuer-built-in',
+              label: server.label ?? 'Built-in Authorization Server',
+              enabled: server.enabled ?? true,
+              requireDPoP: server.requireDPoP ?? false,
+              walletAttestationRequired: server.walletAttestationRequired ?? 'inherit',
+              walletProviderTrustLists: server.walletProviderTrustLists,
+              token: {
+                lifetimeSeconds:
+                  server.token?.lifetimeSeconds ?? defaultAccessTokenLifetimeSeconds('built-in'),
+                signingKeyId: server.token?.signingKeyId ?? '',
+                refreshTokenEnabled: server.token?.refreshTokenEnabled ?? true,
+                refreshTokenExpiresInSeconds: server.token?.refreshTokenExpiresInSeconds ?? 2592000,
+              },
             })
           );
         }
-      }
 
-      await this.yieldToUi();
-
-      // Patch other form values
-      const registrationCertificate = (config as any).registrationCertificate;
-      this.form.patchValue({
-        batchSize: config.batchSize,
-        dPopRequired: config.dPopRequired,
-        credentialResponseEncryption:
-          (config as { credentialResponseEncryption?: boolean }).credentialResponseEncryption ??
-          false,
-        credentialRequestEncryption:
-          (config as { credentialRequestEncryption?: boolean }).credentialRequestEncryption ??
-          false,
-        notificationEndpointEnabled:
-          (config as { notificationEndpointEnabled?: boolean }).notificationEndpointEnabled ?? true,
-        walletAttestationRequired: config.walletAttestationRequired ?? false,
-        txCodeMaxAttempts: config.txCodeMaxAttempts ?? null,
-        registrationCertificate: {
-          enabled: registrationCertificate?.enabled ?? false,
-          mode: registrationCertificate?.mode ?? 'generate',
-          jwt: registrationCertificate?.jwt ?? '',
-          privacyPolicy: registrationCertificate?.privacyPolicy ?? '',
-          supportUri: registrationCertificate?.supportUri ?? '',
-        },
-      });
-
-      // Load Federation config if present
-      if (config && (config as any)['federation']) {
-        const federation = (config as any)['federation'];
-        this.trustAnchors.clear();
-        if (federation.trustAnchors && Array.isArray(federation.trustAnchors)) {
-          for (const [index, anchor] of federation.trustAnchors.entries()) {
-            this.trustAnchors.push(
-              this.fb.group({
-                entityId: [anchor.entityId ?? '', Validators.required],
-                entityConfigurationUri: [anchor.entityConfigurationUri ?? '', Validators.required],
-              })
-            );
-
-            if (index > 0 && index % 5 === 0) {
-              await this.yieldToUi();
-            }
-          }
+        if (index > 0 && index % 5 === 0) {
+          await this.yieldToUi();
         }
-        this.form.patchValue({
-          federation: {
-            enabled: this.trustAnchors.length > 0,
-            role: (federation.role as 'trust_anchor' | 'intermediate' | 'leaf') ?? 'leaf',
-            mode: this.normalizeFederationMode(federation.mode),
-            entityId: federation.entityId ?? '',
-            enforceSigningPolicy: federation.enforceSigningPolicy ?? true,
-            cacheTtlSeconds: federation.cacheTtlSeconds ?? 300,
-          },
-        });
       }
+    }
 
-      await this.yieldToUi();
+    await this.yieldToUi();
 
-      if (this.registrarRegistrationCertificateDefaults) {
-        this.applyRegistrationCertificateDefaultsIfMissing(
-          this.registrarRegistrationCertificateDefaults
+    // Load wallet provider trust lists
+    const walletTrustListsArray = this.form.get('walletProviderTrustLists') as FormArray;
+    walletTrustListsArray.clear();
+    if (config.walletProviderTrustLists && Array.isArray(config.walletProviderTrustLists)) {
+      for (const entry of config.walletProviderTrustLists as any[]) {
+        if (typeof entry === 'string') {
+          walletTrustListsArray.push(this.createWalletProviderTrustListGroup({ url: entry }));
+          continue;
+        }
+
+        walletTrustListsArray.push(
+          this.createWalletProviderTrustListGroup({
+            trustListId: entry?.trustListId ?? '',
+            url: entry?.url ?? '',
+            verifierKey:
+              entry?.verifierKey && typeof entry.verifierKey === 'object'
+                ? JSON.stringify(entry.verifierKey, null, 2)
+                : '',
+            verifierKeyPem: typeof entry?.verifierKeyPem === 'string' ? entry.verifierKeyPem : '',
+            verifierX509Der:
+              typeof entry?.verifierX509Der === 'string' ? entry.verifierX509Der : '',
+          })
         );
       }
-    } catch (error) {
-      console.error('Error loading config:', error);
-      this.snackBar.open('Failed to load configuration', 'Close', {
-        duration: 3000,
+    }
+
+    await this.yieldToUi();
+
+    // Patch other form values
+    const registrationCertificate = (config as any).registrationCertificate;
+    this.form.patchValue({
+      batchSize: config.batchSize ?? 1,
+      dPopRequired: config.dPopRequired ?? false,
+      credentialResponseEncryption:
+        (config as { credentialResponseEncryption?: boolean }).credentialResponseEncryption ??
+        false,
+      credentialRequestEncryption:
+        (config as { credentialRequestEncryption?: boolean }).credentialRequestEncryption ?? false,
+      notificationEndpointEnabled:
+        (config as { notificationEndpointEnabled?: boolean }).notificationEndpointEnabled ?? true,
+      walletAttestationRequired: config.walletAttestationRequired ?? false,
+      txCodeMaxAttempts: config.txCodeMaxAttempts ?? null,
+      registrationCertificate: {
+        enabled: registrationCertificate?.enabled ?? false,
+        mode: registrationCertificate?.mode ?? 'generate',
+        jwt: registrationCertificate?.jwt ?? '',
+        privacyPolicy: registrationCertificate?.privacyPolicy ?? '',
+        supportUri: registrationCertificate?.supportUri ?? '',
+      },
+    });
+
+    this.trustAnchors.clear();
+    this.federation.patchValue({
+      enabled: false,
+      mode: 'hybrid',
+      entityId: '',
+      cacheTtlSeconds: 300,
+    });
+    // Load Federation config if present
+    if (config && (config as any)['federation']) {
+      const federation = (config as any)['federation'];
+      this.trustAnchors.clear();
+      if (federation.trustAnchors && Array.isArray(federation.trustAnchors)) {
+        for (const [index, anchor] of federation.trustAnchors.entries()) {
+          this.trustAnchors.push(
+            this.fb.group({
+              entityId: [anchor.entityId ?? '', Validators.required],
+              entityConfigurationUri: [anchor.entityConfigurationUri ?? '', Validators.required],
+            })
+          );
+
+          if (index > 0 && index % 5 === 0) {
+            await this.yieldToUi();
+          }
+        }
+      }
+      this.form.patchValue({
+        federation: {
+          enabled: this.trustAnchors.length > 0,
+          mode: this.normalizeFederationMode(federation.mode),
+          entityId: federation.entityId ?? '',
+          cacheTtlSeconds: federation.cacheTtlSeconds ?? 300,
+        },
       });
     }
+
+    await this.yieldToUi();
+
+    if (this.registrarRegistrationCertificateDefaults) {
+      this.applyRegistrationCertificateDefaultsIfMissing(
+        this.registrarRegistrationCertificateDefaults
+      );
+    }
+
+    if (this.federationEnabled) this.expandedSections.add('federation');
+    if (this.registrationCertificateEnabled) this.expandedSections.add('registration');
+    if (this.walletProviderTrustLists.length || this.form.get('walletAttestationRequired')?.value)
+      this.expandedSections.add('wallet');
+    this.activeStep = 0;
+    this.furthestStep = 0;
+    this.stepError = '';
   }
 
   private async yieldToUi(): Promise<void> {
@@ -503,14 +749,23 @@ export class IssuanceConfigCreateComponent implements OnInit {
             }
 
             if (server.type === 'built-in') {
+              const walletProviderTrustLists = server.inheritWalletProviderTrustLists
+                ? undefined
+                : this.buildWalletProviderTrustLists(server.walletProviderTrustLists);
               return {
                 id: server.id.trim(),
                 type: 'built-in',
                 label: server.label?.trim() || 'Built-in Authorization Server',
                 enabled: server.enabled ?? true,
                 requireDPoP: server.requireDPoP ?? false,
+                walletAttestationRequired:
+                  typeof server.walletAttestationRequired === 'boolean'
+                    ? server.walletAttestationRequired
+                    : undefined,
+                walletProviderTrustLists,
                 token: {
-                  lifetimeSeconds: server.token?.lifetimeSeconds || 3600,
+                  lifetimeSeconds:
+                    server.token?.lifetimeSeconds || defaultAccessTokenLifetimeSeconds('built-in'),
                   signingKeyId: server.token?.signingKeyId || undefined,
                   refreshTokenEnabled: server.token?.refreshTokenEnabled ?? true,
                   refreshTokenExpiresInSeconds: server.token?.refreshTokenEnabled
@@ -520,14 +775,23 @@ export class IssuanceConfigCreateComponent implements OnInit {
               };
             }
 
+            const walletProviderTrustLists = server.inheritWalletProviderTrustLists
+              ? undefined
+              : this.buildWalletProviderTrustLists(server.walletProviderTrustLists);
             const base = {
               id: server.id,
               label: server.label,
               type: server.type,
               enabled: server.enabled ?? true,
               requireDPoP: server.requireDPoP ?? false,
+              walletAttestationRequired:
+                typeof server.walletAttestationRequired === 'boolean'
+                  ? server.walletAttestationRequired
+                  : undefined,
+              walletProviderTrustLists,
               token: {
-                lifetimeSeconds: server.token?.lifetimeSeconds || 3600,
+                lifetimeSeconds:
+                  server.token?.lifetimeSeconds || defaultAccessTokenLifetimeSeconds(server.type),
                 signingKeyId: server.token?.signingKeyId || undefined,
                 refreshTokenEnabled: server.token?.refreshTokenEnabled ?? true,
                 refreshTokenExpiresInSeconds: server.token?.refreshTokenEnabled
@@ -561,7 +825,7 @@ export class IssuanceConfigCreateComponent implements OnInit {
 
   private buildRegistrationCertificatePayload(registrationCertificateFormValue: any): any {
     if (!registrationCertificateFormValue?.enabled) {
-      return undefined;
+      return null;
     }
 
     if (registrationCertificateFormValue.mode === 'import') {
@@ -580,8 +844,7 @@ export class IssuanceConfigCreateComponent implements OnInit {
     };
   }
 
-  onSubmit(): void {
-    this.loading = true;
+  private buildConfigurationPayload(): UpdateIssuanceDto {
     const formValue = this.form.value;
 
     const unifiedAuthorizationServers = this.buildUnifiedAuthorizationServers(formValue);
@@ -589,40 +852,41 @@ export class IssuanceConfigCreateComponent implements OnInit {
       formValue.registrationCertificate
     );
 
-    const issuanceDto: UpdateIssuanceDto = {
+    return {
       batchSize: formValue.batchSize,
-      display: formValue.display,
+      // The API requires `uri` when a logo is set.
+      display: (formValue.display ?? []).map(({ logo, ...display }: any) => ({
+        ...display,
+        ...(logo?.uri ? { logo } : {}),
+      })),
       dPopRequired: formValue.dPopRequired,
       credentialResponseEncryption: formValue.credentialResponseEncryption ?? false,
       credentialRequestEncryption: formValue.credentialRequestEncryption ?? false,
       notificationEndpointEnabled: formValue.notificationEndpointEnabled ?? true,
-      txCodeMaxAttempts: formValue.txCodeMaxAttempts ?? undefined,
+      txCodeMaxAttempts: formValue.txCodeMaxAttempts ?? null,
       authorizationServers:
         unifiedAuthorizationServers.length > 0 ? unifiedAuthorizationServers : [],
       walletAttestationRequired: formValue.walletAttestationRequired,
-      walletProviderTrustLists:
-        formValue.walletProviderTrustLists?.length > 0
-          ? formValue.walletProviderTrustLists
-              .map((entry: any) => {
-                // JSON.parse is safe here because the jsonValidator on verifierKey
-                // prevents form submission when the value is not valid JSON.
-                let verifierKey: Record<string, unknown> | undefined;
-                if (typeof entry?.verifierKey === 'string' && entry.verifierKey.trim()) {
-                  verifierKey = JSON.parse(entry.verifierKey) as Record<string, unknown>;
-                }
-
-                return {
-                  url: entry?.url?.trim() || undefined,
-                  verifierKey,
-                  verifierX509Der: entry?.verifierX509Der?.trim() || undefined,
-                };
-              })
-              .filter((entry: any) => !!entry.url)
-          : undefined,
-      federation: this.buildFederationConfig(formValue.federation) ?? undefined,
+      walletProviderTrustLists: this.buildWalletProviderTrustLists(
+        formValue.walletProviderTrustLists
+      ),
+      federation: this.buildFederationConfig(formValue.federation),
       registrationCertificate,
     };
+  }
 
+  onSubmit(): void {
+    if (this.loading || this.loadingConfig || this.loadError) return;
+    for (let step = 0; step < 3; step++) if (!this.validateStep(step)) return;
+    let issuanceDto: UpdateIssuanceDto;
+    try {
+      issuanceDto = this.buildConfigurationPayload();
+    } catch {
+      this.stepError = 'Check the JSON in your trust settings.';
+      this.activeStep = 2;
+      return;
+    }
+    this.loading = true;
     this.issuanceConfigService
       .saveConfiguration(issuanceDto)
       .then(
@@ -651,13 +915,12 @@ export class IssuanceConfigCreateComponent implements OnInit {
     if (!enabled || !Array.isArray(trustAnchors) || trustAnchors.length === 0) {
       return null;
     }
-    const role = (fVal['role'] as string) ?? 'leaf';
     const mode = this.normalizeFederationMode(fVal['mode']);
+    // `role` and `enforceSigningPolicy` are not sent: EUDIPLO only acts as a
+    // leaf entity and always enforces federation checks.
     return {
-      role: role as 'trust_anchor' | 'intermediate' | 'leaf',
       mode,
       entityId: (fVal['entityId'] as string) ?? undefined,
-      enforceSigningPolicy: fVal['enforceSigningPolicy'] !== false,
       cacheTtlSeconds: (fVal['cacheTtlSeconds'] as number) ?? 300,
       trustAnchors: trustAnchors as {
         entityId: string;
@@ -681,9 +944,9 @@ export class IssuanceConfigCreateComponent implements OnInit {
   addDisplay(): void {
     const displayGroup = this.fb.group({
       name: ['', Validators.required],
-      locale: ['', Validators.required],
+      locale: ['en-US', Validators.required],
       logo: this.fb.group({
-        uri: ['', Validators.required],
+        uri: [''],
       }),
     });
     this.displays.push(displayGroup);
@@ -714,8 +977,12 @@ export class IssuanceConfigCreateComponent implements OnInit {
         label: [value?.label ?? 'Built-in Authorization Server', Validators.required],
         enabled: [value?.enabled ?? true],
         requireDPoP: [value?.requireDPoP ?? false],
+        ...this.createAuthorizationServerWalletAttestationControls(value),
         token: this.fb.group({
-          lifetimeSeconds: [value?.token?.lifetimeSeconds ?? 3600, Validators.min(60)],
+          lifetimeSeconds: [
+            value?.token?.lifetimeSeconds ?? defaultAccessTokenLifetimeSeconds('built-in'),
+            Validators.min(60),
+          ],
           signingKeyId: [value?.token?.signingKeyId ?? ''],
           refreshTokenEnabled: [value?.token?.refreshTokenEnabled ?? true],
           refreshTokenExpiresInSeconds: [
@@ -732,6 +999,7 @@ export class IssuanceConfigCreateComponent implements OnInit {
       type: [value?.type ?? 'oid4vp', Validators.required],
       enabled: [value?.enabled ?? true],
       requireDPoP: [value?.requireDPoP ?? false],
+      ...this.createAuthorizationServerWalletAttestationControls(value),
       oid4vp: this.fb.group({
         presentationConfigId: [value?.oid4vp?.presentationConfigId ?? ''],
         immediateWalletRedirect: [value?.oid4vp?.immediateWalletRedirect ?? true],
@@ -743,7 +1011,10 @@ export class IssuanceConfigCreateComponent implements OnInit {
         scopes: [value?.chained?.scopes ?? ['openid', 'profile', 'email']],
       }),
       token: this.fb.group({
-        lifetimeSeconds: [value?.token?.lifetimeSeconds ?? 3600, Validators.min(60)],
+        lifetimeSeconds: [
+          value?.token?.lifetimeSeconds ?? defaultAccessTokenLifetimeSeconds(value?.type),
+          Validators.min(60),
+        ],
         signingKeyId: [value?.token?.signingKeyId ?? ''],
         refreshTokenEnabled: [value?.token?.refreshTokenEnabled ?? true],
         refreshTokenExpiresInSeconds: [
@@ -759,7 +1030,9 @@ export class IssuanceConfigCreateComponent implements OnInit {
   }
 
   addAuthorizationServer(): void {
-    this.authorizationServers.push(this.createAuthorizationServerGroup());
+    const server = this.createAuthorizationServerGroup();
+    this.authorizationServers.push(server);
+    this.expandedServers.add(server);
   }
 
   addChainedAuthorizationServer(): void {
@@ -774,7 +1047,7 @@ export class IssuanceConfigCreateComponent implements OnInit {
     index: number,
     type: 'external' | 'oid4vp' | 'chained' | 'built-in'
   ): void {
-    const current = this.authorizationServers.at(index)?.value;
+    const current = this.authorizationServers.at(index)?.getRawValue();
     if (!current) {
       return;
     }
@@ -805,7 +1078,26 @@ export class IssuanceConfigCreateComponent implements OnInit {
       nextValue.label = 'Built-in Authorization Server';
     }
 
+    // Built-in and hosted servers have different token lifetime defaults; carry over only a
+    // lifetime the user changed, not the previous type's default.
+    const lifetime = current.token?.lifetimeSeconds;
+    const lifetimeEdited = this.authorizationServers.at(index).get('token.lifetimeSeconds')?.dirty;
+    const isDefaultLifetime =
+      lifetime == null ||
+      lifetime === defaultAccessTokenLifetimeSeconds('built-in') ||
+      lifetime === defaultAccessTokenLifetimeSeconds('oid4vp');
+    if (current.token && !lifetimeEdited && isDefaultLifetime) {
+      nextValue.token = {
+        ...current.token,
+        lifetimeSeconds: defaultAccessTokenLifetimeSeconds(type),
+      };
+    }
+
     this.authorizationServers.setControl(index, this.createAuthorizationServerGroup(nextValue));
+  }
+
+  accessTokenLifetimeDefault(type: string | undefined): number {
+    return defaultAccessTokenLifetimeSeconds(type);
   }
 
   hasBuiltInAuthorizationServer(excludeIndex?: number): boolean {
@@ -819,6 +1111,20 @@ export class IssuanceConfigCreateComponent implements OnInit {
 
   removeAuthorizationServer(index: number): void {
     this.authorizationServers.removeAt(index);
+  }
+
+  getAuthorizationServerWalletProviderTrustLists(index: number): FormArray {
+    return this.authorizationServers.at(index).get('walletProviderTrustLists') as FormArray;
+  }
+
+  addAuthorizationServerWalletProviderTrustList(index: number): void {
+    this.getAuthorizationServerWalletProviderTrustLists(index).push(
+      this.createWalletProviderTrustListGroup()
+    );
+  }
+
+  removeAuthorizationServerWalletProviderTrustList(index: number, trustListIndex: number): void {
+    this.getAuthorizationServerWalletProviderTrustLists(index).removeAt(trustListIndex);
   }
 
   moveAuthorizationServer(index: number, direction: 'up' | 'down'): void {
@@ -893,30 +1199,13 @@ export class IssuanceConfigCreateComponent implements OnInit {
    * Open JSON view dialog to show/edit the complete configuration
    */
   viewAsJson(): void {
-    const currentConfig = this.form.value;
-    if (currentConfig.registrationCertificate?.enabled) {
-      currentConfig.registrationCertificate = {
-        enabled: true,
-        mode: currentConfig.registrationCertificate.mode,
-        jwt:
-          currentConfig.registrationCertificate.mode === 'import'
-            ? currentConfig.registrationCertificate.jwt || undefined
-            : undefined,
-        privacyPolicy:
-          currentConfig.registrationCertificate.mode === 'generate'
-            ? currentConfig.registrationCertificate.privacyPolicy || undefined
-            : undefined,
-        supportUri:
-          currentConfig.registrationCertificate.mode === 'generate'
-            ? currentConfig.registrationCertificate.supportUri || undefined
-            : undefined,
-      };
-    } else {
-      currentConfig.registrationCertificate = undefined;
+    let currentConfig: UpdateIssuanceDto;
+    try {
+      currentConfig = this.buildConfigurationPayload();
+    } catch {
+      this.stepError = 'Fix invalid trust-list JSON before opening JSON view.';
+      return;
     }
-
-    currentConfig.id = this.route.snapshot.params['id'];
-    currentConfig.credentialConfigs = undefined;
 
     const dialogRef = this.dialog.open(JsonViewDialogComponent, {
       data: {
@@ -931,9 +1220,14 @@ export class IssuanceConfigCreateComponent implements OnInit {
       maxHeight: '95vh',
     });
 
-    dialogRef.afterClosed().subscribe((result) => {
+    dialogRef.afterClosed().subscribe(async (result) => {
       if (result) {
-        this.form.patchValue(result);
+        this.loadingConfig = true;
+        try {
+          await this.applyConfiguration(result);
+        } finally {
+          this.loadingConfig = false;
+        }
       }
     });
   }

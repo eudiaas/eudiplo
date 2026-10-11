@@ -2,11 +2,16 @@ import { HttpService } from "@nestjs/axios";
 import { Injectable } from "@nestjs/common";
 import { PinoLogger } from "nestjs-pino";
 import { firstValueFrom } from "rxjs";
-import { Notification, Session } from "../session/entities/session.entity";
-import { SessionService } from "../session/session.service";
-import { OutboundUrlPolicyService } from "./outbound-url-policy.service";
-import { WebhookConfig } from "./webhook.dto";
-import { extractRawTokenFromSubmission } from "./webhook.utils";
+import { SessionStore } from "../session/application/session-store.js";
+import type {
+    Notification,
+    SessionData as Session,
+} from "../session/domain/session-data.js";
+import type { SessionOutcome } from "../session/domain/session-outcome.js";
+import { SessionStatus } from "../session/domain/session-state.js";
+import { OutboundUrlPolicyService } from "./outbound-url-policy.service.js";
+import { WebhookConfig } from "./webhook.dto.js";
+import { extractRawTokenFromSubmission } from "./webhook.utils.js";
 
 /**
  * Response from a webhook to receive credentials.
@@ -40,6 +45,27 @@ export interface WebhookResponse {
 }
 
 /**
+ * Terminal status and structured outcome of a presentation, sent with every
+ * presentation webhook (`completed` with credentials, `failed` without).
+ */
+interface PresentationWebhookResult {
+    status: string;
+    outcome: SessionOutcome;
+}
+
+/** The caller reference of the session, only when one was set. */
+function referenceOf(session: { reference?: string | null }) {
+    return session.reference ? { reference: session.reference } : {};
+}
+
+/** The API key header of the webhook, when it uses one. */
+function authHeaders(webhook: WebhookConfig): Record<string, string> {
+    return webhook.auth?.type === "apiKey"
+        ? { [webhook.auth.config.headerName]: webhook.auth.config.value }
+        : {};
+}
+
+/**
  * Service for handling webhooks in the application.
  * HTTP calls are auto-instrumented by OpenTelemetry for distributed tracing.
  */
@@ -47,7 +73,7 @@ export interface WebhookResponse {
 export class WebhookService {
     constructor(
         private readonly httpService: HttpService,
-        private readonly sessionService: SessionService,
+        private readonly sessionStore: SessionStore,
         private readonly outboundUrlPolicyService: OutboundUrlPolicyService,
         private readonly logger: PinoLogger,
     ) {
@@ -56,6 +82,7 @@ export class WebhookService {
 
     /**
      * Sends a webhook with the optional provided credentials, return the response data.
+     * Presentation results pass `result`, which adds `status` and `outcome`.
      * @returns WebhookResponse containing claims data or deferred issuance indicator
      */
     sendWebhook(values: {
@@ -64,6 +91,7 @@ export class WebhookService {
         credentials?: any[];
         expectResponse: boolean;
         rawPresentationPayload?: any;
+        result?: PresentationWebhookResult;
     }): Promise<WebhookResponse> {
         return this.outboundUrlPolicyService
             .assertSafeUrl(values.webhook.url)
@@ -76,13 +104,9 @@ export class WebhookService {
         credentials?: any[];
         expectResponse: boolean;
         rawPresentationPayload?: any;
+        result?: PresentationWebhookResult;
     }): Promise<WebhookResponse> {
-        const headers: Record<string, string> = {};
-
-        if (values.webhook.auth && values.webhook.auth.type === "apiKey") {
-            headers[values.webhook.auth.config.headerName] =
-                values.webhook.auth.config.value;
-        }
+        const headers = authHeaders(values.webhook);
 
         let payloadCredentials = values.credentials;
 
@@ -118,11 +142,20 @@ export class WebhookService {
             this.httpService.post(
                 values.webhook.url,
                 {
+                    ...(values.result
+                        ? {
+                              status: values.result.status,
+                              outcome: values.result.outcome,
+                          }
+                        : {}),
                     credentials: payloadCredentials,
                     session: values.session.id,
+                    ...referenceOf(values.session),
+                    transaction_data: values.session.transaction_data,
                 },
                 {
                     headers,
+                    lookup: this.outboundUrlPolicyService.safeLookup as never,
                 },
             ),
         ).then(
@@ -130,9 +163,13 @@ export class WebhookService {
                 if (webhookResponse.data?.redirectUri) {
                     // redirectUri is returned but no special handling needed here
                 } else if (webhookResponse.data && values.expectResponse) {
-                    await this.sessionService.add(values.session.id, {
-                        credentialPayload: values.session.credentialPayload,
-                    });
+                    await this.sessionStore.updateForTenant(
+                        values.session.tenantId,
+                        values.session.id,
+                        {
+                            credentialPayload: values.session.credentialPayload,
+                        },
+                    );
                 }
 
                 return webhookResponse.data;
@@ -148,99 +185,78 @@ export class WebhookService {
     }
 
     /**
-     * Notify the webhook of a verification failure with the structured outcome.
-     *
-     * Opt-in via {@link WebhookConfig.notifyOnFailure}: existing integrations
-     * that only expect success callbacks are unaffected. The payload carries the
-     * machine-readable code and short, safe message — never verbose diagnostics.
-     * Best-effort: failures to deliver are logged, not thrown.
-     */
-    async sendFailureWebhook(values: {
-        webhook: WebhookConfig;
-        session: Session;
-    }): Promise<void> {
-        const { webhook, session } = values;
-        if (!webhook.notifyOnFailure) {
-            return;
-        }
-
-        try {
-            await this.outboundUrlPolicyService.assertSafeUrl(webhook.url);
-
-            const headers: Record<string, string> = {};
-            if (webhook.auth && webhook.auth.type === "apiKey") {
-                headers[webhook.auth.config.headerName] =
-                    webhook.auth.config.value;
-            }
-
-            await firstValueFrom(
-                this.httpService.post(
-                    webhook.url,
-                    {
-                        session: session.id,
-                        status: session.status,
-                        error: session.failureCode,
-                        message: session.errorReason,
-                        outcome: session.outcome,
-                    },
-                    { headers },
-                ),
-            );
-        } catch (err: any) {
-            this.logger.error(
-                { webhookUrl: webhook.url, error: err?.message ?? err },
-                "Error sending failure webhook",
-            );
-        }
-    }
-
-    /**
      * Sends a webhook notification for a session.
      * @param webhook The webhook configuration
      * @param session The session
      * @param notification The notification payload
      */
-    async sendWebhookNotification(
+    sendWebhookNotification(
         webhook: WebhookConfig,
         session: Session,
         notification: Notification,
     ) {
+        return this.postSessionEvent(
+            webhook,
+            session,
+            { notification, session: session.id, ...referenceOf(session) },
+            "webhook notification",
+        );
+    }
+
+    /**
+     * Tells the session webhook that an operator cancelled the offer, with
+     * `status: "cancelled"` like the status of a presentation result.
+     * @param webhook The webhook configuration
+     * @param session The cancelled session
+     * @param reason Why the offer was cancelled, when given
+     */
+    sendSessionCancelledWebhook(
+        webhook: WebhookConfig,
+        session: Session,
+        reason?: string,
+    ) {
+        return this.postSessionEvent(
+            webhook,
+            session,
+            {
+                status: SessionStatus.Cancelled,
+                session: session.id,
+                ...referenceOf(session),
+                ...(reason ? { reason } : {}),
+            },
+            "session cancelled webhook",
+        );
+    }
+
+    /**
+     * Posts a session event whose response body is ignored.
+     * @throws Error when the URL is blocked or the delivery failed
+     */
+    private async postSessionEvent(
+        webhook: WebhookConfig,
+        session: Session,
+        payload: Record<string, unknown>,
+        description: string,
+    ): Promise<void> {
         await this.outboundUrlPolicyService.assertSafeUrl(webhook.url);
-
-        const headers: Record<string, string> = {};
-
-        if (webhook.auth && webhook.auth.type === "apiKey") {
-            headers[webhook.auth.config.headerName] = webhook.auth.config.value;
-        }
 
         this.logger.debug(
             { webhookUrl: webhook.url, sessionId: session.id },
-            "Sending webhook notification",
+            `Sending ${description}`,
         );
 
         await firstValueFrom(
-            this.httpService.post(
-                webhook.url,
-                {
-                    notification,
-                    session: session.id,
-                },
-                {
-                    headers,
-                },
-            ),
-        ).then(
-            () => {
-                // Success - OTel traces capture the HTTP call details
-            },
-            (err) => {
-                this.logger.error(
-                    { webhookUrl: webhook.url, error: err.message },
-                    "Error sending webhook notification",
-                );
-                throw new Error(`Error sending webhook: ${err.message || err}`);
-            },
-        );
+            this.httpService.post(webhook.url, payload, {
+                headers: authHeaders(webhook),
+                lookup: this.outboundUrlPolicyService.safeLookup as never,
+            }),
+        ).catch((err) => {
+            this.logger.error(
+                { webhookUrl: webhook.url, error: err.message },
+                `Error sending ${description}`,
+            );
+            throw new Error(`Error sending webhook: ${err.message || err}`);
+        });
     }
 
     /**
@@ -257,6 +273,7 @@ export class WebhookService {
     async sendClaimsWebhook(values: {
         webhook: WebhookConfig;
         session: string;
+        reference?: string;
         credentialConfigurationId: string;
         identity?: {
             iss: string;
@@ -267,12 +284,7 @@ export class WebhookService {
     }): Promise<WebhookResponse> {
         await this.outboundUrlPolicyService.assertSafeUrl(values.webhook.url);
 
-        const headers: Record<string, string> = {};
-
-        if (values.webhook.auth?.type === "apiKey") {
-            headers[values.webhook.auth.config.headerName] =
-                values.webhook.auth.config.value;
-        }
+        const headers = authHeaders(values.webhook);
 
         this.logger.debug(
             {
@@ -285,6 +297,7 @@ export class WebhookService {
 
         const payload: Record<string, unknown> = {
             session: values.session,
+            ...(values.reference ? { reference: values.reference } : {}),
             credential_configuration_id: values.credentialConfigurationId,
         };
 
@@ -297,7 +310,10 @@ export class WebhookService {
         }
 
         return firstValueFrom(
-            this.httpService.post(values.webhook.url, payload, { headers }),
+            this.httpService.post(values.webhook.url, payload, {
+                headers,
+                lookup: this.outboundUrlPolicyService.safeLookup as never,
+            }),
         ).then(
             (webhookResponse) => {
                 return webhookResponse.data;

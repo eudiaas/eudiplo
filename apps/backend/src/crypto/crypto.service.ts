@@ -18,8 +18,8 @@ import {
     jwtVerify,
 } from "jose";
 import { PinoLogger } from "nestjs-pino";
-import { attestedProofKeys } from "./attested-proof-key";
-import { KeyChainService } from "./key/key-chain.service";
+import { attestedProofKeys } from "./attested-proof-key.js";
+import { KeyChainService } from "./key/key-chain.service.js";
 
 /**
  * Service for cryptographic operations, including key management and certificate handling.

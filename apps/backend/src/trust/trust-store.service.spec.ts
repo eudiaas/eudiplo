@@ -1,101 +1,194 @@
-import { Buffer } from "node:buffer";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TrustStoreService } from "./trust-store.service";
-import { ServiceTypeIdentifiers, type TrustListSource } from "./types";
+import { describe, expect, it, vi } from "vitest";
+import { VerifiedLoteProvider } from "./adapters/verified-lote-provider.js";
+import { CollectTrustedEntities } from "./application/collect-trusted-entities.js";
+import { TrustStoreService } from "./trust-store.service.js";
 
-const AV_XML = readFileSync(
-    join(__dirname, "av-tl-acceptance.fixture.xml"),
-    "utf8",
-);
-const AV_SERVICE_TYPE_PAA =
-    "http://trust.tech.ec.europa.eu/lists/age-verification/service-type/paa";
-const AV_STATUS_RECOGNIZED =
-    "http://trust.tech.ec.europa.eu/lists/age-verification/service-status/recognized";
+describe("TrustStoreService cache isolation", () => {
+    it("revalidates a list when its pinned verification certificate changes", async () => {
+        const jwt = `e30.${Buffer.from(JSON.stringify({ LoTE: {} })).toString("base64url")}.c2ln`;
+        const fetchJwt = vi.fn().mockResolvedValue(jwt);
+        const verifyTrustListJwt = vi.fn().mockResolvedValue(undefined);
+        const service = Object.assign(
+            Object.create(TrustStoreService.prototype),
+            {
+                cache: new Map(),
+                logger: { debug: vi.fn() },
+                collectTrustedEntities: new CollectTrustedEntities(
+                    new VerifiedLoteProvider(
+                        { fetchJwt, verifyTrustListJwt },
+                        { parse: () => ({ info: {}, entities: [] }) },
+                    ),
+                ),
+            },
+        ) as TrustStoreService;
 
-/**
- * Integration of the @owf/eudi-tl library into TrustStoreService:
- * an `etsi-xml` ref is fetched, its XAdES signature verified, and its recognized
- * services mapped onto the internal TrustedEntity model.
- */
-// Rebased onto v7: the pinned XAdES signer now travels in `verifierX509Der`,
-// v7's own field for trust-list verifier material, instead of the pre-v7
-// fork's separate `signerCertificates` array.
-describe("TrustStoreService — ETSI TS 119 612 (etsi-xml) source", () => {
-    let trustListJwt: { fetchText: ReturnType<typeof vi.fn> };
-    let service: TrustStoreService;
-
-    beforeEach(() => {
-        trustListJwt = { fetchText: vi.fn().mockResolvedValue(AV_XML) };
-        service = new TrustStoreService(
-            trustListJwt as any,
-            {} as any, // loteParser — unused on the XML path
-        );
-    });
-
-    function source(ref: Partial<TrustListSource["lotes"][number]> = {}) {
-        return {
+        const source = {
             lotes: [
                 {
-                    url: "https://trust.example/av-tl.xml",
-                    format: "etsi-xml" as const,
-                    acceptedServiceStatus: [AV_STATUS_RECOGNIZED],
-                    ...ref,
+                    url: "https://trust.example/list",
+                    verifierX509Der: "certificate-a",
                 },
             ],
-        } satisfies TrustListSource;
+        };
+        await service.getTrustStore(source);
+        await service.getTrustStore(source);
+        expect(fetchJwt).toHaveBeenCalledTimes(1);
+
+        const replacement = {
+            lotes: [{ ...source.lotes[0], verifierX509Der: "certificate-b" }],
+        };
+        await service.getTrustStore(replacement);
+        expect(fetchJwt).toHaveBeenCalledTimes(2);
+        expect(verifyTrustListJwt).toHaveBeenLastCalledWith(
+            replacement.lotes[0],
+            jwt,
+        );
+
+        const pinnedKey = {
+            lotes: [{ url: source.lotes[0].url, verifierKeyPem: "key-a" }],
+        };
+        await service.getTrustStore(pinnedKey);
+        await service.getTrustStore(pinnedKey);
+        expect(fetchJwt).toHaveBeenCalledTimes(3);
+        await service.getTrustStore({
+            lotes: [{ ...pinnedKey.lotes[0], verifierKeyPem: "key-b" }],
+        });
+        expect(fetchJwt).toHaveBeenCalledTimes(4);
+    });
+
+    it("uses the internal URL for managed trust-list references with public fallback", async () => {
+        const jwt = `e30.${Buffer.from(JSON.stringify({ LoTE: {} })).toString("base64url")}.c2ln`;
+        const fetchJwt = vi.fn().mockResolvedValue(jwt);
+        const createService = (settings: {
+            publicUrl: string;
+            internalUrl?: string;
+        }) =>
+            Object.assign(Object.create(TrustStoreService.prototype), {
+                cache: new Map(),
+                logger: { debug: vi.fn() },
+                settings,
+                collectTrustedEntities: new CollectTrustedEntities(
+                    new VerifiedLoteProvider(
+                        {
+                            fetchJwt,
+                            verifyTrustListJwt: vi
+                                .fn()
+                                .mockResolvedValue(undefined),
+                        },
+                        { parse: () => ({ info: {}, entities: [] }) },
+                    ),
+                ),
+                trustListService: {
+                    getVerifierX509Der: vi
+                        .fn()
+                        .mockResolvedValue("certificate"),
+                },
+            }) as TrustStoreService;
+        const source = {
+            tenantId: "tenant/one",
+            lotes: [{ trustListId: "list-1" }],
+        };
+
+        await createService({
+            publicUrl: "https://public.example",
+            internalUrl: "https://internal.example",
+        }).getTrustStore(source);
+        expect(fetchJwt).toHaveBeenLastCalledWith(
+            "https://internal.example/issuers/tenant%2Fone/trust-list/list-1",
+        );
+
+        await createService({
+            publicUrl: "https://public.example",
+        }).getTrustStore(source);
+        expect(fetchJwt).toHaveBeenLastCalledWith(
+            "https://public.example/issuers/tenant%2Fone/trust-list/list-1",
+        );
+    });
+});
+
+describe("TrustStoreService.getListedEntities", () => {
+    const entities = [
+        {
+            entityId: "Issuer",
+            services: [
+                {
+                    serviceTypeIdentifier:
+                        "http://uri.etsi.org/19602/SvcType/EAA/Issuance",
+                    certValue: "cert",
+                },
+            ],
+        },
+    ];
+    const lote = {
+        ListAndSchemeInformation: { NextUpdate: "2026-01-01T00:00:00Z" },
+        TrustedEntitiesList: [],
+    };
+
+    function createService(data: object | undefined) {
+        const fetchJwt = vi.fn();
+        const findOne = vi.fn().mockResolvedValue({ data });
+        const parse = vi.fn().mockReturnValue({ info: {}, entities });
+        const service = Object.assign(
+            Object.create(TrustStoreService.prototype),
+            {
+                cache: new Map(),
+                logger: { debug: vi.fn() },
+                trustListService: { findOne },
+                loteParser: { parse },
+                collectTrustedEntities: new CollectTrustedEntities(
+                    new VerifiedLoteProvider(
+                        {
+                            fetchJwt: fetchJwt.mockResolvedValue(
+                                `e30.${Buffer.from(JSON.stringify({ LoTE: lote })).toString("base64url")}.c2ln`,
+                            ),
+                            verifyTrustListJwt: vi
+                                .fn()
+                                .mockResolvedValue(undefined),
+                        },
+                        { parse },
+                    ),
+                ),
+            },
+        ) as TrustStoreService;
+        return { service, fetchJwt, findOne, parse };
     }
 
-    it("maps recognized AV services onto trusted entities with certificates", async () => {
-        const store = await service.getTrustStore(source());
+    it("reads managed lists from their stored content without fetching", async () => {
+        const { service, fetchJwt, findOne, parse } = createService({
+            LoTE: lote,
+        });
 
-        expect(store.entities.length).toBeGreaterThan(0);
-        const services = store.entities.flatMap((e) => e.services);
-        expect(services.length).toBeGreaterThan(0);
-        // Preserves the AV service type when no mapping is given.
-        expect(
-            services.every((s) => s.serviceTypeIdentifier === AV_SERVICE_TYPE_PAA),
-        ).toBe(true);
-        expect(services.every((s) => s.certValue.length > 0)).toBe(true);
-        expect(store.nextUpdate).toBe("2026-12-16T13:30:00Z");
-    });
-
-    it("renames the AV service type via serviceTypeMap so it matches /Issuance", async () => {
-        const store = await service.getTrustStore(
-            source({
-                serviceTypeMap: {
-                    [AV_SERVICE_TYPE_PAA]: ServiceTypeIdentifiers.EaaIssuance,
-                },
-            }),
-        );
-        const services = store.entities.flatMap((e) => e.services);
-        expect(services.length).toBeGreaterThan(0);
-        expect(
-            services.every(
-                (s) =>
-                    s.serviceTypeIdentifier ===
-                    ServiceTypeIdentifiers.EaaIssuance,
-            ),
-        ).toBe(true);
-    });
-
-    it("fails closed when the list signer is not the pinned scheme operator", async () => {
         await expect(
-            service.getTrustStore(
-                source({
-                    verifierX509Der: Buffer.from([1, 2, 3]).toString(
-                        "base64",
-                    ),
-                }),
+            service.getListedEntities(
+                { trustListId: " list-1 ", url: "" },
+                "t",
             ),
-        ).rejects.toThrow();
+        ).resolves.toEqual(entities);
+        expect(findOne).toHaveBeenCalledWith("t", "list-1");
+        expect(parse).toHaveBeenCalledWith(lote);
+        expect(fetchJwt).not.toHaveBeenCalled();
     });
 
-    it("caches by source (single fetch for repeated calls)", async () => {
-        const src = source();
-        await service.getTrustStore(src);
-        await service.getTrustStore(src);
-        expect(trustListJwt.fetchText).toHaveBeenCalledTimes(1);
+    it("accepts stored lists without the LoTE wrapper", async () => {
+        const { service, parse } = createService(lote);
+        await service.getListedEntities(
+            { trustListId: "list-1", url: "" },
+            "t",
+        );
+        expect(parse).toHaveBeenCalledWith(lote);
+    });
+
+    it("fetches and verifies external lists", async () => {
+        const { service, fetchJwt, findOne } = createService(undefined);
+        const ref = {
+            url: "https://trust.example/list",
+            verifierX509Der: "certificate",
+        };
+
+        await expect(service.getListedEntities(ref, "t")).resolves.toEqual(
+            entities,
+        );
+        expect(fetchJwt).toHaveBeenCalledWith(ref.url);
+        expect(findOne).not.toHaveBeenCalled();
     });
 });

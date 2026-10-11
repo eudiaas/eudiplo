@@ -9,13 +9,9 @@
     },
     "description": {
       "description": "Optional presentation configuration description.",
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
+      "type": [
+        "string",
+        "null"
       ]
     },
     "lifeTime": {
@@ -189,22 +185,31 @@
                         "path": {
                           "type": "array",
                           "items": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "number"
-                              }
+                            "type": [
+                              "string",
+                              "number"
                             ]
                           },
                           "description": "Path to the claim value in presented credentials."
                         },
                         "values": {
-                          "description": "Optional allowed values for the claim.",
+                          "description": "Optional allowed values for the claim. A disclosed value must equal one of them in type and value.",
+                          "minItems": 1,
                           "type": "array",
                           "items": {
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
                           }
                         }
                       },
@@ -361,22 +366,31 @@
                         "path": {
                           "type": "array",
                           "items": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "number"
-                              }
+                            "type": [
+                              "string",
+                              "number"
                             ]
                           },
                           "description": "Path to the claim value in presented credentials."
                         },
                         "values": {
-                          "description": "Optional allowed values for the claim.",
+                          "description": "Optional allowed values for the claim. A disclosed value must equal one of them in type and value.",
+                          "minItems": 1,
                           "type": "array",
                           "items": {
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
                           }
                         },
                         "intent_to_retain": {
@@ -440,28 +454,38 @@
     },
     "transaction_data": {
       "description": "Optional transaction data descriptors.",
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "description": "Transaction data type identifier."
-          },
-          "credential_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Transaction data type identifier."
+              },
+              "credential_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Credential query ids this transaction data applies to."
+              },
+              "payload": {
+                "description": "Transaction details. Required for TS12 SCA transaction data."
+              }
             },
-            "description": "Credential query ids this transaction data applies to."
+            "required": [
+              "type",
+              "credential_ids"
+            ],
+            "additionalProperties": {}
           }
         },
-        "required": [
-          "type",
-          "credential_ids"
-        ],
-        "additionalProperties": {}
-      }
+        {
+          "type": "null"
+        }
+      ]
     },
     "registration_cert": {
       "description": "Optional registration certificate request settings.",
@@ -513,14 +537,11 @@
                     "additionalProperties": {}
                   }
                 },
-                "provided_attestations": {
+                "provides_attestations": {
                   "type": "array",
                   "items": {
-                    "type": "object",
-                    "propertyNames": {
-                      "type": "string"
-                    },
-                    "additionalProperties": {}
+                    "type": "string",
+                    "minLength": 1
                   }
                 }
               },
@@ -537,15 +558,69 @@
         }
       ]
     },
-    "webhookEndpointId": {
-      "description": "Optional webhook endpoint id for presentation callbacks.",
+    "registrationCertImportJwt": {
+      "description": "Optional imported registration certificate JWT.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "registrationCertImportId": {
+      "description": "Optional registrar-side registration certificate id.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "registrationCertBodyPrivacyPolicy": {
+      "description": "Optional registration certificate privacy policy URI.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "registrationCertBodySupportUri": {
+      "description": "Optional registration certificate support URI.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "registrationCertBodyIntermediary": {
+      "description": "Optional registration certificate intermediary.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "registrationCertBodyPurpose": {
+      "description": "Optional registration certificate purpose entries.",
       "anyOf": [
         {
-          "type": "string"
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "lang": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
         },
         {
           "type": "null"
         }
+      ]
+    },
+    "webhookEndpointId": {
+      "description": "Optional webhook endpoint id for presentation callbacks.",
+      "type": [
+        "string",
+        "null"
       ]
     },
     "attached": {
@@ -585,35 +660,23 @@
     },
     "redirectUri": {
       "description": "Optional redirect URI after presentation completion.",
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
+      "type": [
+        "string",
+        "null"
       ]
     },
     "accessKeyChainId": {
       "description": "Optional key chain id for access token/auth operations.",
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
+      "type": [
+        "string",
+        "null"
       ]
     },
     "readerAuth": {
       "description": "Whether reader authentication is required for mDoc requests.",
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
+      "type": [
+        "boolean",
+        "null"
       ]
     }
   },

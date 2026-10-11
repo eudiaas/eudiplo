@@ -1,26 +1,34 @@
 import { X509Certificate } from "node:crypto";
-import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
+import {
+    Inject,
+    Injectable,
+    Logger,
+    UnauthorizedException,
+} from "@nestjs/common";
 import { Openid4vciIssuer } from "@openid4vc/openid4vci";
 import * as x509 from "@peculiar/x509";
 import { decodeProtectedHeader, JWK } from "jose";
 import { Span } from "nestjs-otel";
-import { CryptoService } from "../crypto/crypto.service";
-import { CryptoImplementationService } from "../crypto/key/crypto-implementation/crypto-implementation.service";
-import { StatusListVerifierService } from "./status-list-verifier.service";
-import { BuiltTrustStore, TrustStoreService } from "./trust-store.service";
+import { CryptoService } from "../crypto/crypto.service.js";
+import { CryptoImplementationService } from "../crypto/key/crypto-implementation/crypto-implementation.service.js";
+import { TrustListRef } from "../verifier/presentations/entities/presentation-config.entity.js";
+import { StatusListVerifierService } from "./status-list-verifier.service.js";
+import { BuiltTrustStore, TrustStoreService } from "./trust-store.service.js";
 import {
     normalizeTrustListRefs,
     ServiceTypeIdentifiers,
     TrustListSource,
     walletSolutionServiceTypes,
-} from "./types";
+} from "./types.js";
+import {
+    WALLET_ATTESTATION_SETTINGS,
+    type WalletAttestationSettings,
+} from "./wallet-attestation-settings.js";
 import {
     MatchedTrustedEntity,
     X509ValidationService,
-} from "./x509-validation.service";
-import { TrustListRef } from "../verifier/presentations/entities/presentation-config.entity";
-import { WuaKind, wuaStatusEntry } from "./wua-status";
+} from "./x509-validation.service.js";
+import { WuaKind, wuaStatusEntry } from "./wua-status.js";
 
 /** How each attestation is named in logs and errors. */
 const WUA_LABEL: Record<WuaKind, string> = {
@@ -48,7 +56,8 @@ export class WalletAttestationService {
         private readonly trustStoreService: TrustStoreService,
         private readonly x509ValidationService: X509ValidationService,
         private readonly statusListVerifierService: StatusListVerifierService,
-        private readonly configService: ConfigService,
+        @Inject(WALLET_ATTESTATION_SETTINGS)
+        private readonly settings: WalletAttestationSettings,
     ) {}
 
     /**
@@ -102,8 +111,7 @@ export class WalletAttestationService {
                 clientAttestationJwt: clientAttestation.clientAttestationJwt,
                 clientAttestationPopJwt:
                     clientAttestation.clientAttestationPopJwt!,
-                allowedSkewInSeconds:
-                    this.configService.getOrThrow<number>("CRYPTO_TOLERANCE"),
+                allowedSkewInSeconds: this.settings.cryptoToleranceSeconds,
             });
 
             // Then validate the X.509 certificate against trust lists and get the matched entity
@@ -111,6 +119,7 @@ export class WalletAttestationService {
                 await this.validateWalletSolutionCertificate(
                     clientAttestation.clientAttestationJwt,
                     walletProviderTrustLists,
+                    tenantId,
                 );
 
             // Check the status list if present in the attestation JWT
@@ -139,12 +148,13 @@ export class WalletAttestationService {
      * Returns the matched entity and trust store for use in status list verification.
      * @param clientAttestationJwt The wallet attestation JWT
      * @param trustListInputs Trust lists to validate against
-     * @returns The matched entity and trust store (both null if no trust lists configured)
+     * @returns The matched entity and trust store
      * @throws UnauthorizedException if certificate is not trusted
      */
     private async validateWalletSolutionCertificate(
         clientAttestationJwt: string,
         trustListInputs: TrustListRef[],
+        tenantId: string,
     ): Promise<{
         matchedEntity: MatchedTrustedEntity | null;
         trustStore: BuiltTrustStore | null;
@@ -152,11 +162,9 @@ export class WalletAttestationService {
         const trustListRefs = normalizeTrustListRefs(trustListInputs);
 
         if (trustListRefs.length === 0) {
-            // No trust lists configured - accept any valid attestation
-            this.logger.warn(
-                "No wallet provider trust lists configured - accepting attestation without certificate validation",
+            throw new UnauthorizedException(
+                "No wallet provider trust lists configured for wallet attestation verification",
             );
-            return { matchedEntity: null, trustStore: null };
         }
 
         // Extract X.509 certificate chain from JWT header
@@ -172,6 +180,7 @@ export class WalletAttestationService {
         // Build trust list source from configured URLs
         const trustListSource: TrustListSource = {
             lotes: trustListRefs,
+            tenantId,
             acceptedServiceTypes: [...walletSolutionServiceTypes],
         };
 
@@ -242,12 +251,14 @@ export class WalletAttestationService {
      * here; the KA trust validation already rejects that case.
      * @param keyAttestationJwt The key attestation JWT
      * @param walletProviderTrustLists The tenant's wallet provider trust lists
+     * @param tenantId The tenant, to resolve managed (`trustListId`) lists
      * @throws UnauthorizedException if the KA is revoked or suspended
      */
     @Span("walletAttestation.verifyKeyAttestationStatus")
     async verifyKeyAttestationStatus(
         keyAttestationJwt: string,
         walletProviderTrustLists: TrustListRef[],
+        tenantId: string,
     ): Promise<void> {
         if (normalizeTrustListRefs(walletProviderTrustLists).length === 0) {
             return;
@@ -256,6 +267,7 @@ export class WalletAttestationService {
             await this.validateWalletSolutionCertificate(
                 keyAttestationJwt,
                 walletProviderTrustLists,
+                tenantId,
             );
         await this.validateAttestationStatus(
             keyAttestationJwt,

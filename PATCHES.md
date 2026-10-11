@@ -12,38 +12,218 @@ rots.
 
 ## Current state
 
+> Desde el rebase a v9.1.0 las secciones nuevas de este fichero están en
+> castellano, como los commits y los PR del fork. El histórico (v7.2.0,
+> v8.1.0) se deja en inglés, tal como se escribió.
+
 | | |
 |---|---|
-| Upstream base of `main` | **v7.2.0** (rebased 2026-08-22, PR #19) |
-| Fork-only patches | **12** live (§1.1–§1.3, §1.5–§1.12) + infrastructure (§1.4) |
-| Latest published image | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (published 2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`. Also tagged `sha-e5377d0`, so its provenance is checkable without trusting the tag name |
-| Built from | `e5377d02` (2026-09-21) — the merge of [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10), on top of `db525564` with [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) and [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base re-checked before tagging: the merge-base with `upstream/main` is exactly the `v7.2.0` tag |
-| Deployed where | staging (`eudiplo-staging.espuni.com`) runs **`.7`**, verified 2026-09-21 at `GET /api/docs-json` → `info.version` (no token needed; `/api/version` wants one). Production (`eudiplo.espuni.com`) is behind, by design. The tag of each droplet lives in its `EUDIPLO_IMAGE_TAG`; `docs/architecture/environments.md` in cp-platform is the record, not this file |
-| Next publish | `v7.2.0-espuni.8` — tag after the **real** base, never from memory. Publishing is **manual**: the `Publicar imagen espuni (GHCR)` workflow runs on `workflow_dispatch` or an `espuni-v*` tag push, never on a merge to `main` |
+| Base upstream de `main` | **v7.2.0** (rebase del 2026-08-22, PR #19). La rama `rebase/v9.1.0` lleva el mismo conjunto de parches sobre **v9.1.0** (rebase del 2026-10-11, PR en borrador [#46](https://github.com/eudiaas/eudiplo/pull/46), que sustituye al #45 de `rebase/v8.1.0`); este fichero describe esa rama. Hasta que se fusione, `main` sigue en v7.2.0 |
+| Parches solo del fork | **12** vivos (§1.1–§1.3, §1.5, §1.7 reducido al SSE, §1.8–§1.14) + infraestructura (§1.4). §1.6 y el núcleo de §1.7 están upstream desde v7.5.0 (#970, #974); el webhook de fallo de §1.7 (`notifyOnFailure`) lo sustituye #1133 en v9.0. Todo en §2 |
+| Última imagen publicada | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`, también etiquetada `sha-e5377d0`. Nada se ha publicado desde `rebase/v8.1.0` ni desde `rebase/v9.1.0` |
+| Construida desde | `e5377d02` (2026-09-21), el merge de [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10) sobre `db525564` con [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) y [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base comprobada antes de etiquetar: el merge-base con `upstream/main` era exactamente `v7.2.0` |
+| Desplegada en | staging (`eudiplo-staging.espuni.com`) lleva **`.7`**, comprobado el 2026-09-21 en `GET /api/docs-json` → `info.version`. Producción (`eudiplo.espuni.com`) va por detrás, a propósito. La etiqueta de cada droplet vive en su `EUDIPLO_IMAGE_TAG`; el registro es `docs/architecture/environments.md` de cp-platform, no este fichero |
+| Próxima publicación | Cuando se fusione `rebase/v9.1.0`: **`v9.1.0-espuni.1`**, etiquetada según la base **real** (`git merge-base main upstream/main` tiene que ser el commit de `v9.1.0`, `927ac2cf`), nunca de memoria. Antes, leer [los avisos previos al despliegue](#avisos-previos-al-despliegue-v910) y [lo que cp-platform tiene que cambiar](#lo-que-cp-platform-tiene-que-cambiar-antes-de-desplegar-v91). La publicación es **manual**: el workflow `Publicar imagen espuni (GHCR)` corre con `workflow_dispatch` o con un tag `espuni-v*`, nunca al fusionar en `main` |
 
-> ✅ **The image tag no longer lies (2026-08-28).** The `v5.1.0-espuni.1` tag
-> was named after the base at the first publish and never renamed, so it
-> advertised v5.1.0 while containing v6.1.0. That is resolved, and stays
-> resolved: `.6` was tagged only after re-checking that
-> `git merge-base main upstream/main` is the `v7.2.0` tag itself. Keep doing
-> that before every publish, never from memory.
+### Qué cambió el rebase (2026-10-11, v9.1.0)
+
+El objetivo fue el **tag `v9.1.0`**, no `upstream/main`: después de v9.1.0
+`main` ya lleva cambios incompatibles (#1218, #1223; ver
+[Próximo salto: post-9.1](#próximo-salto-post-91)). Se partió de la rama
+`rebase/v8.1.0` (PR #45, ya en ESM y adaptada a v8) y se reaplicó un commit
+por §, leyendo cuando el código de debajo había cambiado. Comprobado:
+`git merge-base rebase/v9.1.0 upstream/main` = `927ac2cf` = `v9.1.0^{commit}`.
+
+- **v9 (#1081) pasa el núcleo de protocolo y confianza a puertos y
+  adaptadores** y borra `presentations.service.ts`. Lo que vivía ahí se ha
+  portado a su sitio nuevo: §1.1 a `verify-presentation-response.ts`, §1.2 a
+  un adaptador `TrustListProvider` propio, §1.11 a `verifierTrustOptions`
+  (ahora un único sitio para OID4VP e ISO 18013-7).
+- **Quitado del fork, porque v9 lo hace:** `notifyOnFailure` /
+  `sendFailureWebhook` (#1133: los webhooks de presentación salen siempre,
+  también al fallar, con `status` y `outcome`). Se sigue **aceptando**
+  `notifyOnFailure` y se ignora, para que el orden de despliegue con
+  cp-platform dé igual (§1.7).
+- **Quitado por decisión del owner, sin sustituto:** los `warnings[]`
+  (`trust_list_near_expiry`, `federation_fallback_used`). v9.1.0 declara el
+  campo pero nada lo rellena; cp-platform no lo lee.
+- **Más estricto que en v8.1.0:** §1.2 rechaza una lista XML sin
+  `verifierX509Der` y descarga por la política de URL salientes (#1155).
+- **Mejor que en v8.1.0:** §1.5 ya no quita `authorization_details` del
+  access token, solo de la respuesta a la wallet, así que el token sigue
+  restringido a la oferta. Con #1134, el `aki` de las listas XML sale de los
+  emisores listados, no del firmante de la lista.
+- **§1.14 cambia de forma:** v9 (#1098) ya no hace el 302 a la wallet; sirve
+  una página con un enlace. `immediateWalletRedirect: false` sirve ahora la
+  página del fork, que navega sola.
+- **CI:** el paso `pnpm schemas:check-contract` es el único que se tolera en
+  el fork (`continue-on-error`). Ver
+  [Contrato de configuración portable](#contrato-de-configuración-portable-decisión-tomada).
+
+#### Avisos previos al despliegue (v9.1.0)
+
+`main` está en v7.2.0, así que desplegar v9.1.0 corre **todas** las
+migraciones de upstream de v8 y de v9 (§3b).
+
+> 🔴 **Sigue en pie el aviso de v8.1.0.** La migración de upstream
+> `AddStatusListVersionAndUniqueConstraint1776000000000` **aborta el
+> arranque** si `status_mapping` tiene filas duplicadas en
+> `(tenantId, statusListId, index)`. En cada base de datos, **antes** de
+> desplegar y después del snapshot, ejecutar y resolver lo que devuelva:
 >
-> ⚠️ **`.6` is published but nothing runs it yet.** Until the droplets move,
-> the record is: production `.4`, staging `.5`, registry `.6`. §1.9 — the one
-> that unblocks the EUDI wallet E2E — ships in `.6`, so that E2E cannot pass
-> until staging is bumped.
+> ```sql
+> SELECT "tenantId","statusListId","index",COUNT(*) FROM status_mapping GROUP BY 1,2,3 HAVING COUNT(*)>1;
+> ```
+
+Además:
+
+> 🟠 **Las sesiones en curso durante el despliegue pueden caducar.**
+> `ChangeSessionExpiresAtToTimestamp1784000000000` convierte
+> `session.expiresAt` de `date` a `timestamp`: una fecha sin hora pasa a ser
+> las 00:00 de ese día, y #1127 rechaza ahora en la petición las sesiones
+> caducadas. Una sesión abierta en el momento del despliegue queda caducada.
+> En Postgres además es un `ALTER COLUMN … TYPE`, que reescribe la tabla
+> `session` con un bloqueo exclusivo: desplegar en una ventana tranquila y,
+> si la tabla es grande, limpiarla antes.
+
+Y para cp-platform:
+
+> 🟠 **Los webhooks de presentación empiezan a llegar también al fallar**,
+> incluidos los del webhook endpoint configurado en las presentation configs
+> (`CP_VERIFIER_RELAY_ENDPOINT_ID`), que hasta ahora solo recibía éxitos.
+> Ver el punto (a) de la sección siguiente.
+
+#### Lo que cp-platform tiene que cambiar antes de desplegar v9.1
+
+Comprobado leyendo cp-platform (`/home/boli/espuni`), sin tocarlo:
+
+- **(a) Webhooks de presentación también en fallo y rechazo (#1133).**
+  Llegan siempre, con `status` (`completed` | `failed`) y `outcome`; en un
+  fallo no hay `credentials`. Desaparecen el `error` y el `message` de primer
+  nivel que mandaba el `sendFailureWebhook` del fork: el motivo está en
+  `outcome.error` (código) y `outcome.message`. `extractFailure`
+  (`apps/api/src/metering.controller.ts`) ya cae a `outcome.error` /
+  `outcome.message` y a `status: "failed"`, así que no marca un fallo como
+  bueno, pero `EUDIPLO_FAILURE_CODES` no conoce los códigos nuevos de v9
+  (`claim_value_mismatch`, `chain_build_failed`, `no_trusted_entity_match`)
+  ni los códigos OAuth de la wallet que ahora son `failureCode`
+  (`access_denied` cuando el usuario rechaza): se guardarían como texto, no
+  como código. Además el relay del webhook endpoint
+  (`CP_VERIFIER_RELAY_ENDPOINT_ID`) tiene que aceptar fallos; antes solo veía
+  éxitos. La cancelación manda `status: "cancelled"`.
+- **(b) Dejar de mandar `notifyOnFailure`**: `buildWebhookConfig`
+  (`apps/api/src/eudi-verifier-defaults.ts`) y su uso `buildWebhookConfig(true)`
+  en `verifier.controller.ts`. Este fork lo acepta e ignora (§1.7), así que no
+  es urgente, pero se quitará.
+- **(c) Valores en los claims de edad (#1148).** v9 impone los `values` del
+  DCQL y los tipa (`[true]`, no `["true"]`), con el código nuevo
+  `claim_value_mismatch`. Sin `values: [true]` en `age_over_18` (y el resto de
+  claims AV), un `false` divulgado completa la verificación con éxito.
+  Conviene añadirlo a las configs AV.
+- **(d) Sesiones acotadas por rol (#1145).** Un cliente solo lee, borra y
+  sigue (SSE) las sesiones del tipo para el que tiene rol: emisión con
+  `issuance:offer` o `issuance:manage`, presentación con
+  `presentation:request` o `presentation:manage`. El cliente de cp-platform
+  necesita los roles de los dos lados que lea; con uno solo, las otras
+  sesiones dan 404, y el portal de cp-platform interpreta un 404 como
+  `expired`.
+- **(e) Sesiones caducadas rechazadas en la petición (#1127)**, y
+  `expiresAt` pasa a ser un timestamp. Quien lea `expiresAt` como fecha
+  tiene que aceptar fecha y hora.
+- **(f) El stream SSE se cierra tras un estado terminal** (completed,
+  failed, expired, cancelled). Un cliente que reconecte en bucle al cerrarse
+  el stream tiene que dejar de hacerlo. El evento `failed` sigue llevando
+  `error` y `message` (§1.7). cp-platform no usa el SSE de EUDIPLO hoy, pero
+  su portal (`session-events-stream.ts`) da por terminales solo
+  `completed`, `failed` y `expired`: una sesión `cancelled` (estado de v9) se
+  quedaría en polling hasta que el cliente cierre.
+- **(g) Política de URL salientes (#1155, #1157).** Listas de confianza,
+  listas de estado, entidades de federación, CRL y servidores de
+  autorización externos se descargan bajo la política (esquema, direcciones
+  privadas, redirecciones, tamaño). Las listas que usa hoy cp-platform son
+  HTTPS públicas, así que no les afecta; una URL interna o `http://` dejaría
+  de funcionar. Las listas XML de §1.2 pasan por la misma política.
+
+#### Contrato de configuración portable (decisión tomada)
+
+v8 introdujo el formato portable (`$schema` + `spec`) con esquemas JSON
+publicados **inmutables** (`schemas/v1`, `v2`, `v3` en v9.1.0). Los caminos
+portables (carpeta de import al arrancar, bundles, `validate` del CLI)
+validan con ellos (ajv, `additionalProperties: false`) antes de Zod. Los
+campos del fork no están en ese contrato: `PresentationConfig.clientIdScheme`
+(§1.1) y `TrustListRef.format` / `serviceTypeMap` / `acceptedServiceStatus`
+(§1.2).
+
+**Decisión del owner (2026-10):** no se extienden los esquemas portables
+(una versión del fork chocaría con las v2/v3 de upstream). En su lugar:
+
+- **Las configuraciones con `clientIdScheme: "redirect_uri"` o con los
+  campos XML de §1.2 solo se pueden crear por la API REST**
+  (`POST /verifier/config`), no por ficheros portables, bundles ni el CLI.
+  El import portable las rechaza (`Unknown property`). Un export de una de
+  esas configs tampoco se podrá volver a importar.
+- **El camino REST sigue abierto en v9.1.0, comprobado.** #1184 hizo que
+  REST valide como el import, pero solo para credenciales, configuración de
+  emisión y listas de confianza (`createConfigBodyPipe` en esos tres
+  controladores). El `POST`/`PATCH` de presentation config sigue con
+  `PresentationConfigCreateDto` (Zod del fork vía `nestjs-zod`), sin el
+  esquema portable. Lo demuestra el e2e de §1.1, que crea la config por REST.
+  Si upstream extiende #1184 a presentaciones, este camino se cierra: revisar
+  en cada rebase.
+- **CI:** el paso `pnpm schemas:check-contract` del job
+  `Check Config Schemas and Website` lleva `continue-on-error` fuera de
+  upstream, y es el único tolerado. Medido en v9.1.0: falla con
+  `Published schema v3/PresentationConfigFile.schema.json differs`; el resto
+  del job (`sync-config-format --check`, `check-published-schemas`,
+  `build-website`) pasa.
+- cp-platform sube hoy `age-verification-fallback` por la API REST (en
+  `apps/api`), así que no le afecta.
+
+### What the rebase changed (2026-10-05, v8.1.0)
+
+Target was the **`v8.1.0` tag**, not `upstream/main`: `main` carries 50+
+unreleased commits heading to v9.0 with a dozen breaking changes (see
+[Next jump: v9.0](#próximo-salto-post-91), now replaced). Patches were re-applied on top of the tag,
+one commit (or two) per §, as in PR #19.
+
+- **Dropped, upstream since v7.5.0:** §1.6 (#970) and the core of §1.7 (#974)
+  — same eight failure codes, same `outcome` / `failureCode` shape. Also
+  dropped: our `AddOutcomeToSession1776000000000` and
+  `AddMissingSessionColumns1791000000000` (upstream renumbered them, see §3b),
+  the `doctype_value` fix (#954, v7.3.0), the MinIO image from quay.io (#958)
+  and `docs/architecture/verification-errors.md` (upstream deleted `mkdocs.yml`
+  and absorbed the same table into `apps/docs/docs/presentation/handling-results.md`).
+- **Kept as a reduced §1.7:** `WebhookConfig.notifyOnFailure`, the failure
+  reason on SSE, and the non-fatal `warnings[]` — none of them in v8.1.0.
+- **§1.1 reconciled with upstream's own `clientIdScheme` (#1057).** See §1.1.
+- **v8 moved under several patches:** native ESM (#1000, every fork file needs
+  `.js` relative imports, `__dirname` is gone), managed trust lists
+  (`trustListId`, which now needs a `tenantId` in §1.8), the shared
+  `buildAccessTokenPayload` helper (§1.12), `@owf/mdoc` 0.8 (§1.3) and the
+  `@owf/*` family at `^0.4.0` (§1.2 now consumes `@owf/eudi-tl` `^0.4.1` from
+  npm, no longer an alpha).
+- **CI:** v8 added a `deploy-docs` job (Cloudflare Pages preview) that needs
+  upstream's secrets; it now carries the same repository gate as the image and
+  npm publish steps.
+
+#### Pre-deploy warning (v8.1.0)
+
+> 🔴 **Upstream migration `AddStatusListVersionAndUniqueConstraint1776000000000`
+> aborts startup** if `status_mapping` holds duplicate
+> `(tenantId, statusListId, index)` rows — it adds a unique constraint and
+> refuses to create it over duplicates. Run this on each database **before**
+> deploying, after the snapshot, and resolve any row it returns:
 >
-> ℹ️ **Production behind staging is by design, not drift.** Staging runs ahead
-> while something is being validated; that is what it is for. Only staging
-> carries §1.6 and §1.7 today.
+> ```sql
+> SELECT "tenantId","statusListId","index",COUNT(*) FROM status_mapping GROUP BY 1,2,3 HAVING COUNT(*)>1;
+> ```
 >
-> cp-platform's `docker-compose.override.yml` used to pin a single tag for both
-> droplets, so it necessarily misstated one of them whenever staging was ahead.
-> Fixed in cp-platform [#230](https://github.com/eudiaas/espuni/pull/230): the
-> tag now comes from `EUDIPLO_IMAGE_TAG` in each droplet's `.env`, and
-> `docs/architecture/environments.md` is the single record of what each
-> environment runs and since when. Consult that table, not this file, for the
-> deployed version.
+> The other renumbered migrations are harmless (§3b).
+
+#### Portable config contract (v8.1.0, superseded)
+
+Left open on v8.1.0 as an owner decision. Decided on the v9.1.0 rebase: see
+[Contrato de configuración portable](#contrato-de-configuración-portable-decisión-tomada).
 
 ### What the rebase changed (2026-08-22, PR #19)
 
@@ -79,6 +259,11 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Why we need it | EU AV profile Annex A §A.6 fallback: unsigned OID4VP request-by-value + unencrypted `direct_post`. The default `x509_hash` scheme is not accepted by the AV wallet in fallback |
 | Consumed by | cp-platform config `age-verification-fallback` |
 | v7 impact | 🔴 `PresentationConfigSchema` is Zod **`.strict()`** and does not know `clientIdScheme` → the whole config is **rejected**, not ignored. Patch must be re-applied |
+| v8.1.0 reconciliation | Upstream #1057 added its own `clientIdScheme`, on the **presentation request** (`ClientIdScheme = { X509_HASH, X509_SAN_DNS }`, `client-id.util.ts`). Ours lives on the **presentation config**. Reconciled, not duplicated: upstream's enum gains `REDIRECT_URI`; the config keeps `clientIdScheme` (column, entity, strict Zod schema) with all three values; precedence is **request > config > `x509_hash`** (`resolveClientIdScheme`). The config value is what lets `age-verification-fallback` work without its callers knowing; a request may override it because every resulting combination is coherent. The one incoherent one, `redirect_uri` with `response_type: "dc-api"`, is now a **400** (the v7.2.0 patch silently answered a DC API caller with a QR) |
+| Other v8 changes | The by-value request now runs `transformDcqlTrustedAuthoritiesToAki` like upstream's JAR does, so internal `etsi_tl` objects never reach the wallet; the session records `webhookEndpointId`, the resolved endpoint webhook and `skewSeconds` like upstream's; `getType()` (which decoded the absent request object) is replaced by the DCQL credential's `format` |
+| Tests | `oid4vp-redirect-uri.spec.ts` (11 unit tests: AV parameters, session, precedence, DC API refusal, `aki` transform) and an **end-to-end** case in `presentation-mdoc-av-negative.e2e-spec.ts`: config created over REST → by-value request → unencrypted form-urlencoded `direct_post` → session `completed` |
+| ⚠ Portable config | `clientIdScheme` is not in upstream's immutable `schemas/v1` contract, so a **portable** (`$schema` + `spec`) presentation config carrying it is rejected on import. REST is fine. See [Contrato de configuración portable](#contrato-de-configuración-portable-decisión-tomada) |
+| v9.1.0 | **Reaplicado, mismo diseño.** El `ClientIdScheme` de upstream sigue siendo `{x509_hash, x509_san_dns}`; v9 lo movió a `oid4vp/dto/presentation-request.schema.ts`, y ahí gana `REDIRECT_URI`. `presentations.service.ts` ya no existe (#1081): el formato de la credencial lo decide ahora `verify-presentation-response.ts` (`requestedFormat`, que decodifica el JAR de la sesión); sin request object (redirect_uri) se toma del DCQL de la consulta. La conversión a `aki` es `TrustedAuthoritiesService.transformDcqlTrustedAuthoritiesToAki`, la sesión se crea con `CreateSession` y guarda `reference`. 11 tests unitarios y el e2e en verde. Ojo para el siguiente salto: upstream `main` (#1218, post-9.1) exige `trusted_authorities` en las presentation configs |
 
 ### 1.2 XML trusted-list bridge
 
@@ -89,6 +274,9 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Upstream status | Library proposed as EUDIPLO PR **#883 → CLOSED**. Correct home turned out to be OWF Labs: **`identity-common-ts` PR #170** (`@owf/eudi-tl`), **merged 2026-08-22**. 🔴 **Not yet published to npm** (checked 2026-08-28: `registry.npmjs.org/@owf/eudi-tl` → 404, while every sibling — `cose`, `crypto`, `eudi-lote`, `identity-common`, `token-status-list` — is at `0.3.2`). The vendored copy cannot retire until it publishes |
 | Why we need it | The EU AV Trusted List is **ETSI TS 119 612 XML**. Upstream v7 only speaks LoTE (TS 119 602 JSON) + internally managed lists — no XML path exists |
 | v7 impact | 🔴 v7 redesigned `trusted_authorities` to objects (`{url, verifierX509Der}` or `{trustListId}`). The bridge must be rebuilt against that shape |
+| v8.1.0 | `@owf/eudi-tl` **is now on npm** (0.4.0, 0.4.1 = `latest`): the dependency moved from `0.4.0-alpha-20260901082001` to `^0.4.1`, alongside the rest of the `@owf/*` family at `^0.4.0`. `trust-store.service.ts` conflicted with v8's managed trust lists (`trustListId` resolution in the constructor path); both kept, the XML branch runs after that resolution. ⚠ v8 now turns `etsi_tl` values into `aki` strings for the wallet, derived from `verifierX509Der` — on an XML ref that is the **list signer**, not the issuing CA. Harmless while `VP_REMOVE_TA=true` strips `trusted_authorities` afterwards, as in our deployments; wrong if that flag is ever turned off. Upstream main's #1134 rederives `aki` from the listed issuers |
+| ⚠ Portable config | `format` / `serviceTypeMap` / `acceptedServiceStatus` hit the same immutable-contract wall as §1.1's `clientIdScheme` |
+| v9.1.0 | **Portado a un adaptador.** En v9 `TrustStoreService` ya no descarga ni parsea: lo hace un `TrustListProvider`. El puente es ahora `trust/adapters/etsi-xml-trust-list-provider.ts`, puesto delante del `VerifiedLoteProvider` de upstream en `trust.module.ts`; los refs sin `format: "etsi-xml"` siguen al de upstream. (1) **Descarga por `TrustFetchService`**, o sea por la política de URL salientes de #1155 (esquema, direcciones privadas, redirecciones, 10 MiB): ya no hay cliente HTTP propio. (2) **Un ref XML sin `verifierX509Der` se rechaza**: sin ancla `@owf/eudi-tl` solo comprueba integridad, y upstream ya rechaza un ref LoTE sin material de verificación (cp-platform siempre lo fija para las dos URL AV). (3) **#1134**: como el adaptador está detrás del mismo puerto, `getListedEntities` lee también las listas XML y el `aki` del DCQL sale de los certificados de los emisores listados (los PAA, que cp-platform mapea a `EAA/Issuance`), ya no del firmante de la lista; si no se puede, upstream manda la URL como `etsi_tl`, que es su respaldo para cualquier lista. Para leer los certificados AV hace falta `registerTolerantX509Extensions()`, que el arranque ya registra. (4) El filtrado por tipo de servicio aceptado lo hace `CollectTrustedEntities`, como para LoTE. `TrustListRef` (`trust/types.ts`) y la clave de caché de `TrustStoreService` ganan los tres campos. `@owf/eudi-tl` `^0.4.1` (0.4.2). 10 tests en `etsi-xml-trust-list-provider.spec.ts` |
 
 > **Once `@owf/eudi-tl` publishes, the five library commits retire.** EUDIPLO
 > already depends on that whole family (`@owf/cose`, `@owf/crypto`,
@@ -97,10 +285,10 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > and becomes re-proposable upstream, since v7 made signer pinning mandatory,
 > which is exactly what #883 argued for.
 >
-> **Blocked on publication, not on adoption.** The merge landed the source in
-> `identity-common-ts`; nothing consumable exists on npm yet. Until it does,
-> neither the vendored copies in cp-platform nor this bridge can move, and
-> there is nothing to ask EUDIPLO to adopt. Track the npm release, not the PR.
+> **Published (re-checked 2026-10-05).** `@owf/eudi-tl` 0.4.1 is on npm and
+> this fork consumes it. What remains is the bridge itself (`f691ef5e`'s
+> successor in `trust-store.service.ts`), re-proposable upstream, and the
+> vendored copies in cp-platform, which can now move to the npm package.
 
 ### 1.3 AV test vectors
 
@@ -110,6 +298,8 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | What | AV mDOC negative-vector e2e suite + real AltID Appendix F `vp_token` fixture |
 | Upstream status | Fork-only, never proposed |
 | v7 impact | 🟠 Tests only — no functional risk, but expect churn against v7 APIs |
+| v9.1.0 | Reaplicado sin conflicto. 7/7 en la suite AV (con el e2e de §1.1), 2 + 1 fallo esperado en Appendix F. La observación sobre `skewSeconds` en mdoc sigue en pie |
+| v8.1.0 | ESM (`import.meta.dirname`, `.js` imports). Fixtures stay in the flat v7 shape — upstream's `readConfig()` passes them through. `@owf/mdoc` 0.8 requires the MSO `signed` date inside the issuer certificate's validity (±30 s) and `validFrom >= signed`, so the **expired** vector, back-dated 60 days, was being rejected for its signing date instead of for expiry: it now derives its window from the certificate's `notBefore` and is rejected with *"The MSO must be valid at the time of verification"*. Observed while fixing it: EUDIPLO does not pass its `skewSeconds` to `Verifier.verifyDeviceResponse`, so mdoc verification always uses the library's fixed 30 s |
 
 ### 1.5 AV issuance: omit `authorization_details` in the pre-authorized flow
 
@@ -117,36 +307,21 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 |---|---|
 | Introduced in | `22c9ee48` (hidden inside a rebase commit) |
 | File | `issuer/issuance/oid4vci/authorization/authorize/authorize.service.ts` |
-| Upstream status | ⚠ **Re-verify before the next rebase.** The claim below holds for v7.2.0. On upstream `main` post-#958, `buildAuthorizationDetails` is no longer unconditional — it returns what the Wallet requested when it requested anything, and otherwise falls back to the offer's credential ids. Whether that makes this patch redundant was **not** determined (2026-08-28); read the whole function before carrying it forward or dropping it |
+| Upstream status | 🔴 **Still needed on v8.1.0 (re-verified 2026-10-05).** `buildAuthorizationDetailsForToken` returns what the Wallet requested when it requested anything, and otherwise falls back to the offer's `credentialConfigurationIds`. A pre-authorized flow has no authorization request, so it **always** falls back, and the token still carries `authorization_details` with `credential_identifiers`. Omitting it stays safe: the credential endpoint enforces nothing when the token has no `authorization_details` |
 | Why we need it | With `authorization_details` present, the spec requires wallets to use `credential_identifier`; wallets that only support `credential_configuration_id` — including the AV reference wallet — break. Omitting it in the pre-auth flow keeps them working |
 | v7 impact | 🟢 Applies cleanly: `preAuthorizedCodeGrantIdentifier` and `parsedAccessTokenRequest` both exist unchanged in v7 |
+| v9.1.0 | 🔴 **Sigue haciendo falta.** v9 saca la lógica a `authorizationDetailsForToken` (`authorization/domain/token-grant-rules.ts`), usada por `application/exchange-access-token.ts`, y sigue cayendo a los ids de la oferta. **Portado con un cambio a propósito:** solo se quita de la **respuesta** del token (`walletSeesAuthorizationDetails`), no del JWT. El access token es opaco para la wallet y, con `authorization_details` dentro, `ResolveAuthorizedCredentialConfiguration` sigue restringiendo el token a las configuraciones de la oferta y las acepta por `credential_configuration_id`. En v8.1.0 el token iba sin nada y servía para cualquier configuración del tenant. También cubre el refresh de una sesión pre-autorizada. Tests: `authorization-details-for-grant.spec.ts` (4) y el test de upstream de `authorize.controller.spec.ts` ajustado |
 
-### 1.6 Structured verification failure (shared taxonomy)
-
-| | |
-|---|---|
-| Commits | `20f801be` (feat) · `f2d5986f` (classify at source) · `0f443a32` (format-neutral module + SD-JWT-VC) · `bff757ac` (docs) · `3a392657` `6ed25324` (rebase fixes) |
-| Upstream status | 🟡 **Proposed — [EUDIPLO PR #970](https://github.com/openwallet-foundation/eudiplo/pull/970)**, opened 2026-08-28 against `main` post-#958. All checks green (E2E OIDF + non-OIDF, SonarCloud, CodeQL, DCO, Lint). Awaiting review |
-| What | Verification failures carry a stable machine-readable code plus a short, safe message instead of a verbose `failureReason` string. `verification-failure.ts` holds the taxonomy and the mapping from `ChainValidationResult.error`; both verifiers classify through it, so SD-JWT-VC stops discarding the reason. Verbose detail stays in logs/audit |
-| Why we need it | cp-platform surfaces the failure cause in the dashboard and in the downloadable session evidence. Parsing prose is not an option |
-| Consumed by | cp-platform: labelled failure cause in the dashboard, `failureCode` in the evidence download |
-| v7 impact | 🟢 Rebases cleanly onto post-#958: the only conflicts were import ordering from the new `.prettierrc`, plus dropping the text-sniffing block this patch removes anyway |
-
-> The upstream branch is `upstream-pr/structured-verification-error`, cut from
-> `upstream/main` — **not** from fork `main`. Do not merge it back here: it
-> carries all of #958 and 17 further upstream commits, i.e. a v7.4.0 upgrade
-> wearing a bugfix's clothes.
-
-### 1.7 Structured session outcome
+### 1.7 Resultado de sesión: lo que queda en el fork (motivo del fallo en SSE)
 
 | | |
 |---|---|
-| Commits | `6c182bc0` (outcome + `failureCode` on the session, migration) · `79acc4a1` (push the reason to webhook and SSE) · `8d9fd84c` (non-fatal warnings) |
-| Upstream status | **Not proposed.** Approved in principle by `cre8` on Discord; the design is open on one point — see below |
-| What | A structured `outcome` on the session covering success and failure, with trust provenance on success, a `failureCode` scalar for cheap querying, the failure reason carried on SSE and on an opt-in failure webhook (`WebhookConfig.notifyOnFailure`, default false), and a non-fatal `warnings[]` channel |
-| Why we need it | Without it a relying party learns only *that* a verification failed, never *why*, and only by polling — the success webhook fires, the failure one does not |
-| Consumed by | cp-platform: ingestion of the structured failure verdict, per-tenant failure webhook |
-| v7 impact | 🟠 Touches `session.entity.ts` and ships migration `1776000000000-AddOutcomeToSession` — schema surface, so it needs its own upgrade check |
+| Commits | `6c182bc0` `79acc4a1` `8d9fd84c` en v7.2.0; un commit reducido en v8.1.0; en v9.1.0 solo el SSE (`feat(sesiones): el evento SSE de una sesión fallida dice por qué`) |
+| Estado upstream | 🟢 Núcleo upstream desde v7.5.0 (#974). 🟢 **El webhook de fallo, desde v9.0 (#1133)**: los webhooks de presentación salen siempre, también al fallar o al rechazar la wallet, con `status` (`completed` / `failed`) y `outcome`, por OID4VP y por ISO 18013-7. 🔴 **No upstream en v9.1.0:** el motivo del fallo en el evento SSE. El SSE de v9 completa el stream tras un estado terminal, pero solo manda `id`, `status` y `updatedAt` |
+| Lo que queda | El evento `failed` del SSE lleva `error` (= `failureCode`) y `message` (= `errorReason`), al conectar a una sesión ya fallida y en directo (`session/session-events.service.ts`). Como en v9 el evento en directo solo lleva el estado, un `failed` en directo se completa con una lectura de la sesión; si falla, el estado sale sin motivo. Tests: `session-events-failure-reason.spec.ts` (4) |
+| Deprecado, aceptado e ignorado | `WebhookConfig.notifyOnFailure` (`webhook/webhook.dto.schema.ts`, `webhook.dto.ts` con `deprecated: true`). `WebhookConfigSchema` es `.strict()` y cp-platform lo manda (`buildWebhookConfig(true)`): quitarlo daría 400 a cada petición de presentación de cp-platform hasta redesplegarla. **Se quita cuando cp-platform deje de mandarlo.** Test: `notify-on-failure-deprecated.spec.ts` (3) |
+| Quitado en v9.1.0 | `sendFailureWebhook` (lo sustituye #1133) y los `warnings[]` (`trust_list_near_expiry`, `federation_fallback_used`) por decisión del owner. Ojo: los `warnings` **no** los sustituye upstream; v9.1.0 solo declara el campo en `session/domain/session-outcome.ts` y nada lo rellena. cp-platform no los lee |
+| Lo consume | Clientes que siguen la sesión por SSE directamente contra EUDIPLO. cp-platform hoy no: su portal hace polling de su propia API (`apps/portal/app/api/lib/session-events-stream.ts`) |
 
 > **Open design question, unresolved (2026-08-28).** `notifyOnFailure` is
 > opt-in while the success webhook always fires, and **expiry emits nothing at
@@ -163,7 +338,11 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 >    OID4VCI §11 is the precedent for the shape: a terminal outcome that
 >    explicitly includes the negative case (`credential_accepted` /
 >    `credential_failure` / `credential_deleted`), optional and negotiated.
-> 2. **`SessionStatus.Expired` is dead code, upstream included.** Verified on
+> 2. ~~**`SessionStatus.Expired` is dead code, upstream included.**~~ *Fixed
+>    upstream by v8.1.0: `SessionService.expirePresentationSessions()` moves
+>    overdue `active`/`fetched` presentation sessions to `expired` (and emits the
+>    SSE event); main's #1127 also rejects expired sessions at request time.
+>    Original finding kept for the record:* Verified on
 >    upstream `main` post-#958: nothing in `apps/backend/src` ever assigns it —
 >    the sole reference is the metrics-initialisation loop — and `expiresAt` is
 >    never read by the session lifecycle. Yet `apps/docs/docs/presentation/handling-results.md`
@@ -177,6 +356,13 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 > stores it as prose in `errorReason` with no `failureCode` and no `outcome`,
 > and fires no webhook. The outcome should carry spec codes verbatim and record
 > whether the failure came from the protocol channel or from our validation.
+>
+> **Resuelto en v9.1.0, casi todo.** #1133 manda el webhook también al
+> fallar, sin opt-in, y el rechazo de la wallet (`access_denied`) se guarda
+> con ese código como `failureCode` y también dispara el webhook
+> (`handleWalletError` en `oid4vp.service.ts`). La caducidad sigue sin
+> webhook: el mantenimiento (`CleanupSessions`) mueve la sesión a `expired`
+> y solo se entera el SSE; nada en `webhook/` reacciona a ese estado.
 
 ### 1.8 WUA status per EUDI TS3 v1.5 (`client_status`, `key_storage_status`)
 
@@ -189,6 +375,8 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Why we need it | A conformant WIA (e.g. from `eu-digital-identity-wallet/eudi-srv-wallet-provider`) looked like one without status, so its revocation check was **silently skipped**. The KA was never checked at all, while TS3 v1.5.2 §2.4.3 says an Attestation Provider SHALL NOT issue on a revoked KA |
 | Side effect | A `jwt` proof carrying a `key_attestation` now also has its KA signer validated against `walletProviderTrustLists` (the status check matches the provider first). Upstream does this since `validateJwtProofAttestationTrust`; v7.2.0 did not |
 | v7 impact | 🟢 No schema, no migration. On rebase onto v8, `oid4vci.service.ts` already calls `validateJwtProofAttestationTrust` in the `jwt` branch: keep both calls |
+| v9.1.0 | 🔴 Sigue sin estar upstream (nada lee `client_status` ni `key_storage_status`). v9 (#1146) saca la verificación de pruebas a un solo adaptador, `issuer/issuance/oid4vci/adapters/openid-credential-proof-verifier.ts`, que usan `oid4vci.service.ts` y `deferred-credential.service.ts`; ahí upstream valida la confianza del proveedor de la KA, y `IssueCredentialsFromProofs` impone después `keyAttestationsRequired` (`domain/key-attestation-requirements.ts`). Nuestro chequeo de estado va en ese adaptador, **una vez**, justo después del de confianza, en las dos ramas; los dos servicios quedan como los de upstream. Con #1146 quedan cubiertos los huecos **1 y 2** de la nota de abajo. Test nuevo: `openid-credential-proof-verifier-ka-status.spec.ts` (4) |
+| v8.1.0 | Done: both calls kept, upstream's trust validation first, then our status check, in `oid4vci.service.ts` and `deferred-credential.service.ts`. v8's `validateWalletSolutionCertificate` takes a `tenantId` (managed trust lists), so `verifyKeyAttestationStatus` / `verifyProofKeyAttestationStatus` now take and pass it. Upstream main's #1146 enforces `keyAttestationsRequired` — gap 1–2 below — so expect overlap on the v9 jump |
 
 > **Other TS3 (v1.4–v1.5.2) gaps found in the same review, not patched here**
 > (all verified on `upstream/main` v8.0.1):
@@ -232,6 +420,7 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | The default is deliberate | Signed metadata is only served when the client **names** `application/jwt`. A wildcard `Accept` — a browser, a plain `curl` — or no header at all still gets JSON, which a bare `request.accepts([jwt, json])` would not have done: wildcards match, so those clients would have started receiving a JWT. Once the type is named, Express resolves the `q` weights, so JSON still wins when the client ranks it higher |
 | Not fixed here | Issue #29 §3 — which access key chain signs the metadata is undetermined when a tenant has more than one (`findByUsageType` does an unordered `findOne`, and there is no `signingKeyId` equivalent for issuer metadata). Worked around by giving the entity a single access certificate. §2 of that issue is not a bug, it is why this one matters |
 | v7 impact | 🟢 Self-contained: one decorator plus tests, on files upstream has not touched since v7.2.0. Replays through any rebase |
+| v9.1.0 | 🔴 Sigue haciendo falta: `shared/utils/media-type/` no cambia entre v8.1.0 y v9.1.0. Único ajuste: el test de fronteras de módulos de v9 (`platform/module-boundaries.spec.ts`) no deja a `shared/` importar Express, así que el decorador declara la parte de la petición que lee (`headers.accept`, `accepts()`) en vez de importar `Request` |
 
 > Covered by a unit spec on the negotiation itself (single type, both types, `q`
 > weights in either order, wildcard, no header) and by e2e cases on the real
@@ -251,6 +440,7 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Why it is safe to read an unverified attestation | The branch only chooses which key the signature is checked against. `@openid4vc/openid4vci` verifies the attestation immediately after and refuses the proof unless that key is in the attested set of the *verified* attestation (`isJwkInSet`), and §1.8's `verifyProofKeyAttestationStatus` then validates the attestation's x5c chain against `walletProviderTrustLists` and its revocation status. A forged attestation passes none of those |
 | `kid` is a hint | It is tried first and the rest of the attested keys after, because TS3 v1.5 dropped the requirement to send a `kid` and the library checks membership, not position. Making index 0 mandatory is the stricter reading in §1.8's note 4, and is not done here |
 | v7 impact | 🟢 Self-contained: one branch plus a pure helper, on a file upstream has not changed. Replays through any rebase, unless the library starts resolving attested keys itself |
+| v9.1.0 | 🔴 Sigue haciendo falta: `crypto.service.ts` solo trata `jwk` y `x5c` y lanza `Signer method 'custom' not supported`. Sin conflicto. Encaja con el verificador de pruebas de #1146: llama a la librería con los callbacks de `getCallbackContext`, y `key-attestation-requirements.ts` exige después que la clave de la prueba esté en `attested_keys`, que es la que devuelve esta rama |
 
 > The spec signs a real proof with a real attested key and runs it through the
 > callback. The four cases fail on unpatched `main` with the wallet's own error
@@ -269,6 +459,7 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Issuance only | `PubEAA/Revocation` is deliberately **not** added. It would be dead weight today: `getRevocationCert()` looks up `ServiceTypeIdentifiers.EaaRevocation` from `trust/types.ts`, a separate declaration this patch does not touch, and the flows that reach here take their status from the credential's own status list. A Pub-EAA provider whose revocation service must be honoured through the trust list is a second, separate gap — the spec above asserts the sibling URI does *not* let an entity in |
 | Not fixed here | The accepted set is spelled out twice, once per verification path, with no shared constant (upstream already has that pattern for `walletSolutionServiceTypes`). Left alone to keep the diff to what the bug needs; the new spec pins both copies |
 | v7 impact | 🟢 Self-contained: one enum member and two array entries, on files upstream has not touched since v7.2.0. Replays through any rebase |
+| v9.1.0 | 🔴 Sigue sin estar upstream. #1081 junta los dos caminos en `verifierTrustOptions` (`verifier/presentations/domain/verifier-trust-options.ts`), así que el tipo se añade **una sola vez**; se declara en `ServiceTypeIdentifiers` (`trust/types.ts`), la constante que usa ahora la verificación (el `enum` de `trustlist.service.ts` ya no se exporta y no se toca). Nuevo: también entra en los tipos de los que #1134 saca el `aki` (`trust/domain/authority-key-identifiers.ts`). El spec es ahora `trust/pubeaa-service-type.spec.ts`, que lee el conjunto aceptado del propio `verifierTrustOptions` |
 
 > `lote-parser.service.spec.ts` drives the real parser and the real filter with
 > the accepted set copied verbatim from both call sites: a Pub-EAA entity
@@ -290,6 +481,8 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Not PID-specific | An issuer may require any credential before issuing — a diploma to issue a professional card, a mandate to issue a delegation. `presented_claims` is whatever that presentation disclosed |
 | The cost, stated | The token grows with what is asked for, and it is a bearer artifact: it passes through the wallet and through any log that records `Authorization` headers. A presentation configuration that asks for a full PID puts a full PID in it. That is the cost of asking for it, and the reason to ask for less |
 | v7 impact | 🟢 Self-contained: one private helper, one optional field, one read of a session that is already being tracked. On a file upstream has rewritten since v7.2.0, so the rebase will need a hand — the logic is small enough to reapply by reading |
+| v9.1.0 | Reaplicado; v9 quitó `SessionService` del servicio y la sesión de emisión se lee con `SessionStore.getForTenant(tenantId, issuerState)`. **Solapamiento con #1108**: v9 manda al proveedor de atributos las credenciales presentadas en `credentials` (`application/resolve-credential-session.ts`), los mismos datos que `presented_claims`. Un proveedor de atributos ya no lo necesita; solo sirve a quien lea el access token. cp-platform no lo usa (comprobado). **Candidato a retirar** en el siguiente rebase si nadie lo pide |
+| v8.1.0 | Reapplied by reading. The payload is now built by upstream's shared `buildAccessTokenPayload` (also used by the chained AS); `presented_claims` is added to its result in `authorization-servers.service.ts`, so the shared helper stays untouched. Upstream main's **#1108** sends the presented credentials to the attribute provider — it may supersede this patch on the v9 jump |
 
 > The spec pins `presentedClaims`, which is where the decisions are: every
 > disclosed claim travels, both shapes EUDIPLO uses for a verified credential
@@ -309,6 +502,7 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | The shape of the failure | `JWSInvalid: Extension Header Parameter "sigT" is not recognized`, raised before any trust decision. It reads like a malformed list, not like a verifier that has not been told about a parameter it is supposed to know |
 | Why not drop `sigT` instead | It is not optional. A list without it is not Baseline B, and the wallets that read these lists are entitled to require it |
 | v7 impact | 🟢 One option object on one call |
+| v9.1.0 | 🔴 Sigue haciendo falta: `trustlist-jwt.service.ts` llama a `jwtVerify` sin `crit`. Upstream añadió su propio `trustlist-jwt.service.spec.ts` (choque add/add): se deja intacto y los tres casos del fork pasan a `trustlist-jwt-jades.spec.ts` |
 
 ### 1.14 `immediateWalletRedirect`, which existed and did nothing
 
@@ -325,6 +519,7 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Verified | On a device: the same chain that leaves the tab blank opens the wallet when a page sits in the middle |
 | Scope | Only the `oid4vp` AS, where the option is declared. `chained-as-vp` has the same defect and declares no option — open follow-up |
 | v7 impact | 🟢 One new file, one field on a return type, one branch in a controller |
+| v9.1.0 | **Cambia de forma.** Upstream (#1098) ya no hace el 302: sirve **siempre** una página con un enlace **Open wallet** que el usuario toca (`renderWalletInvocationPage`), y documenta `immediateWalletRedirect` como «aceptado, sin efecto» (el servicio sigue sin leerlo). Arregla Android por el mismo motivo (la navegación sale de una página con origen), pero con un toque. Ahora: sin la opción o `true`, la página de upstream; `false`, la página del fork, que navega sola y deja el enlace (la verificada en Android con cp-platform). El 302 ya no se ofrece. Docs de upstream (`apps/docs/docs/issuance/authorization-servers.md`) actualizadas |
 
 ### 1.4 Fork infrastructure (permanent)
 
@@ -335,6 +530,19 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | `34c572ae` `0acc54d5` | `docs/findings/` notes (trust-list config surface, mdoc-ts ReaderAuth signing gap) |
 
 Never goes upstream by design. Carry forward as-is.
+
+**v9.1.0.** `ci-and-release.yml` se toma de v9.1.0 y se vuelve a poner la
+guarda `github.repository == 'openwallet-foundation/eudiplo'` en cada paso
+que empuja imágenes (v9 publica en `ghcr.io/eudiplo/*`; el job
+`docker-backend-demo` ya no existe) y en `deploy-docs`, que ahora llama al
+workflow reutilizable `deploy-site.yml` con secretos de Cloudflare.
+`release.yml` fusiona sin conflicto: `npm-prerelease` y `prepare-release`
+siguen bajo la guarda y el `deploy-site` de producción depende de
+`prepare-release`. Workflows nuevos o sin guarda revisados:
+`check-stale-overrides.yml` (abre una issue en el propio repo, no publica),
+`load-test.yml`, `scorecard.yml`, `codeql.yml`, `dependabot-auto-merge.yml`:
+ninguno publica fuera del fork. Nuevo: `continue-on-error` en el paso
+`pnpm schemas:check-contract`, el único tolerado (ver el contrato portable).
 
 ---
 
@@ -350,6 +558,13 @@ These landed upstream from this fork. After rebasing onto v7.2.0 they are
 | `044e5505` `45ce45cb` + docs `f9dcff4e` `14d4331d` `b9b8332b` — fail closed when a trust list cannot load | **#862** MERGED | v6.2.0 | **Already redundant today**: fork `main` merged upstream past v6.2.0, so both our `044e5505` and upstream's squashed `1247a9b5` are present |
 | — ISO 18013-7 Annex C `org-iso-mdoc` | **#836** MERGED | v6.0.0 | already in base |
 | — `mdocverifier` DC API `SessionTranscript` branching | part of **#836** | v6.0.0 | `protocol === "dc_api"` → `SessionTranscript.forOid4VpDcApi()`; rationale preserved in `verifier/iso18013/DESIGN.md` |
+| `20f801be` `f2d5986f` `0f443a32` `bff757ac` `3a392657` `6ed25324` — §1.6 structured verification failure (shared taxonomy) | **#970** MERGED | v7.5.0 | Verified in v8.1.0: `verification-failure.ts` identical to ours bar `.js` imports, same eight codes; `SdJwtVerificationError` classification in `oid4vp.service.ts`; the code table now lives in `apps/docs/docs/presentation/handling-results.md`, so `docs/architecture/verification-errors.md` and its `mkdocs.yml` entry are dropped too (upstream deleted `mkdocs.yml`) |
+| `6c182bc0` (core of §1.7) — `outcome` + `failureCode` on the session, provenance on success | **#974** MERGED | v7.5.0 | Verified in v8.1.0: `session-outcome.ts` identical bar one `export`; `verification-provenance.ts` identical; migration is upstream's `AddOutcomeToSession1779000000000` (§3b). `notifyOnFailure`, SSE reason and `warnings` were **not** taken — still §1.7 |
+| `d4aaec55` — ISO 18013-7 reads `meta.doctype_value` | **#954** MERGED | v7.3.0 | Same code, only the comment differs |
+| `0c17fe3d` — `AddMissingSessionColumns` | **#955** MERGED | v7.3.0 | Upstream's `1778000000000`, same `up()` (§3b) |
+| `43df54aa` — MinIO from `quay.io` in `storage.e2e-spec.ts` | part of **#958** | v7.3.0+ | Identical in v8.1.0 |
+| `1f2bd802` (parte de §1.7) — `WebhookConfig.notifyOnFailure` + `WebhookService.sendFailureWebhook`: webhook también al fallar | **#1133** MERGED | v9.0.0 | Comprobado en v9.1.0: `WebhookService` manda `status` + `outcome` en cada webhook de presentación (`completed` con credenciales, `failed` sin ellas), por OID4VP (`ProcessVerifiedPresentation` / `FailPresentationResponse`) y por ISO 18013-7. Upstream no tiene opt-in: siempre. `notifyOnFailure` se sigue aceptando e ignorando (§1.7) |
+| `1f2bd802` (parte de §1.7) — `warnings[]` en el outcome | — (**no** upstream) | — | Quitado por decisión del owner, no porque upstream lo haga: v9.1.0 declara `warnings` en `session/domain/session-outcome.ts` pero nada lo rellena. Se pierden `trust_list_near_expiry` y `federation_fallback_used`; cp-platform no los leía |
 
 > ⚠ **Correction (2026-08-22).** `22c9ee48` (*rebuild fork main on upstream
 > post-#836*) was previously listed here as a contentless rebase marker. It is
@@ -388,6 +603,7 @@ revocation anchors exist, which removes the crash our patch worked around.
 > `statusList`/`identifierList`, so today's AV flow is untouched.
 >
 > The options that were on the table:
+>
 > - `"best_effort"` — checks status, fails **open** when the list is
 >   unreachable. Closest to today's effective behaviour without disabling.
 > - `"disabled"` — exactly today's behaviour, and says so out loud.
@@ -443,6 +659,68 @@ After the upgrade, three upstream migrations run for real:
 | `AddClientIdSchemeToPresentationConfig` | `1771000000000` (upstream took it for `AddCwtCacheToStatusList`) | **`1790000000000`** | Idempotent, so the renumber costs nothing: it re-runs once as a no-op and records a second row |
 | `AddTrustListConfigToPresentationConfig` | `1775000000000` | **dropped** | No longer needed — see below |
 
+### Fork migrations after the v8.1.0 rebase
+
+Upstream's highest is now `1781000000000` (`AddConfigImportRun`); the fork's
+`1790000000000` still sits above it. Two of our migrations reached upstream
+under **other numbers**, so they are dropped and upstream's run instead:
+
+| Class | Applied on fork DBs | v8.1.0 (upstream) | Effect on upgrade |
+|---|---|---|---|
+| `AddOutcomeToSession` | `1776000000000` | **`1779000000000`** | Re-runs once as a no-op (guards on the existing columns), records a second ledger row |
+| `AddMissingSessionColumns` | `1791000000000` | **`1778000000000`** | Same: idempotent, duplicate ledger row only |
+| `AddClientIdSchemeToPresentationConfig` | `1790000000000` | — (fork only, kept) | Unchanged |
+
+Both are guarded on `table.columns.some(...)`, so the renumbering costs nothing
+but noise in `typeorm_migrations`. Optional hygiene, after the snapshot:
+
+```sql
+UPDATE typeorm_migrations SET timestamp = 1779000000000,
+       name = 'AddOutcomeToSession1779000000000'
+ WHERE name = 'AddOutcomeToSession1776000000000';
+
+UPDATE typeorm_migrations SET timestamp = 1778000000000,
+       name = 'AddMissingSessionColumns1778000000000'
+ WHERE name = 'AddMissingSessionColumns1791000000000';
+```
+
+⚠ The upstream `1776000000000` slot is now `AddStatusListVersionAndUniqueConstraint`,
+which is **not** idempotent against bad data: see
+[the pre-deploy warning](#pre-deploy-warning-v810).
+
+### Migraciones tras el rebase a v9.1.0
+
+La más alta de upstream es ahora `1784400000000`
+(`ChangeSessionOauthBindingsToTimestamp`); la del fork,
+`AddClientIdSchemeToPresentationConfig1790000000000`, sigue por encima y no
+se renumera.
+
+Upstream añade **siete** migraciones entre v8.1.0 y v9.1.0. Revisadas una a
+una: todas comprueban antes de actuar (tabla, columna o índice existente,
+tipo de columna), así que son idempotentes y ninguna aborta el arranque por
+datos existentes:
+
+| Migración | Qué hace | Nota |
+|---|---|---|
+| `AddOauthBindingsToSession1782000000000` | Columnas `request_uri_expires_at`, `authorization_code_expires_at`, `dpop_jkt`, `client_key_jkt` en `session` | Guarda por columna |
+| `AddDpopProofJti1783000000000` | Tabla `dpop_proof_jti` (+ índice) | Sale si la tabla existe |
+| `ChangeSessionExpiresAtToTimestamp1784000000000` | `session.expiresAt`: `date` → `timestamp` | ⚠ En Postgres `ALTER COLUMN … TYPE` reescribe la tabla con bloqueo exclusivo, y una fecha sin hora pasa a las 00:00: las sesiones abiertas durante el despliegue quedan caducadas (#1127). Ver [avisos](#avisos-previos-al-despliegue-v910) |
+| `AddOfferLifetimeToIssuanceConfig1784100000000` | Columna `offerLifetimeSeconds` en `issuance_config` | Guarda por columna |
+| `RemoveRegistrationCertProvidedAttestations1784200000000` | Quita `registration_cert.body.provided_attestations` de las presentation configs | Reescribe filas de `presentation_config`; idempotente (salta las que no lo tienen). Nada que ver con `clientIdScheme` |
+| `AddSessionListFilters1784300000000` | Columnas `reference`, `credentialConfigurationIds` e índices en `session` | Guarda por columna e índice |
+| `ChangeSessionOauthBindingsToTimestamp1784400000000` | Solo Postgres: columnas de 1782 de `timestamptz` a `timestamp` | Solo si el tipo es `timestamp with time zone`; usa la zona horaria del proceso |
+
+v9.1.0 también **modifica** migraciones ya aplicadas (`Baseline`, `1743`,
+`1745`, `1765`, `1778`). TypeORM no vuelve a ejecutar las aplicadas, así que
+en las bases existentes no tiene efecto.
+
+Como `main` sigue en v7.2.0, al desplegar v9.1.0 corren también las de
+v8.1.0, incluida `AddStatusListVersionAndUniqueConstraint1776000000000`, que
+**no** es idempotente frente a datos malos: el aviso de `status_mapping` de
+arriba sigue en pie.
+
+### Fork migrations after the v7.2.0 rebase (history)
+
 **`trustListConfig` no longer exists as a column.** v7 moved verifier material
 into `trusted_authorities` (`TrustListRef`), so the XML settings now ride inside
 the existing `dcql_query` JSON instead of a fork-only column. One less schema
@@ -469,6 +747,56 @@ them; dropping the column would be a destructive migration for no gain.
 5. Publish the image tagged after its **real** upstream base.
 6. Update the *Current state* table above.
 
+Learned on the v8.1.0 rebase:
+
+- The backend is **native ESM** since v8 (#1000): every fork file needs `.js`
+  on relative imports (`/index.js` for directories) and `import.meta.dirname`
+  instead of `__dirname`. These never show as merge conflicts, only at build
+  or test time.
+- Build `@eudiplo/config-format` (`pnpm --filter @eudiplo/config-format build`)
+  before running backend tests, as CI does.
+- Run `pnpm schemas:check-contract`: it is the only gate that notices a fork
+  field leaking into upstream's immutable config contracts (see
+  [Contrato de configuración portable](#contrato-de-configuración-portable-decisión-tomada)).
+  It regenerates `schemas/`; discard those changes afterwards. Since v9.1.0
+  it is expected to fail (only on `PresentationConfigFile`), and CI tolerates
+  it.
+- Fork-only docs (`docs/findings/`, this file) are no longer covered by
+  upstream's `markdownlint` (now scoped to `apps/docs`). Lint them with
+  `apps/docs/node_modules/.bin/markdownlint --config apps/docs/.markdownlint.json docs PATCHES.md`.
+
+Aprendido en el rebase a v9.1.0:
+
+- Partir de la rama ya portada a la versión anterior (`rebase/v8.1.0`), no
+  de `main`: la adaptación a ESM ya está hecha.
+- v9 (#1081) mueve casi todo a puertos y adaptadores: buscar dónde vive ahora
+  cada cosa (`git grep` de la función en el tag) antes de resolver un
+  conflicto. Varios parches se reducen a un sitio en vez de dos (§1.8, §1.11).
+- `src/platform/module-boundaries.spec.ts` (nuevo en v9) falla si un
+  fichero del fork mete una dependencia entre capas nueva: correr la suite
+  unitaria entera, no solo los specs tocados.
+- `biome check --write` sobre un directorio también reordena imports de
+  ficheros de upstream; pasarlo solo a ficheros del fork.
+
+## Próximo salto: post-9.1
+
+`upstream/main` después de v9.1.0 ya trae cambios incompatibles. Revisar
+cada uno al saltar a la siguiente versión:
+
+- **#1218**: las presentation configs **exigen** `trusted_authorities`. Las
+  configs AV de cp-platform ya lo llevan; revisar cualquier otra, y §1.1
+  (petición por valor) y §1.2 (refs XML) contra la validación nueva.
+- **#1223**: las API keys de los webhooks y los client secrets de los
+  servidores de autorización upstream pasan a ser **solo escritura** (no se
+  devuelven en los `GET`). Afecta a cómo cp-platform lee y reescribe esas
+  configuraciones.
+- **#1220**: los secretos de configuración se guardan **cifrados**. Revisar
+  migraciones y el procedimiento de copia y restauración de las bases.
+
+La tabla «Next jump: v9.0» del rebase a v8.1.0 queda resuelta en este
+rebase (#1133, #1148, #1145, #1127, #1146, #1134, #1108, #1081): ver cada §
+y [lo que cp-platform tiene que cambiar](#lo-que-cp-platform-tiene-que-cambiar-antes-de-desplegar-v91).
+
 ## 5. Related tracking
 
 - Upgrade analysis and cp-platform impact: `docs/notes/EUDIPLO_UPGRADE_PLAN.md`
@@ -476,8 +804,9 @@ them; dropping the column would be a destructive migration for no gain.
 - `@owf/eudi-tl` adoption (retires §1.2's library commits and the two vendored
   copies in cp-platform): gap **REL-011**. Blocked on the npm release, not on
   the merge — see §1.2.
-- Upstream contributions in flight: **#970** (§1.6), §1.9 (to open). Merged from this fork:
-  #836, #862, #884, #890, #954, #955, #957 — see §2.
+- Upstream contributions in flight: §1.9 (to open). Merged from this fork:
+  #836, #862, #884, #890, #954, #955, #957, #970, #974 — see §2. Superseded
+  upstream by a different implementation: the §1.7 failure webhook (#1133).
 - Not queued for upstream and deliberately so: §1.1 (EU AV profile — needs the
   Blueprint-support conversation with `cre8` first), §1.3 (fork-only test
   vectors), §1.4 (fork infrastructure).

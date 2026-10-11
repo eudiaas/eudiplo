@@ -5,16 +5,27 @@ import {
     Post,
     Res,
 } from "@nestjs/common";
-import { ApiBody, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
+import {
+    ApiBody,
+    ApiExtraModels,
+    ApiProduces,
+    ApiResponse,
+    ApiTags,
+} from "@nestjs/swagger";
 import { Response } from "express";
-import { Role } from "../../../auth/roles/role.enum";
-import { Secured } from "../../../auth/secure.decorator";
-import { Token, TokenPayload } from "../../../auth/token.decorator";
-import { ResponseType } from "../../../verifier/oid4vp/dto/presentation-request.dto";
-import { FlowType, OfferRequestDto } from "../oid4vci/dto/offer-request.dto";
-import { Oid4vciService } from "../oid4vci/oid4vci.service";
+import { Role } from "../../../auth/roles/role.enum.js";
+import { Secured } from "../../../auth/secure.decorator.js";
+import { Token, TokenPayload } from "../../../auth/token.decorator.js";
+import { ResponseType } from "../../../verifier/oid4vp/dto/presentation-request.dto.js";
+import {
+    FlowType,
+    OfferRequestDto,
+    OfferResponse,
+} from "../oid4vci/dto/offer-request.dto.js";
+import { Oid4vciService } from "../oid4vci/oid4vci.service.js";
 
 @ApiTags("Issuer")
+@ApiExtraModels(OfferResponse)
 @Secured([Role.IssuanceOffer])
 @Controller("issuer/offer")
 export class CredentialOfferController {
@@ -68,12 +79,9 @@ export class CredentialOfferController {
             }
         }
 
-        // For now, we'll just pass the body to the service as before
-        // You can modify the service later to accept user information if needed
         const values = await this.oid4vciService.createOffer(
-            body,
-            user,
             user.entity!.id,
+            body,
         );
 
         res.send(values);

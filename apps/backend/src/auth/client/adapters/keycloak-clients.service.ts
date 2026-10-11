@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import KeycloakAdminClient from "@keycloak/keycloak-admin-client";
-import { Credentials } from "@keycloak/keycloak-admin-client/lib/utils/auth";
+import { Credentials } from "@keycloak/keycloak-admin-client/lib/utils/auth.js";
 import {
     ConflictException,
     Injectable,
@@ -11,14 +11,14 @@ import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { decodeJwt } from "jose";
 import { Repository } from "typeorm";
-import { ConfigImportService } from "../../../platform/config-import/config-import.service";
-import { ConfigImportOrchestratorService } from "../../../platform/config-import/config-import-orchestrator.service";
-import { allRoles, Role } from "../../roles/role.enum";
-import { ClientsProvider } from "../client.provider";
-import { CreateClientDto } from "../dto/create-client.dto";
-import { UpdateClientDto } from "../dto/update-client.dto";
-import { ClientEntity } from "../entities/client.entity";
-import { CreateClientSchema } from "../schemas/client.schema";
+import { ConfigImportService } from "../../../platform/config-import/config-import.service.js";
+import { allRoles, Role } from "../../roles/role.enum.js";
+import { ClientsProvider } from "../client.provider.js";
+import type { ClientData, CreatedClient } from "../domain/client-data.js";
+import { CreateClientDto } from "../dto/create-client.dto.js";
+import { UpdateClientDto } from "../dto/update-client.dto.js";
+import { ClientEntity } from "../entities/client.entity.js";
+import { CreateClientSchema } from "../schemas/client.schema.js";
 
 @Injectable()
 export class KeycloakClientsProvider
@@ -64,9 +64,8 @@ export class KeycloakClientsProvider
         @InjectRepository(ClientEntity)
         private readonly clientRepo: Repository<ClientEntity>,
         private readonly configImportService: ConfigImportService,
-        configImportOrchestrator: ConfigImportOrchestratorService,
     ) {
-        super(configImportOrchestrator);
+        super();
     }
 
     async onModuleInit() {
@@ -282,25 +281,28 @@ export class KeycloakClientsProvider
         }
     }
 
-    async getClients(tenantId: string): Promise<ClientEntity[]> {
-        return this.clientRepo.find({
+    async getClients(tenantId: string): Promise<ClientData[]> {
+        const clients = await this.clientRepo.find({
             where: { tenant: { id: tenantId } },
         });
+        return clients.map((client) => this.toClientData(client, tenantId));
     }
 
-    async getClient(tenantId: string, clientId: string) {
-        return this.clientRepo.findOneByOrFail({
+    async getClient(tenantId: string, clientId: string): Promise<ClientData> {
+        const client = await this.clientRepo.findOneByOrFail({
             clientId,
             tenant: { id: tenantId },
         });
+        return this.toClientData(client, tenantId);
     }
 
     /**
      * Get a client by its clientId only (without tenant context).
      * Used for JWT validation to fetch client restrictions.
      */
-    async getClientById(clientId: string): Promise<ClientEntity | null> {
-        return this.clientRepo.findOne({ where: { clientId } });
+    async getClientById(clientId: string): Promise<ClientData | null> {
+        const client = await this.clientRepo.findOne({ where: { clientId } });
+        return client ? this.toClientData(client) : null;
     }
 
     /**
@@ -328,7 +330,23 @@ export class KeycloakClientsProvider
         return secret.value!;
     }
 
-    async addClient(tenantId: string, dto: CreateClientDto) {
+    async setClientSecret(
+        tenantId: string,
+        clientId: string,
+        secret: string,
+    ): Promise<void> {
+        const client = (await this.kc.clients.find({ clientId }))[0];
+        if (!client?.id) {
+            throw new Error(`Client ${clientId} not found in Keycloak`);
+        }
+        this.ensureTenantOwnership(tenantId, client, "updated (secret)");
+        await this.kc.clients.update({ id: client.id }, { secret });
+    }
+
+    async addClient(
+        tenantId: string,
+        dto: CreateClientDto,
+    ): Promise<CreatedClient> {
         const clientPayload = {
             clientId: dto.clientId,
             description: dto.description,
@@ -461,18 +479,54 @@ export class KeycloakClientsProvider
         };
     }
 
+    private toClientData(
+        client: ClientEntity,
+        tenantId = client.tenantId,
+    ): ClientData {
+        return {
+            clientId: client.clientId,
+            tenantId,
+            description: client.description,
+            roles: client.roles,
+            allowedPresentationConfigs: client.allowedPresentationConfigs,
+            allowedIssuanceConfigs: client.allowedIssuanceConfigs,
+        };
+    }
+
     async updateClient(
         tenantId: string,
         clientId: string,
         updateClientDto: UpdateClientDto,
     ) {
         const client = await this.getClient(tenantId, clientId);
-
         // Get service account user
         const kcClient = (await this.kc.clients.find({ clientId }))[0];
+        if (!kcClient?.id) {
+            this.logger.warn(
+                `Client '${clientId}' exists in the local mirror but not in Keycloak; recreating it.`,
+            );
+            await this.clientRepo.delete({
+                clientId,
+                tenant: { id: tenantId },
+            });
+            return this.addClient(tenantId, {
+                clientId,
+                description:
+                    updateClientDto.description ??
+                    client.description ??
+                    undefined,
+                roles: updateClientDto.roles ?? client.roles,
+                allowedPresentationConfigs:
+                    updateClientDto.allowedPresentationConfigs ??
+                    client.allowedPresentationConfigs,
+                allowedIssuanceConfigs:
+                    updateClientDto.allowedIssuanceConfigs ??
+                    client.allowedIssuanceConfigs,
+            });
+        }
         this.ensureTenantOwnership(tenantId, kcClient, "updated");
         const svcUser = await this.kc.clients.getServiceAccountUser({
-            id: kcClient.id!,
+            id: kcClient.id,
         });
 
         // Get all realm roles
@@ -512,9 +566,12 @@ export class KeycloakClientsProvider
 
         // Update client in Keycloak
         await this.kc.clients.update(
-            { id: kcClient.id! },
+            { id: kcClient.id },
             {
-                description: updateClientDto.description ?? client.description,
+                description:
+                    updateClientDto.description ??
+                    client.description ??
+                    undefined,
             },
         );
 

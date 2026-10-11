@@ -1,0 +1,66 @@
+<div fxLayout="row" fxLayoutAlign="space-between center">
+  <div fxLayout="column" fxLayoutGap="4px">
+    <h2>Schema</h2>
+    @if (!loading) {
+      <p>
+        {{ schemaMetadataCount }}
+        {{ schemaMetadataCount === 1 ? 'schema entry' : 'schema entries' }}
+        ({{ schemaMetadataVersionCount }}
+        {{ schemaMetadataVersionCount === 1 ? 'version' : 'versions' }})
+      </p>
+    }
+  </div>
+  <div fxLayout="row" fxLayoutGap="8px">
+    <button matIconButton [routerLink]="['create']" matTooltip="Submit signed schema">
+      <mat-icon>add</mat-icon>
+    </button>
+  </div>
+</div>
+
+@if (loading) {
+  <p>Loading schema...</p>
+} @else if (groupedItems.length === 0) {
+  <p>No schema found.</p>
+} @else {
+  <table mat-table [dataSource]="groupedItems" class="mat-elevation-z8">
+    <ng-container matColumnDef="id">
+      <th mat-header-cell *matHeaderCellDef>ID</th>
+      <td mat-cell *matCellDef="let item">{{ item.id }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="versions">
+      <th mat-header-cell *matHeaderCellDef>Versions</th>
+      <td mat-cell *matCellDef="let item">
+        <div class="versions-cell" fxLayout="row" fxLayoutGap="6px" fxLayoutWrap>
+          @for (version of item.versions; track version) {
+            <a [routerLink]="[item.id]" [queryParams]="{ version: version }" class="version-pill">{{
+              version
+            }}</a>
+          }
+        </div>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="issuer">
+      <th mat-header-cell *matHeaderCellDef>Issuer</th>
+      <td mat-cell *matCellDef="let item">{{ item.issuer }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="updatedAt">
+      <th mat-header-cell *matHeaderCellDef>Updated</th>
+      <td mat-cell *matCellDef="let item">{{ item.updatedAt | date: 'medium' }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef>Actions</th>
+      <td mat-cell *matCellDef="let item">
+        <button matIconButton [routerLink]="[item.id]" matTooltip="View details">
+          <mat-icon>visibility</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+  </table>
+}

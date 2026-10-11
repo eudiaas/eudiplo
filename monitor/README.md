@@ -4,7 +4,7 @@ This folder contains a complete observability setup for EUDIPLO using
 OpenTelemetry, Prometheus, Tempo, Loki, and Grafana.
 
 > **Note**: For comprehensive documentation, see the
-> [Monitoring Guide](../docs/getting-started/monitor.md).
+> [Monitoring Guide](../apps/docs/docs/operate/monitoring.md).
 
 ## Architecture
 
@@ -67,8 +67,10 @@ pnpm --filter @eudiplo/backend dev
 
 ### Running in Docker Compose
 
-When running the full stack via Docker Compose, set the OTLP endpoint to the
-collector's container name:
+When the backend runs in a container, set the OTLP endpoint to the collector's
+container name and put the backend and the collector on a shared network; the
+[Monitoring Guide](../apps/docs/docs/operate/monitoring.md) shows how for
+Compose and for CLI-managed instances:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
@@ -88,6 +90,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 - URL: http://localhost:9090
 - Targets: http://localhost:9090/targets
 - Scrapes the OTel Collector's Prometheus exporter on port 8889
+- The backend has no `/metrics` endpoint: whether it runs locally or in a
+  container, its metrics reach Prometheus only through the collector
 - Config: `prometheus/prometheus.yml`
 - Alert rules: `prometheus/rules/eudiplo.yml`
 
@@ -124,16 +128,17 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 
 ### Business Metrics
 
-- `sessions` — Active sessions by status and tenant
+- `sessions` — Current number of sessions per `tenant_id`, `session_type` and `status`, read from the database (refreshed at most every 30 s). Every replica reports the same values, so aggregate with `max by (tenant_id, session_type, status)` before summing.
 - `tenant_total` — Total number of tenants
 
 ## Alerting Rules
 
 Pre-configured alerts in `prometheus/rules/eudiplo.yml`:
 
-- **HighErrorRate** — HTTP 5xx rate exceeds 5% of total requests
+- **HighErrorRate** — more than 0.1 HTTP 5xx responses per second
 - **ServiceDown** — OTel Collector target is down
 - **HighResponseTime** — P95 response time exceeds 2 seconds
+- **HighMemoryUsage** — memory of the backend's host above 80 %
 
 ## Configuration
 

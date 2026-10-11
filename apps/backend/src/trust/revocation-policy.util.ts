@@ -1,4 +1,4 @@
-import { RevocationCheckMode, VerifyPolicy, VerifierOptions } from "./types";
+import { RevocationCheckMode, VerifierOptions, VerifyPolicy } from "./types.js";
 
 const DEFAULT_REVOCATION_POLICY: NonNullable<VerifyPolicy["revocation"]> = {
     enabled: true,
@@ -40,6 +40,14 @@ export function resolveRevocationPolicy(
             true,
     };
 }
+
+/**
+ * A status list or identifier list could not be fetched: the request failed,
+ * timed out, returned a non-2xx status or was blocked by the outbound URL
+ * policy. The best-effort revocation mode then verifies without the status
+ * check.
+ */
+export class RevocationListUnavailableError extends Error {}
 
 export function isStatusListUnavailableError(error: unknown): boolean {
     const message = String(

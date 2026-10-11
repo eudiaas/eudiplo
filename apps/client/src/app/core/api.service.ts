@@ -2,10 +2,18 @@ import { Injectable } from '@angular/core';
 import { OAuth2Client } from '@badgateway/oauth2-client';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs/internal/firstValueFrom';
-import { client, clientControllerGetClientSecret, ClientEntity } from '@eudiplo/sdk-core';
+import { client } from '@eudiplo/sdk-core';
 import type { Client } from '@eudiplo/sdk-core/api/client/index';
 import { environment } from '../../environments/environment';
 import { OidcService } from './oidc.service';
+
+/**
+ * Base URL used before a session is restored. The runtime value from env.js
+ * (API_BASE_URL of the container) wins over the build-time default.
+ */
+export function defaultApiUrl(runtimeApiUrl?: string, buildApiUrl?: string): string {
+  return runtimeApiUrl || buildApiUrl || 'http://localhost:3000';
+}
 
 @Injectable({
   providedIn: 'root',
@@ -24,8 +32,9 @@ export class ApiService {
     private readonly httpClient: HttpClient,
     private readonly oidcService: OidcService
   ) {
-    // Set default base URL from environment first
-    this.setClient(environment.api?.baseUrl || 'http://localhost:3000');
+    // Set default base URL from the runtime env.js or the build environment first
+    const runtimeEnv = globalThis as { env?: { apiUrl?: string } };
+    this.setClient(defaultApiUrl(runtimeEnv.env?.apiUrl, environment.api?.baseUrl));
     // Then try to load stored config (may override the default)
     this.loadTokenFromStorage();
   }
@@ -79,21 +88,33 @@ export class ApiService {
       return;
     }
 
-    const oidcUrl = discovery.issuer;
-
-    await this.loginWithClientCredentials(clientId, clientSecret, baseUrl, oidcUrl);
+    await this.loginWithClientCredentials(
+      clientId,
+      clientSecret,
+      baseUrl,
+      discovery.issuer,
+      discovery.token_endpoint
+    );
   }
 
   async loginWithClientCredentials(
     clientId: string,
     clientSecret: string,
     baseUrl: string,
-    issuerUrl?: string
+    issuerUrl?: string,
+    tokenEndpoint?: string
   ) {
-    const oidcUrl = issuerUrl ?? (await this.fetchDiscovery(baseUrl)).issuer;
+    const discovery = tokenEndpoint ? undefined : await this.fetchDiscovery(baseUrl);
+    const oidcUrl = issuerUrl ?? discovery?.issuer;
+    const resolvedTokenEndpoint = tokenEndpoint ?? discovery?.token_endpoint;
+
+    if (!oidcUrl || !resolvedTokenEndpoint) {
+      throw new Error('OIDC discovery response is missing an issuer or token endpoint.');
+    }
 
     this.oauth2Client = new OAuth2Client({
       discoveryEndpoint: `${oidcUrl}/.well-known/oauth-authorization-server`,
+      tokenEndpoint: resolvedTokenEndpoint,
       clientId,
       clientSecret,
     });
@@ -102,6 +123,7 @@ export class ApiService {
       server: oidcUrl,
       clientId,
       baseUrl: baseUrl,
+      tokenEndpoint: resolvedTokenEndpoint,
     };
     // Persist oauth config (without secret) for rehydration
     try {
@@ -121,8 +143,19 @@ export class ApiService {
     this.setClient(baseUrl);
   }
 
+  /**
+   * Points the client at the backend of a restored OIDC session.
+   * Called after OidcService.initialize(); no-op when no OIDC session was restored.
+   */
+  syncWithOidcSession(): void {
+    if (this.oidcService.mode === 'oidc' && this.oidcService.apiUrl) {
+      this.setClient(this.oidcService.apiUrl);
+    }
+  }
+
   setClient(url: string) {
     this.baseUrl = url;
+    this.client = client;
     // Configure SDK client to ensure it requests a fresh token when needed.
     client.setConfig({
       baseUrl: url,
@@ -159,6 +192,7 @@ export class ApiService {
           if (storedSecret && oauthConfig?.server && oauthConfig?.clientId) {
             this.oauth2Client = new OAuth2Client({
               discoveryEndpoint: `${oauthConfig.server}/.well-known/oauth-authorization-server`,
+              tokenEndpoint: this.getStoredTokenEndpoint(oauthConfig),
               clientId: oauthConfig.clientId,
               clientSecret: storedSecret,
             });
@@ -312,7 +346,12 @@ export class ApiService {
   /**
    * Gets the current OAuth configuration for display purposes
    */
-  getOAuthConfiguration(): { server?: string; clientId?: string; baseUrl?: string } | null {
+  getOAuthConfiguration(): {
+    server?: string;
+    clientId?: string;
+    baseUrl?: string;
+    tokenEndpoint?: string;
+  } | null {
     const storedConfig = localStorage.getItem('oauth_config');
     if (storedConfig) {
       try {
@@ -322,6 +361,16 @@ export class ApiService {
       }
     }
     return null;
+  }
+
+  private getStoredTokenEndpoint(oauthConfig: {
+    baseUrl?: string;
+    tokenEndpoint?: string;
+  }): string | undefined {
+    return (
+      oauthConfig.tokenEndpoint ??
+      (oauthConfig.baseUrl ? `${oauthConfig.baseUrl}/api/oauth2/token` : undefined)
+    );
   }
 
   /**
@@ -395,6 +444,9 @@ export class ApiService {
               // Restore OAuth client configuration for refresh
               this.oauth2Client = new OAuth2Client({
                 discoveryEndpoint: `${oauthConfig.server}/.well-known/oauth-authorization-server`,
+                tokenEndpoint: oauthConfig.baseUrl
+                  ? `${oauthConfig.baseUrl}/api/oauth2/token`
+                  : undefined,
                 clientId: oauthConfig.clientId,
                 clientSecret: storedSecret,
               });
@@ -499,25 +551,5 @@ export class ApiService {
         );
       }, 1000);
     }
-  }
-
-  async createConfigUrl(clientEntity: ClientEntity, apiUrl: string) {
-    const currentUrl = `${globalThis.location.protocol}//${globalThis.location.host}/login`;
-    const url = new URL(currentUrl);
-
-    if (!clientEntity.secret) {
-      clientEntity.secret = await clientControllerGetClientSecret<true>({
-        path: { id: clientEntity.clientId },
-      }).then((res) => res.data.secret);
-    }
-
-    if (clientEntity.clientId) {
-      url.searchParams.append('clientId', clientEntity.clientId);
-    }
-    if (clientEntity.secret) {
-      url.searchParams.append('clientSecret', clientEntity.secret);
-    }
-    url.searchParams.append('apiUrl', apiUrl);
-    return url.toString();
   }
 }

@@ -1,24 +1,30 @@
 {
+  "$schema": "https://eudiplo.dev/schemas/v1/PresentationConfigFile.schema.json",
+  "metadata": {
+    "generation": 1
+  },
+  "spec": {
     "id": "pid-mdoc-no-hook",
     "description": "Presentation mDOC ID",
     "dcql_query": {
-        "credentials": [
+      "credentials": [
+        {
+          "id": "pid-mdoc",
+          "format": "mso_mdoc",
+          "meta": {
+            "doctype_value": "eu.europa.ec.eudi.pid.1"
+          },
+          "claims": [
             {
-                "id": "pid-mdoc",
-                "format": "mso_mdoc",
-                "meta": {
-                    "doctype_value": "eu.europa.ec.eudi.pid.1"
-                },
-                "claims": [
-                    {
-                        "path": [
-                            "eu.europa.ec.eudi.pid.1",
-                            "given_name"
-                        ],
-                        "intent_to_retain": false
-                    }
-                ]
+              "path": [
+                "eu.europa.ec.eudi.pid.1",
+                "given_name"
+              ],
+              "intent_to_retain": false
             }
-        ]
+          ]
+        }
+      ]
     }
+  }
 }

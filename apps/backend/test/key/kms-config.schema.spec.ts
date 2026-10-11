@@ -13,9 +13,9 @@ import {
     KmsConfigSchema,
     KmsProviderConfigSchema,
     Pkcs11KmsConfigSchema,
-    VaultKmsConfigSchema,
     parseResolvedKmsConfig,
-} from "../../src/crypto/key/schemas/kms-config.schema";
+    VaultKmsConfigSchema,
+} from "../../src/crypto/key/schemas/kms-config.schema.js";
 
 function validDbProvider() {
     return {
@@ -357,7 +357,8 @@ describe("KMS Zod schemas", () => {
             true,
         );
 
-        const ajv = new Ajv({ strict: true });
+        // allowUnionTypes: zod emits `type: [..]` arrays for unions of primitives.
+        const ajv = new Ajv({ strict: true, allowUnionTypes: true });
         ajv.addFormat("uri", {
             type: "string",
             validate: (value: string) => {

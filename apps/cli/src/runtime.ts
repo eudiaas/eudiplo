@@ -1,12 +1,19 @@
 import { isSea } from "node:sea";
 import { Command, CommanderError } from "commander";
+import {
+    createCompletionCandidatesCommand,
+    createCompletionCommand,
+} from "./commands/completion/index.js";
+import { createCommandsCommand } from "./commands/commands/index.js";
 import { createConfigCommand } from "./commands/config/index.js";
 import { createDemoCommand } from "./commands/demo/index.js";
 import { createDeploymentCommands } from "./commands/deployment/index.js";
 import { createDoctorCommand } from "./commands/doctor/index.js";
 import { createInitCommand } from "./commands/init/index.js";
 import { createInstanceCommand } from "./commands/instance/index.js";
+import { createOpenCommand } from "./commands/open/index.js";
 import { createStatusCommand } from "./commands/status/index.js";
+import { createUpgradeCommand } from "./commands/upgrade/index.js";
 import { createVersionCommand, versionText } from "./commands/version/index.js";
 import type { CommandContext } from "./types.js";
 
@@ -27,23 +34,29 @@ export async function runCli(
         if (error instanceof CommanderError) {
             return error.exitCode;
         }
-        context.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+        context.stderr.write(
+            `${error instanceof Error ? error.message : String(error)}\n`,
+        );
         return 1;
     }
 }
 
-function createProgram(
+export function createProgram(
     context: CommandContext,
     setExitCode: (exitCode: number) => void,
 ): Command {
     const program = new Command()
         .name("eudiplo")
         .description("Deployment-aware command line tools for EUDIPLO")
-        .version(versionText(), "-v, --version", "Print the installed CLI version")
+        .version(
+            versionText(),
+            "-v, --version",
+            "Print the installed CLI version",
+        )
         .helpCommand(true)
         .addHelpText(
             "afterAll",
-            "\nFor more information, see https://openwallet-foundation.github.io/eudiplo/docs/latest/getting-started/cli/",
+            "\nFor more information, see https://docs.eudiplo.dev/cookbooks/foundation",
         );
 
     program.addCommand(createDemoCommand(context, setExitCode));
@@ -51,11 +64,21 @@ function createProgram(
     for (const command of createDeploymentCommands(context, setExitCode)) {
         program.addCommand(command);
     }
+    program.addCommand(createUpgradeCommand(context, setExitCode));
+    program.addCommand(createOpenCommand(context, setExitCode));
     program.addCommand(createInstanceCommand(context, setExitCode));
     program.addCommand(createConfigCommand(context, setExitCode));
     program.addCommand(createDoctorCommand(context, setExitCode));
     program.addCommand(createStatusCommand(context, setExitCode));
     program.addCommand(createVersionCommand(context, setExitCode));
+    program.addCommand(createCompletionCommand(context, setExitCode));
+    program.addCommand(
+        createCompletionCandidatesCommand(context, setExitCode),
+        {
+            hidden: true,
+        },
+    );
+    program.addCommand(createCommandsCommand(context, () => program));
     program.action(function showRootHelp() {
         this.outputHelp();
     });
@@ -80,7 +103,8 @@ function defaultContext(): CommandContext {
         cwd: process.cwd(),
         env: process.env,
         installationMethod: isSea() ? "standalone" : "npm",
-        interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+        interactive:
+            process.stdin.isTTY === true && process.stdout.isTTY === true,
         stdout: process.stdout,
         stderr: process.stderr,
         fetch,

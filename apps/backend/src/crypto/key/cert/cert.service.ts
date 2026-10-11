@@ -1,20 +1,20 @@
 import { createHash } from "node:crypto";
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import {
+    BadRequestException,
+    Injectable,
+    Logger,
+    NotFoundException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as x509 from "@peculiar/x509";
-import { KeyChainEntity } from "../entities/key-chain.entity";
-import { KeyUsageType } from "../types/key-usage-type";
-import { KeyChainService } from "../key-chain.service";
-import { CrlValidationService } from "./crl-validation.service";
+import { KeyChainEntity } from "../entities/key-chain.entity.js";
+import { KeyChainService } from "../key-chain.service.js";
+import { KeyUsageType } from "../types/key-usage-type.js";
+import { CrlValidationService } from "./crl-validation.service.js";
 
 export interface FindCertOptions {
     tenantId: string;
     type: KeyUsageType;
-    /**
-     * Optional key chain ID to find a specific key chain.
-     * @deprecated Use `keyId` instead.
-     */
-    certId?: string;
     /**
      * Optional key chain ID to find a specific key chain.
      */
@@ -85,8 +85,7 @@ export class CertService {
      */
     async find(options: FindCertOptions): Promise<CertificateInfo> {
         const { tenantId, type, skipValidation, fallbackType } = options;
-        // Support both certId (deprecated) and keyId
-        const keyId = options.keyId || options.certId;
+        const keyId = options.keyId;
 
         const keyChain = await this.keyChainService.findByUsageType(
             tenantId,
@@ -210,11 +209,18 @@ export class CertService {
                 };
             }
 
-            // Check CRL revocation if service is available
+            // Check CRL revocation if service is available. The CRL must be
+            // signed by the leaf's issuer, which is in the rest of the chain
+            // or is the key chain's root CA.
             if (this.crlValidationService) {
+                const issuerCandidates = [
+                    ...cert.crt.slice(1),
+                    cert.keyChain?.rootCertificate,
+                ].filter((pem): pem is string => !!pem);
                 const crlResult =
                     await this.crlValidationService.checkCertificateRevocation(
                         leafPem,
+                        issuerCandidates,
                     );
                 if (!crlResult.isValid && crlResult.revokedAt) {
                     return {
@@ -312,6 +318,24 @@ export class CertService {
             .digest();
         // Return as base64url (no padding)
         return hash.toString("base64url");
+    }
+
+    /**
+     * Return the first DNS Subject Alternative Name from the leaf certificate.
+     */
+    getCertDnsName(cert: CertificateInfo): string {
+        const leafPem = cert.crt[0];
+        const x509Cert = new x509.X509Certificate(leafPem);
+        const san = x509Cert.getExtension(x509.SubjectAlternativeNameExtension);
+        const dnsName = san?.names.items.find((name) => name.type === x509.DNS);
+
+        if (!dnsName) {
+            throw new BadRequestException(
+                "x509_san_dns requires a DNS Subject Alternative Name in the leaf certificate",
+            );
+        }
+
+        return dnsName.value;
     }
 
     private toBase64Der(pem: string): string {

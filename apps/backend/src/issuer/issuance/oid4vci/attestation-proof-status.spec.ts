@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { verifyProofKeyAttestationStatus } from "./attestation-proof-trust.util";
-import { CredentialRequestException } from "./exceptions";
+import { verifyProofKeyAttestationStatus } from "./attestation-proof-trust.util.js";
+import { CredentialRequestException } from "./exceptions/index.js";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
 const KA = `${b64({ alg: "ES256", typ: "key-attestation+jwt" })}.${b64({})}.sig`;
@@ -20,10 +20,12 @@ describe("verifyProofKeyAttestationStatus", () => {
             "attestation",
             LISTS as any,
             verifier,
+            "tenant-1",
         );
         expect(verifier.verifyKeyAttestationStatus).toHaveBeenCalledWith(
             KA,
             LISTS,
+            "tenant-1",
         );
     });
 
@@ -36,10 +38,12 @@ describe("verifyProofKeyAttestationStatus", () => {
             "jwt",
             LISTS as any,
             verifier,
+            "tenant-1",
         );
         expect(verifier.verifyKeyAttestationStatus).toHaveBeenCalledWith(
             KA,
             LISTS,
+            "tenant-1",
         );
     });
 
@@ -50,6 +54,7 @@ describe("verifyProofKeyAttestationStatus", () => {
             "jwt",
             LISTS as any,
             verifier,
+            "tenant-1",
         );
         expect(verifier.verifyKeyAttestationStatus).not.toHaveBeenCalled();
     });

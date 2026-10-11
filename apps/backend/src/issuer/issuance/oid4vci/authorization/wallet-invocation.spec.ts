@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { walletInvocationPage } from "./wallet-invocation";
+import { walletInvocationPage } from "./wallet-invocation.js";
 
 /**
  * espuni fork: the page that hands the browser over to the wallet.
@@ -65,22 +65,30 @@ describe("walletInvocationPage", () => {
  * that silently does nothing is worse than one that does not exist.
  */
 const respuesta = () => {
-    const out: { redirect?: string; body?: string; tipo?: string } = {};
-    return {
-        out,
-        res: {
-            redirect: (url: string) => void (out.redirect = url),
-            type: (t: string) => {
-                out.tipo = t;
-                return { send: (b: string) => void (out.body = b) };
-            },
+    const out: {
+        redirect?: string;
+        body?: string;
+        tipo?: string;
+        headers: Record<string, string>;
+    } = { headers: {} };
+    const res = {
+        redirect: (url: string) => void (out.redirect = url),
+        set: (name: string, value: string) => {
+            out.headers[name] = value;
+            return res;
         },
+        type: (t: string) => {
+            out.tipo = t;
+            return res;
+        },
+        send: (b: string) => void (out.body = b),
     };
+    return { out, res };
 };
 
 const controladorCon = async (immediate: boolean) => {
     const { AuthorizationServersController } = await import(
-        "./authorization-servers/authorization-servers.controller"
+        "./authorization-servers/authorization-servers.controller.js"
     );
     const svc = {
         handleAuthorize: async () => ({ uri: URI, immediate }),
@@ -96,8 +104,10 @@ const controladorCon = async (immediate: boolean) => {
     };
 };
 
-describe("authorize — redirect o página", () => {
-    it("redirects when the option is left alone", async () => {
+describe("authorize — qué página recibe el navegador", () => {
+    // Since v9 (#1098) upstream never answers with a bare 302: it serves a
+    // page with a link to tap. That stays the default.
+    it("serves upstream's tap page when the option is left alone", async () => {
         const { out, res } = respuesta();
         await (await controladorCon(true)).authorize(
             "t",
@@ -106,11 +116,14 @@ describe("authorize — redirect o página", () => {
             undefined,
             res,
         );
-        expect(out.redirect).toBe(URI);
-        expect(out.body).toBeUndefined();
+        expect(out.redirect).toBeUndefined();
+        expect(out.tipo).toBe("html");
+        expect(out.headers["Cache-Control"]).toBe("no-store");
+        expect(out.body).toContain("Open wallet");
+        expect(out.body).not.toContain("location.replace(");
     });
 
-    it("serves the page when immediateWalletRedirect is false", async () => {
+    it("serves the self-navigating page when immediateWalletRedirect is false", async () => {
         const { out, res } = respuesta();
         await (await controladorCon(false)).authorize(
             "t",
@@ -121,6 +134,7 @@ describe("authorize — redirect o página", () => {
         );
         expect(out.redirect).toBeUndefined();
         expect(out.tipo).toBe("html");
+        expect(out.headers["Cache-Control"]).toBe("no-store");
         expect(out.body).toContain("location.replace(");
     });
 });

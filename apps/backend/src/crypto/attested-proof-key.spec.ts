@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attestedProofKeys } from "./attested-proof-key";
+import { attestedProofKeys } from "./attested-proof-key.js";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
 const key = (x: string) => ({ kty: "EC", crv: "P-256", x, y: "y" });

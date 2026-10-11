@@ -1,5 +1,7 @@
 import "reflect-metadata";
+import { randomUUID } from "node:crypto";
 import { INestApplication } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
     Openid4vpAuthorizationRequest,
     Openid4vpClient,
@@ -9,12 +11,13 @@ import { CryptoKey, generateKeyPair } from "jose";
 import request from "supertest";
 import { App } from "supertest/types";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { StatusListService } from "../../src/issuer/status-list/status-list.service";
-import { AuthConfig } from "../../src/webhook/webhook.dto";
+import { StatusListService } from "../../src/issuer/status-list/status-list.service.js";
+import { StatusListVerifierService } from "../../src/trust/status-list-verifier.service.js";
 import {
     PresentationRequest,
     ResponseType,
-} from "../../src/verifier/oid4vp/dto/presentation-request.dto";
+} from "../../src/verifier/oid4vp/dto/presentation-request.dto.js";
+import { AuthConfig } from "../../src/webhook/webhook.dto.js";
 import {
     callbacks,
     createPresentationRequest,
@@ -23,7 +26,7 @@ import {
     PresentationTestContext,
     preparePresentation,
     setupPresentationTestApp,
-} from "../utils";
+} from "../utils.js";
 
 describe("Presentation - SD-JWT Credential", () => {
     let app: INestApplication<App>;
@@ -114,7 +117,7 @@ describe("Presentation - SD-JWT Credential", () => {
             });
         console.log(await submitRes.response.json());
 
-        return { res, submitRes };
+        return { res, submitRes, resolved };
     }
 
     beforeAll(async () => {
@@ -135,11 +138,11 @@ describe("Presentation - SD-JWT Credential", () => {
     });
 
     afterAll(async () => {
-        await app.close();
+        await app?.close();
     });
 
     test("present sd jwt credential", async () => {
-        const { submitRes } = await submitPresentation({
+        const { res, submitRes, resolved } = await submitPresentation({
             requestId: "pid-no-hook",
             credentialId: "pid",
             privateKey: privateIssuerKey,
@@ -148,6 +151,35 @@ describe("Presentation - SD-JWT Credential", () => {
 
         expect(submitRes).toBeDefined();
         expect(submitRes.response.status).toBe(200);
+
+        // The wallet receives the issuers of the managed trust list as `aki`
+        // values, and the presented credential's chain carries one of them.
+        const dcqlQuery = resolved.authorizationRequestPayload
+            .dcql_query as any;
+        const chainAkis = issuerCertChain.flatMap((der) => {
+            const keyId = new x509Lib.X509Certificate(der).getExtension(
+                x509Lib.AuthorityKeyIdentifierExtension,
+            )?.keyId;
+            return keyId
+                ? [Buffer.from(keyId, "hex").toString("base64url")]
+                : [];
+        });
+        const authorities = dcqlQuery.credentials[0].trusted_authorities;
+        expect(authorities).toEqual([
+            { type: "aki", values: expect.any(Array) },
+        ]);
+        expect(
+            authorities[0].values.filter((value: string) =>
+                chainAkis.includes(value),
+            ),
+        ).not.toHaveLength(0);
+
+        const sessionResponse = await request(app.getHttpServer())
+            .get(`/session/${res.body.session}`)
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .expect(200);
+        expect(sessionResponse.body.responseEncryptionPrivateJwk).toBeNull();
     });
 
     test("present sd jwt credential using claim_sets preference order", async () => {
@@ -299,6 +331,100 @@ describe("Presentation - SD-JWT Credential", () => {
         expect(submitRes.response.status).toBe(200);
     });
 
+    test("should reject a revoked sd jwt credential", async () => {
+        // Without an immediate update the list token is only regenerated
+        // once its ttl expires, so the revocation would not be served yet.
+        const configService = app.get(ConfigService);
+        const immediateUpdate = configService.get("STATUS_IMMEDIATE_UPDATE");
+        configService.set("STATUS_IMMEDIATE_UPDATE", true);
+
+        try {
+            const requestBody: PresentationRequest = {
+                response_type: ResponseType.URI,
+                requestId: "pid-no-hook",
+            };
+
+            const res = await createPresentationRequest(
+                app,
+                authToken,
+                requestBody,
+            );
+            const sessionId = res.body.session;
+
+            const authRequest = client.parseOpenid4vpAuthorizationRequest({
+                authorizationRequest: res.body.uri,
+            });
+
+            const resolved = await client.resolveOpenId4vpAuthorizationRequest({
+                authorizationRequestPayload: authRequest.params,
+                responseMode: { type: "direct_post" },
+            });
+
+            // A session of its own, so revoking it leaves the credentials
+            // of the other tests valid.
+            const credentialSessionId = randomUUID();
+            const vp_token = await preparePresentation(
+                {
+                    iat: Math.floor(Date.now() / 1000),
+                    aud: resolved.authorizationRequestPayload
+                        .client_id as string,
+                    nonce: resolved.authorizationRequestPayload.nonce,
+                },
+                privateIssuerKey,
+                issuerCertChain,
+                statusListService,
+                credentialConfigId,
+                credentialSessionId,
+            );
+
+            await statusListService.updateStatus(
+                { sessionId: credentialSessionId, status: 1 },
+                "root",
+            );
+            // The other tests present credentials from the same list; drop
+            // the copy they left in the verifier's cache.
+            app.get(StatusListVerifierService).clearCache();
+
+            const jwt = await encryptVpToken(vp_token, "pid", resolved);
+
+            const authorizationResponse =
+                await client.createOpenid4vpAuthorizationResponse({
+                    authorizationRequestPayload: authRequest.params,
+                    authorizationResponsePayload: {
+                        response: jwt,
+                    },
+                    ...callbacks,
+                });
+
+            const submitRes = await client.submitOpenid4vpAuthorizationResponse(
+                {
+                    authorizationResponsePayload:
+                        authorizationResponse.authorizationResponsePayload,
+                    authorizationRequestPayload:
+                        resolved.authorizationRequestPayload as Openid4vpAuthorizationRequest,
+                },
+            );
+
+            expect(submitRes.response.status).toBe(400);
+
+            const sessionRes = await request(app.getHttpServer())
+                .get(`/session/${sessionId}`)
+                .trustLocalhost()
+                .set("Authorization", `Bearer ${authToken}`)
+                .expect(200);
+
+            expect(sessionRes.body.status).toBe("failed");
+            expect(sessionRes.body.errorReason).toContain(
+                "Status is not valid",
+            );
+        } finally {
+            configService.set(
+                "STATUS_IMMEDIATE_UPDATE",
+                immediateUpdate ?? false,
+            );
+        }
+    });
+
     test("handle wallet error response (user_cancelled)", async () => {
         // Create a presentation request to get a session ID
         const requestBody: PresentationRequest = {
@@ -324,7 +450,7 @@ describe("Presentation - SD-JWT Credential", () => {
                 error_description: "User cancelled the presentation request",
                 state: sessionId,
             })
-            .expect(400); // OID4VP spec requires 400 response
+            .expect(200); // OID4VP 1.0 §8.2: processed error responses get 200
 
         // Verify response is empty (no redirect_uri configured)
         expect(errorResponse.body).toEqual({});
@@ -342,6 +468,11 @@ describe("Presentation - SD-JWT Credential", () => {
         expect(sessionRes.body.errorReason).toContain(
             "User cancelled the presentation request",
         );
+        expect(sessionRes.body.failureCode).toBe("access_denied");
+        expect(sessionRes.body.outcome).toMatchObject({
+            result: "failed",
+            error: "access_denied",
+        });
     });
 
     test("should reject credential signed by untrusted issuer (not in trust list)", async () => {
@@ -440,5 +571,16 @@ describe("Presentation - SD-JWT Credential", () => {
         expect(sessionRes.body.errorReason).toMatch(
             /trust|chain|no_trusted_entity_match|Invalid.*Signature/i,
         );
+        // Classified failures name the failing credential in the outcome.
+        expect(sessionRes.body.failureCode).toEqual(expect.any(String));
+        expect(sessionRes.body.outcome.credentials).toEqual([
+            {
+                id: "pid",
+                format: "dc+sd-jwt",
+                verified: false,
+                error: sessionRes.body.failureCode,
+                message: sessionRes.body.errorReason,
+            },
+        ]);
     });
 });

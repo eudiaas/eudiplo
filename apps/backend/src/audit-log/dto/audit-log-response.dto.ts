@@ -18,7 +18,13 @@ export type AuditActionTypeLiteral =
     | "webhook_endpoint_deleted"
     | "attribute_provider_created"
     | "attribute_provider_updated"
-    | "attribute_provider_deleted";
+    | "attribute_provider_deleted"
+    | "config_bundle_exported"
+    | "config_bundle_imported"
+    | "config_client_secret_generated"
+    | "config_resource_detached"
+    | "config_resource_reattached"
+    | "session_cancelled";
 
 const ACTION_TYPE_VALUES: AuditActionTypeLiteral[] = [
     "tenant_created",
@@ -39,6 +45,12 @@ const ACTION_TYPE_VALUES: AuditActionTypeLiteral[] = [
     "attribute_provider_created",
     "attribute_provider_updated",
     "attribute_provider_deleted",
+    "config_bundle_exported",
+    "config_bundle_imported",
+    "config_client_secret_generated",
+    "config_resource_detached",
+    "config_resource_reattached",
+    "session_cancelled",
 ];
 
 export class AuditLogResponseDto {

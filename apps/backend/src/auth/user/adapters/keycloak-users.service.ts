@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import KeycloakAdminClient from "@keycloak/keycloak-admin-client";
-import { Credentials } from "@keycloak/keycloak-admin-client/lib/utils/auth";
+import { Credentials } from "@keycloak/keycloak-admin-client/lib/utils/auth.js";
 import {
     ConflictException,
     Injectable,
@@ -8,10 +8,10 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { decodeJwt } from "jose";
-import { allRoles, Role } from "../../roles/role.enum";
-import { ManagedUserDto } from "../dto/managed-user.dto";
-import type { CreateUser, UpdateUser } from "../schemas/create-user.schema";
-import { UsersProvider } from "../user.provider";
+import { allRoles, Role } from "../../roles/role.enum.js";
+import { ManagedUserDto } from "../dto/managed-user.dto.js";
+import type { CreateUser, UpdateUser } from "../schemas/create-user.schema.js";
+import { UsersProvider } from "../user.provider.js";
 
 @Injectable()
 export class KeycloakUsersProvider extends UsersProvider {
@@ -33,6 +33,7 @@ export class KeycloakUsersProvider extends UsersProvider {
         };
 
         await this.kc.auth(creds);
+        await this.ensureTenantOwnershipAttribute();
         const accessToken = await this.kc.getAccessToken();
         const payload = decodeJwt(accessToken!);
         const refreshMs =
@@ -100,6 +101,11 @@ export class KeycloakUsersProvider extends UsersProvider {
                 `User '${dto.username}' creation did not return an id`,
             );
         }
+
+        await this.kc.users.update(
+            { id: userId },
+            { attributes: { tenant_id: [tenantId] } },
+        );
 
         const temporaryPassword = this.generateTemporaryPassword();
 
@@ -183,6 +189,30 @@ export class KeycloakUsersProvider extends UsersProvider {
         }
 
         return undefined;
+    }
+
+    private async ensureTenantOwnershipAttribute(): Promise<void> {
+        const profile = await this.kc.users.getProfile();
+        if (
+            profile.attributes?.some(
+                (attribute) => attribute.name === "tenant_id",
+            )
+        ) {
+            return;
+        }
+
+        await this.kc.users.updateProfile({
+            ...profile,
+            attributes: [
+                ...(profile.attributes ?? []),
+                {
+                    name: "tenant_id",
+                    displayName: "Tenant ID",
+                    multivalued: false,
+                    permissions: { view: ["admin"], edit: ["admin"] },
+                },
+            ],
+        });
     }
 
     private ensureTenantOwnership(

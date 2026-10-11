@@ -1,4 +1,15 @@
-import type { TrustListRef } from "../verifier/presentations/entities/presentation-config.entity";
+export interface TrustListRef {
+    trustListId?: string;
+    url: string;
+    verifierKey?: Record<string, unknown>;
+    verifierKeyPem?: string;
+    verifierX509Der?: string;
+    // espuni fork (PATCHES.md §1.2): ETSI TS 119 612 XML trusted lists, read
+    // by adapters/etsi-xml-trust-list-provider.ts.
+    format?: "lote-json" | "etsi-xml";
+    serviceTypeMap?: Record<string, string>;
+    acceptedServiceStatus?: string[];
+}
 
 /**
  * Normalize trust-list input to structured references.
@@ -11,7 +22,13 @@ export function normalizeTrustListRefs(
         return [];
     }
 
-    return refs.flatMap((ref) => {
+    return refs.flatMap<TrustListRef>((ref) => {
+        if (ref.trustListId !== undefined) {
+            const trustListId = ref.trustListId.trim();
+            if (!trustListId)
+                throw new Error("Managed trust-list ID must not be empty");
+            return [{ trustListId, url: "" }];
+        }
         const url = typeof ref.url === "string" ? ref.url.trim() : "";
         if (url.length === 0) {
             return [];
@@ -19,13 +36,16 @@ export function normalizeTrustListRefs(
 
         const hasVerifierKey =
             !!ref.verifierKey && typeof ref.verifierKey === "object";
+        const hasVerifierKeyPem =
+            typeof ref.verifierKeyPem === "string" &&
+            ref.verifierKeyPem.trim().length > 0;
         const hasVerifierX509Der =
             typeof ref.verifierX509Der === "string" &&
             ref.verifierX509Der.trim().length > 0;
 
-        if (!hasVerifierKey && !hasVerifierX509Der) {
+        if (!hasVerifierKey && !hasVerifierKeyPem && !hasVerifierX509Der) {
             throw new Error(
-                `Trust list reference '${url}' must define verifierKey or verifierX509Der`,
+                `Trust list reference '${url}' must define verifierKey, verifierKeyPem or verifierX509Der`,
             );
         }
 
@@ -33,6 +53,7 @@ export function normalizeTrustListRefs(
             {
                 url,
                 verifierKey: ref.verifierKey,
+                verifierKeyPem: ref.verifierKeyPem?.trim(),
                 verifierX509Der: ref.verifierX509Der?.trim(),
             },
         ];
@@ -64,10 +85,23 @@ export function serviceTypeMatches(
     );
 }
 
-/** Well-known service type identifiers from ETSI TS 119 602 */
+/**
+ * Well-known service type identifiers from ETSI TS 119 602.
+ * These are identifier URIs defined by the standard, not endpoints that are
+ * fetched; they must stay `http://` to match trust list entries exactly.
+ */
 export const ServiceTypeIdentifiers = {
     EaaIssuance: "http://uri.etsi.org/19602/SvcType/EAA/Issuance",
     EaaRevocation: "http://uri.etsi.org/19602/SvcType/EAA/Revocation",
+    PIDIssuance: "http://uri.etsi.org/19602/SvcType/PID/Issuance", // NOSONAR: ETSI identifier URI, not fetched
+    // espuni fork (PATCHES.md §1.11): the service type a Pub-EAA providers
+    // list declares for its issuance services (ETSI TS 119 602 V1.1.1, Annex
+    // H, Table H.3). Annex H admits this URI and its /Revocation sibling "to
+    // the exclusion of any other", so a conformant Pub-EAA list can never
+    // present its services as EAA/Issuance. Worth noting which one is the odd
+    // one: TS 119 602 registers PID, PubEAA, WRPAC, WRPRC, WalletSolution and
+    // Register — `SvcType/EAA` is not among them; it comes from @owf/eudi-lote.
+    PubEAAIssuance: "http://uri.etsi.org/19602/SvcType/PubEAA/Issuance", // NOSONAR: ETSI identifier URI, not fetched
     WalletSolution: "http://uri.etsi.org/19602/SvcType/WalletSolution",
     WalletSolutionIssuance:
         "http://uri.etsi.org/19602/SvcType/WalletSolution/Issuance",
@@ -160,6 +194,10 @@ export type VerifierOptions = {
      * See OID4VP spec Appendix B.3.3.1 for details.
      */
     transactionData?: string[];
+    /** Enforce TS12 SCA key-binding claims for this credential. */
+    ts12TransactionData?: boolean;
+    /** OID4VP response_mode from the signed authorization request. */
+    keyBindingResponseMode?: string;
     /**
      * Expected KB-JWT audience for SD-JWT VC key binding validation.
      * Usually the verifier client_id from the presentation request.
@@ -181,6 +219,8 @@ export type VerifierOptions = {
 };
 
 export type TrustListSource = {
+    /** Required when resolving managed trust-list IDs. */
+    tenantId?: string;
     lotes: TrustListRef[];
     // which service types from LoTE you want to accept as issuer identities
     acceptedServiceTypes?: ServiceTypeIdentifier[];

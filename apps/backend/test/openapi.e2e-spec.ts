@@ -2,10 +2,11 @@ import { INestApplication } from "@nestjs/common";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { Test, type TestingModule } from "@nestjs/testing";
 import { cleanupOpenApiDoc } from "nestjs-zod";
+import request from "supertest";
 import { App } from "supertest/types";
-import { beforeAll, describe, expect, test } from "vitest";
-import { AppModule } from "../src/app.module";
-import { GLOBAL_PREFIX_EXCLUSIONS } from "../src/main.helpers";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { AppModule } from "../src/app.module.js";
+import { GLOBAL_PREFIX_EXCLUSIONS } from "../src/main.helpers.js";
 
 function getOperation(
     document: ReturnType<typeof cleanupOpenApiDoc>,
@@ -39,8 +40,6 @@ describe("OpenAPI contract", () => {
         app = moduleFixture.createNestApplication();
         app.setGlobalPrefix("api", { exclude: GLOBAL_PREFIX_EXCLUSIONS });
 
-        await app.init();
-
         const swaggerDocument = SwaggerModule.createDocument(
             app,
             new DocumentBuilder()
@@ -51,6 +50,64 @@ describe("OpenAPI contract", () => {
         );
 
         document = cleanupOpenApiDoc(swaggerDocument);
+
+        const managementDocFactory = () =>
+            cleanupOpenApiDoc(
+                SwaggerModule.createDocument(
+                    app,
+                    new DocumentBuilder()
+                        .setTitle("EUDIPLO Management API")
+                        .setOpenAPIVersion("3.1.0")
+                        .setVersion("test")
+                        .build(),
+                ),
+            );
+
+        const protocolDocFactory = () =>
+            cleanupOpenApiDoc(
+                SwaggerModule.createDocument(
+                    app,
+                    new DocumentBuilder()
+                        .setTitle("EUDIPLO Protocol API")
+                        .setOpenAPIVersion("3.1.0")
+                        .setVersion("test")
+                        .build(),
+                ),
+            );
+
+        SwaggerModule.setup("/api/docs", app, managementDocFactory);
+        SwaggerModule.setup("/docs", app, protocolDocFactory);
+
+        await app.init();
+    });
+
+    afterAll(async () => {
+        await app?.close();
+    });
+
+    test.each([
+        ["management Swagger UI", "/api/docs"],
+        ["management Swagger init script", "/api/docs/swagger-ui-init.js"],
+        ["protocol Swagger UI", "/docs"],
+        ["protocol Swagger init script", "/docs/swagger-ui-init.js"],
+    ])("serves %s", async (_label, path) => {
+        await request(app.getHttpServer()).get(path).expect(200);
+    });
+
+    test("keeps the public ClientEntity schema name for SDK compatibility", () => {
+        const schemas = document.components?.schemas ?? {};
+        expect(schemas).toHaveProperty("ClientEntity");
+        expect(schemas).not.toHaveProperty("ClientResponseDto");
+        expect(
+            Object.keys((schemas.ClientEntity as any).properties).sort(),
+        ).toEqual([
+            "allowedIssuanceConfigs",
+            "allowedPresentationConfigs",
+            "clientId",
+            "description",
+            "roles",
+            "tenantId",
+        ]);
     });
 
     test("documents tenant description clearing without create-only PATCH fields", () => {
@@ -73,9 +130,10 @@ describe("OpenAPI contract", () => {
         expect(updateTenantSchema.properties.name.default).toBeUndefined();
         expect(updateTenantSchema.properties.roles).toBeUndefined();
         expect(updateTenantSchema.properties.id).toBeUndefined();
-        expect(tenantResponseSchema.properties.description).toMatchObject({
-            nullable: true,
-        });
+        // OpenAPI 3.1 encodes nullability in the type array, not `nullable: true`.
+        expect(tenantResponseSchema.properties.description.type).toEqual(
+            expect.arrayContaining(["null"]),
+        );
     });
 
     test("documents key JSON, form, binary, SSE, and no-content responses", () => {
@@ -98,7 +156,7 @@ describe("OpenAPI contract", () => {
 
         const chainedAsParOperation = getOperation(
             document,
-            "/api/issuers/{tenantId}/chained-as-vp/par",
+            "/issuers/{tenantId}/authorization-servers/{authorizationServerId}/par",
             "post",
         );
         expect(
@@ -287,13 +345,13 @@ describe("OpenAPI contract", () => {
             attributeProviderDeleteOperation.responses["204"].content,
         ).toBeUndefined();
 
-        const chainedAsVpAuthorizeOperation = getOperation(
+        const oid4vpAuthorizeOperation = getOperation(
             document,
-            "/api/issuers/{tenantId}/chained-as-vp/authorize",
+            "/issuers/{tenantId}/authorization-servers/{authorizationServerId}/authorize",
             "get",
         );
         expect(
-            chainedAsVpAuthorizeOperation.responses["302"].headers?.Location,
+            oid4vpAuthorizeOperation.responses["200"].content?.["text/html"],
         ).toBeTruthy();
 
         const sessionEventsOperation = getOperation(

@@ -1,5 +1,6 @@
 import { ApiProperty } from "@nestjs/swagger";
-import { Session } from "../entities/session.entity";
+import type { SessionSummary } from "../domain/session-list.js";
+import { Session } from "../entities/session.entity.js";
 
 /**
  * Paginated response for the session list endpoint.
@@ -9,7 +10,7 @@ export class PaginatedSessionResponseDto {
      * The sessions for the current page.
      */
     @ApiProperty({ type: [Session] })
-    items!: Session[];
+    items!: SessionSummary[];
 
     /**
      * Total number of sessions matching the query.

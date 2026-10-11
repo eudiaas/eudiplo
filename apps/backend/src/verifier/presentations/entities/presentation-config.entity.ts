@@ -14,10 +14,11 @@ import {
     ManyToOne,
     UpdateDateColumn,
 } from "typeorm";
-import { TenantEntity } from "../../../auth/tenant/entities/tenant.entity";
-import { WebhookEndpointEntity } from "../../../issuer/configuration/webhook-endpoint/entities/webhook-endpoint.entity";
-import { RevocationCheckMode } from "../../../trust/types";
-import { RegistrationCertificateRequest } from "../dto/vp-request.dto";
+import { TenantEntity } from "../../../auth/tenant/entities/tenant.entity.js";
+import { WebhookEndpointEntity } from "../../../issuer/configuration/webhook-endpoint/entities/webhook-endpoint.entity.js";
+import { RevocationCheckMode } from "../../../trust/types.js";
+import type { ClientIdSchemeValue } from "../../oid4vp/dto/presentation-request.dto.js";
+import { RegistrationCertificateRequest } from "../dto/vp-request.dto.js";
 
 export enum TrustedAuthorityType {
     ETSI_TL = "etsi_tl",
@@ -103,7 +104,19 @@ export class ClaimsQuery {
 
     path!: string[];
 
-    values?: string[];
+    @ApiPropertyOptional({
+        type: "array",
+        description:
+            "Allowed values of the claim. A disclosed value must equal one of them in type and value.",
+        items: {
+            oneOf: [
+                { type: "string" },
+                { type: "integer" },
+                { type: "boolean" },
+            ],
+        },
+    })
+    values?: Array<string | number | boolean>;
 }
 
 export class MsoMdocClaimsQuery extends ClaimsQuery {
@@ -138,7 +151,7 @@ abstract class TrustedAuthorityQuery {
     declare type: TrustedAuthorityType;
 }
 
-export class TrustedAuthorityQueryEtsiTl extends TrustedAuthorityQuery {
+class TrustedAuthorityQueryEtsiTl extends TrustedAuthorityQuery {
     @ApiProperty({
         enum: [TrustedAuthorityType.ETSI_TL],
         default: TrustedAuthorityType.ETSI_TL,
@@ -154,7 +167,7 @@ export class TrustedAuthorityQueryEtsiTl extends TrustedAuthorityQuery {
     values!: TrustListRef[];
 }
 
-export class TrustedAuthorityQueryOpenIdFederation extends TrustedAuthorityQuery {
+class TrustedAuthorityQueryOpenIdFederation extends TrustedAuthorityQuery {
     @ApiProperty({
         enum: [TrustedAuthorityType.OPENID_FEDERATION],
         default: TrustedAuthorityType.OPENID_FEDERATION,
@@ -445,11 +458,13 @@ export class PresentationConfig {
     webhookEndpointId?: string | null;
 
     /**
-     * OID4VP client identifier scheme used to build the authorization request.
+     * Default OID4VP client identifier scheme for requests built from this
+     * configuration. A per-request `clientIdScheme` overrides it.
      *
      * - `x509_hash` (default): the request is a signed JAR served by reference
      *   (`request_uri`), with `client_id` = `x509_hash:<cert hash>` and an
      *   encrypted response (`direct_post.jwt`). This is the EUDI/HAIP behaviour.
+     * - `x509_san_dns`: as above, with `client_id` = `x509_san_dns:<DNS SAN>`.
      * - `redirect_uri`: the request is unsigned and passed by value in the
      *   authorization URL, with `client_id` = `redirect_uri:<response_uri>` and
      *   an unencrypted response (`direct_post`). Used by profiles that rely on
@@ -460,7 +475,7 @@ export class PresentationConfig {
      * config schema (v7 moved it out of the entity).
      */
     @Column("varchar", { nullable: true })
-    clientIdScheme?: "x509_hash" | "redirect_uri" | null;
+    clientIdScheme?: ClientIdSchemeValue | null;
 
     @ApiHideProperty()
     @ManyToOne(() => WebhookEndpointEntity, {

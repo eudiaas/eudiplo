@@ -1,13 +1,198 @@
+import { type LookupAddress, lookup as lookupCallback } from "node:dns";
+import { lookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isIP, type LookupFunction } from "node:net";
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+
+/** Response of {@link OutboundUrlPolicyService.get}; redirects are not followed. */
+export interface OutboundResponse {
+    status: number;
+    location?: string;
+    contentType?: string;
+    /** UTF-8 decoding of {@link bytes}. */
+    body: string;
+    bytes: Buffer;
+}
+
+/** Final response of {@link OutboundUrlPolicyService.getFollowingRedirects}. */
+export interface OutboundFinalResponse extends OutboundResponse {
+    /** URL of the last hop, which produced this response. */
+    url: string;
+}
+
+interface OutboundGetOptions {
+    timeoutMs: number;
+    maxBytes: number;
+    headers?: Record<string, string>;
+    /** Allow `http:` targets even when `OUTBOUND_URL_ALLOW_HTTP` is off. */
+    allowHttp?: boolean;
+    /**
+     * Origins that skip the policy, such as EUDIPLO's own `PUBLIC_URL`. Every
+     * redirect hop is matched again, so a trusted origin cannot redirect to a
+     * blocked target.
+     */
+    trustedOrigins?: string[];
+    /** `false` skips TLS certificate verification; it is on by default. */
+    rejectUnauthorized?: boolean;
+}
 
 @Injectable()
 export class OutboundUrlPolicyService {
     constructor(private readonly configService: ConfigService) {}
 
-    async assertSafeUrl(url: string): Promise<void> {
+    /**
+     * `dns.lookup` replacement for outbound connections. It validates the
+     * addresses that are actually connected to, so a hostname cannot pass
+     * {@link assertSafeUrl} with a public address and then resolve to a private
+     * one for the connection (DNS rebinding).
+     */
+    readonly safeLookup: LookupFunction = (hostname, options, callback) => {
+        lookupCallback(
+            hostname,
+            { ...options, all: true },
+            (error, addresses: LookupAddress[]) => {
+                if (error) return callback(error, "", 0);
+                if (
+                    !this.allowPrivateNetwork() &&
+                    (addresses.length === 0 ||
+                        addresses.some(({ address }) =>
+                            this.isPrivateIp(address),
+                        ))
+                ) {
+                    return callback(
+                        new Error(
+                            "Outbound URL target resolves to a private or loopback IP",
+                        ),
+                        "",
+                        0,
+                    );
+                }
+                if (options.all) return callback(null, addresses);
+                return callback(
+                    null,
+                    addresses[0].address,
+                    addresses[0].family,
+                );
+            },
+        );
+    };
+
+    /**
+     * GET a URL that passed {@link assertSafeUrl}, validating the connected
+     * address, bounding time and response size, and not following redirects.
+     * URLs of {@link OutboundGetOptions.trustedOrigins} skip both checks.
+     */
+    async get(
+        url: string,
+        options: OutboundGetOptions,
+    ): Promise<OutboundResponse> {
+        const trusted = this.isTrustedOrigin(url, options.trustedOrigins);
+        if (!trusted) {
+            await this.assertSafeUrl(url, { allowHttp: options.allowHttp });
+        }
+        const target = new URL(url);
+        const send = target.protocol === "https:" ? httpsRequest : httpRequest;
+        return new Promise<OutboundResponse>((resolve, reject) => {
+            // Settle once: an aborted oversized response must never resolve
+            // with truncated data.
+            let settled = false;
+            const fail = (error: Error) => {
+                if (settled) return;
+                settled = true;
+                request.destroy();
+                reject(error);
+            };
+            const request = send(
+                target,
+                {
+                    method: "GET",
+                    headers: options.headers,
+                    lookup: trusted ? undefined : this.safeLookup,
+                    rejectUnauthorized: options.rejectUnauthorized ?? true,
+                    // No connection pooling: every request opens a fresh
+                    // connection, so the address check in safeLookup always
+                    // runs instead of reusing a socket from another request.
+                    agent: false,
+                    timeout: options.timeoutMs,
+                },
+                (response) => {
+                    const chunks: Buffer[] = [];
+                    let size = 0;
+                    response.on("data", (chunk: Buffer) => {
+                        size += chunk.length;
+                        if (size > options.maxBytes) {
+                            fail(
+                                new Error(
+                                    `Outbound response exceeds ${options.maxBytes} bytes`,
+                                ),
+                            );
+                            return;
+                        }
+                        chunks.push(chunk);
+                    });
+                    response.on("end", () => {
+                        if (settled) return;
+                        settled = true;
+                        const bytes = Buffer.concat(chunks);
+                        resolve({
+                            status: response.statusCode ?? 0,
+                            location: response.headers.location,
+                            contentType: response.headers["content-type"],
+                            body: bytes.toString("utf8"),
+                            bytes,
+                        });
+                    });
+                    response.on("error", fail);
+                },
+            );
+            request.on("timeout", () =>
+                fail(
+                    new Error(
+                        `Outbound request timed out after ${options.timeoutMs} ms`,
+                    ),
+                ),
+            );
+            request.on("error", fail);
+            request.end();
+        });
+    }
+
+    /**
+     * {@link get} that follows up to `maxRedirects` redirects. Every hop goes
+     * through {@link get}, so a public URL cannot redirect to a blocked target.
+     */
+    async getFollowingRedirects(
+        url: string,
+        options: OutboundGetOptions & { maxRedirects: number },
+    ): Promise<OutboundFinalResponse> {
+        let currentUrl = url;
+        for (let hop = 0; hop <= options.maxRedirects; hop++) {
+            const response = await this.get(currentUrl, options);
+            if (response.status < 300 || response.status >= 400) {
+                return { ...response, url: currentUrl };
+            }
+            if (!response.location) {
+                throw new BadRequestException(
+                    `Redirect from ${currentUrl} has no location header`,
+                );
+            }
+            currentUrl = new URL(response.location, currentUrl).toString();
+        }
+        throw new BadRequestException(
+            `Outbound request exceeded ${options.maxRedirects} redirects`,
+        );
+    }
+
+    /**
+     * @param overrides.allowHttp allow `http:` even when
+     * `OUTBOUND_URL_ALLOW_HTTP` is off
+     */
+    async assertSafeUrl(
+        url: string,
+        overrides: { allowHttp?: boolean } = {},
+    ): Promise<void> {
         let parsed: URL;
         try {
             parsed = new URL(url);
@@ -18,7 +203,7 @@ export class OutboundUrlPolicyService {
         const protocol = parsed.protocol.toLowerCase();
         if (
             protocol !== "https:" &&
-            !(protocol === "http:" && this.allowHttp())
+            !(protocol === "http:" && (overrides.allowHttp || this.allowHttp()))
         ) {
             throw new BadRequestException(
                 "Outbound URL must use HTTPS in this environment",
@@ -80,18 +265,30 @@ export class OutboundUrlPolicyService {
         }
     }
 
-    private allowHttp(): boolean {
-        return this.readBoolean(
-            "OUTBOUND_URL_ALLOW_HTTP",
-            process.env.NODE_ENV !== "production",
+    private isTrustedOrigin(url: string, trustedOrigins: string[] = []) {
+        const origin = this.originOf(url);
+        return (
+            origin !== undefined &&
+            trustedOrigins.some((trusted) => this.originOf(trusted) === origin)
         );
     }
 
+    private originOf(url: string): string | undefined {
+        try {
+            const { origin } = new URL(url);
+            // Opaque origins ("null"), e.g. of data: URLs, never match.
+            return origin === "null" ? undefined : origin;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private allowHttp(): boolean {
+        return this.readBoolean("OUTBOUND_URL_ALLOW_HTTP", false);
+    }
+
     private allowPrivateNetwork(): boolean {
-        return this.readBoolean(
-            "OUTBOUND_URL_ALLOW_PRIVATE_NETWORK",
-            process.env.NODE_ENV !== "production",
-        );
+        return this.readBoolean("OUTBOUND_URL_ALLOW_PRIVATE_NETWORK", false);
     }
 
     private readBoolean(key: string, fallback: boolean): boolean {
@@ -139,6 +336,8 @@ export class OutboundUrlPolicyService {
             const [a, b] = octets;
             if (a === 10) return true;
             if (a === 127) return true;
+            if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+            if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
             if (a === 169 && b === 254) return true;
             if (a === 172 && b >= 16 && b <= 31) return true;
             if (a === 192 && b === 168) return true;

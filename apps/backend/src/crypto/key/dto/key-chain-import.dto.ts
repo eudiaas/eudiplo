@@ -1,12 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { JWK } from "jose";
 import { createZodDto } from "nestjs-zod";
-import { KeyUsageType } from "../types/key-usage-type";
 import {
     EcJwkSchema,
     KeyChainImportSchema,
     RotationPolicyImportSchema,
-} from "../schemas/key-chain.schema";
+} from "../schemas/key-chain.schema.js";
+import { KeyUsageType } from "../types/key-usage-type.js";
 
 /**
  * JWK structure for EC keys (P-256).
@@ -72,10 +72,17 @@ export class KeyChainImportDto extends createZodDto(KeyChainImportSchema) {
     })
     id?: string;
 
-    @ApiProperty({
-        description: "The private key in JWK format.",
+    @ApiPropertyOptional({
+        description:
+            "The private key in JWK format. Provide keyPem instead for PKCS#8 PEM input.",
     })
-    key!: EcJwk;
+    key?: EcJwk;
+
+    @ApiPropertyOptional({
+        description:
+            "PKCS#8 PEM-encoded EC private key. Provide key instead for JWK input.",
+    })
+    keyPem?: string;
 
     @ApiPropertyOptional({
         description: "Human-readable description.",

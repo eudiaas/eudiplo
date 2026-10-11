@@ -1,4 +1,4 @@
-import * as Joi from "joi";
+import Joi from "joi";
 
 /**
  * Validation schema for logging configuration
@@ -8,7 +8,12 @@ export const LOG_VALIDATION_SCHEMA = Joi.object({
         .valid("trace", "debug", "info", "warn", "error", "fatal")
         .default(process.env.NODE_ENV === "production" ? "warn" : "debug")
         .description("Application log level")
-        .meta({ group: "log", order: 10 }),
+        .meta({
+            group: "log",
+            order: 10,
+            defaultText:
+                "`warn` when `NODE_ENV` is `production` (as in the container image), otherwise `debug`",
+        }),
     LOG_ENABLE_HTTP_LOGGER: Joi.boolean()
         .default(false)
         .description("Enable HTTP request logging")
@@ -35,6 +40,12 @@ export const LOG_VALIDATION_SCHEMA = Joi.object({
             "Redact sensitive request/response fields from logs. Disable only for debugging.",
         )
         .meta({ group: "log", order: 28 }),
+    LOG_OID4VP_DECRYPTED_RESPONSE: Joi.boolean()
+        .default(false)
+        .description(
+            "Log decrypted OID4VP authorization responses. Disable by default because responses may contain personal data and credentials.",
+        )
+        .meta({ group: "log", order: 29 }),
     LOG_ENABLE_SESSION_LOGGER: Joi.boolean()
         .default(false)
         .description("Enable session flow logging")
@@ -60,4 +71,21 @@ export const LOG_VALIDATION_SCHEMA = Joi.object({
         .default(false)
         .description("Disable OpenTelemetry SDK (and OTel log forwarding)")
         .meta({ group: "log", order: 80 }),
+    // The OTel variables below are read by tracing.ts and the OpenTelemetry
+    // SDK before NestJS starts. No Joi defaults: @nestjs/config writes
+    // defaults back into process.env, which the SDK also reads.
+    OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string()
+        .optional()
+        .allow("")
+        .description(
+            "Base URL of the OTLP/HTTP endpoint (e.g. the OpenTelemetry Collector) that receives traces, metrics and logs (default: http://localhost:4318)",
+        )
+        .meta({ group: "observability", order: 40 }),
+    OTEL_SERVICE_NAME: Joi.string()
+        .optional()
+        .allow("")
+        .description(
+            "Service name attached to exported traces, metrics and logs (default: eudiplo-backend)",
+        )
+        .meta({ group: "observability", order: 50 }),
 });

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { AuthorizationResponseSchema } from "./dto/authorization-response.dto";
-import { Oid4vpService } from "./oid4vp.service";
+import { resolveClientIdScheme } from "./client-id.util.js";
+import { AuthorizationResponseSchema } from "./dto/authorization-response.dto.js";
+import { ClientIdScheme } from "./dto/presentation-request.dto.js";
+import { Oid4vpService } from "./oid4vp.service.js";
 
 /**
  * Unit tests for the OID4VP `redirect_uri` client identifier scheme
@@ -10,9 +12,12 @@ import { Oid4vpService } from "./oid4vp.service";
 describe("OID4VP redirect_uri client identifier scheme", () => {
     const PUBLIC_URL = "https://verifier.example";
 
-    function buildService(capture: { session?: any }) {
+    function buildService(
+        capture: { session?: any },
+        clientIdScheme: string | null = "redirect_uri",
+    ) {
         const presentationConfig = {
-            clientIdScheme: "redirect_uri",
+            clientIdScheme,
             lifeTime: 300,
             redirectUri: null,
             transaction_data: null,
@@ -30,43 +35,69 @@ describe("OID4VP redirect_uri client identifier scheme", () => {
             },
         };
 
-        const configService = {
-            getOrThrow: (k: string) => {
-                if (k === "PUBLIC_URL") return PUBLIC_URL;
-                throw new Error(`unexpected key ${k}`);
-            },
-            get: () => false, // VP_REMOVE_TA
+        const settings = {
+            publicUrl: PUBLIC_URL,
+            removeTrustedAuthorities: false, // VP_REMOVE_TA
+            logDecryptedResponse: false,
         };
-        const presentationsService = {
+        const presentationConfigService = {
             getPresentationConfig: vi
                 .fn()
                 .mockResolvedValue(presentationConfig),
         };
-        const sessionService = {
-            create: vi.fn().mockImplementation(async (s: any) => {
+        const trustedAuthoritiesService = {
+            // Identity here; what matters is that the by-value path calls it,
+            // like the JAR path does, so wallets get `aki` strings.
+            transformDcqlTrustedAuthoritiesToAki: vi
+                .fn()
+                .mockImplementation(async (dcql: unknown) => dcql),
+        };
+        const createSession = {
+            execute: vi.fn().mockImplementation(async (s: any) => {
                 capture.session = s;
                 return s;
             }),
-            add: vi.fn().mockResolvedValue(undefined),
+        };
+        const sessionStore = {
+            updateForTenant: vi.fn().mockResolvedValue(undefined),
         };
 
-        // Only configService, presentationsService and sessionService are
-        // touched by the redirect_uri path; the rest are unused stubs.
+        // The x509 path must never be reached when redirect_uri applies:
+        // any access to the certificate service fails the test.
+        const certService = {
+            find: vi.fn().mockRejectedValue(new Error("x509 path reached")),
+        };
+
+        // Only the stubs above are touched by the redirect_uri path; the rest
+        // are unused.
         const service = new Oid4vpService(
             { setContext: vi.fn() } as any, // logger
-            {} as any, // certService
+            certService as any,
             {} as any, // keyChainService
             {} as any, // encryptionService
-            configService as any,
             {} as any, // registrarService
-            presentationsService as any,
-            sessionService as any,
+            {} as any, // verifyPresentationResponse
+            presentationConfigService as any,
+            {} as any, // registrationCertificateService
+            trustedAuthoritiesService as any,
+            createSession as any,
+            sessionStore as any,
+            {} as any, // retrievePresentationRequest
+            {} as any, // parseAuthorizationResponse
+            {} as any, // processVerifiedPresentation
+            {} as any, // failPresentationResponse
+            settings,
             {} as any, // auditLogger
-            {} as any, // webhookService
+            {} as any, // webhookEndpointRepo (no webhookEndpointId here)
             {} as any, // cryptoImplementationService
             {} as any, // traceService
         );
-        return { service, sessionService };
+        return {
+            service,
+            createSession,
+            trustedAuthoritiesService,
+            certService,
+        };
     }
 
     it("builds an unsigned request-by-value with the AV profile parameters", async () => {
@@ -119,6 +150,77 @@ describe("OID4VP redirect_uri client identifier scheme", () => {
         expect(capture.session.useDcApi).toBe(false);
         expect(capture.session.responseUri).toContain(PUBLIC_URL);
         expect(capture.session.vp_nonce).toBeTruthy();
+    });
+
+    it("turns trusted authorities into aki strings, as the JAR path does", async () => {
+        const capture: { session?: any } = {};
+        const { service, trustedAuthoritiesService } = buildService(capture);
+
+        await service.createRequest("age-over-18", {}, "demo", false, "");
+
+        expect(
+            trustedAuthoritiesService.transformDcqlTrustedAuthoritiesToAki,
+        ).toHaveBeenCalledWith(
+            expect.any(Object),
+            "demo",
+            `${PUBLIC_URL}/issuers/demo`,
+        );
+    });
+
+    it("applies when only the request asks for redirect_uri", async () => {
+        const capture: { session?: any } = {};
+        const { service } = buildService(capture, null);
+
+        const result = await service.createRequest(
+            "age-over-18",
+            { clientIdScheme: ClientIdScheme.REDIRECT_URI },
+            "demo",
+            false,
+            "",
+        );
+
+        expect(new URLSearchParams(result.uri).get("client_id")).toMatch(
+            /^redirect_uri:/,
+        );
+    });
+
+    it("lets a per-request x509 scheme override a redirect_uri config", async () => {
+        const capture: { session?: any } = {};
+        const { service, certService } = buildService(capture);
+
+        await expect(
+            service.createRequest(
+                "age-over-18",
+                { clientIdScheme: ClientIdScheme.X509_HASH },
+                "demo",
+                false,
+                "",
+            ),
+        ).rejects.toThrow("x509 path reached");
+        expect(certService.find).toHaveBeenCalled();
+    });
+
+    it("refuses redirect_uri over the DC API instead of answering with a QR", async () => {
+        const capture: { session?: any } = {};
+        const { service, createSession } = buildService(capture);
+
+        await expect(
+            service.createRequest("age-over-18", {}, "demo", true, ""),
+        ).rejects.toThrow(/Digital Credentials API/);
+        expect(createSession.execute).not.toHaveBeenCalled();
+    });
+});
+
+describe("resolveClientIdScheme", () => {
+    it("prefers the request, then the config, then x509_hash", () => {
+        expect(resolveClientIdScheme("x509_san_dns", "redirect_uri")).toBe(
+            "x509_san_dns",
+        );
+        expect(resolveClientIdScheme(undefined, "redirect_uri")).toBe(
+            "redirect_uri",
+        );
+        expect(resolveClientIdScheme(undefined, null)).toBe("x509_hash");
+        expect(resolveClientIdScheme()).toBe("x509_hash");
     });
 });
 

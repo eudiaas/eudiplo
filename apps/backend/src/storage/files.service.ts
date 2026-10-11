@@ -5,17 +5,17 @@ import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { ConfigImportService } from "../platform/config-import/config-import.service";
+import { ConfigImportService } from "../platform/config-import/config-import.service.js";
 import {
     ConfigImportOrchestratorService,
     ImportPhase,
-} from "../platform/config-import/config-import-orchestrator.service";
+} from "../platform/config-import/config-import-orchestrator.service.js";
 import {
     FILE_STORAGE,
     FileStorage,
     StoredObject,
-} from "../storage/storage.types";
-import { FileEntity } from "./entities/files.entity";
+} from "../storage/storage.types.js";
+import { FileEntity } from "./entities/files.entity.js";
 
 const MIME_TYPES: Record<string, string> = {
     ".png": "image/png",
@@ -137,6 +137,39 @@ export class FilesService {
             key,
             url: `${this.configService.get<string>("PUBLIC_URL")}/storage/${key}`,
         };
+    }
+
+    /** Save an asset restored from a configuration bundle. */
+    async saveImportedAsset(
+        tenantId: string,
+        filename: string,
+        content: Buffer,
+        contentType?: string,
+        overwrite = true,
+    ): Promise<FileEntity> {
+        const existing = await this.fileRepository.findOneBy({
+            tenantId,
+            filename,
+        });
+        if (existing) {
+            if (!overwrite) {
+                return existing;
+            }
+            await this.storage.put(existing.id, content, {
+                contentType,
+                acl: "public",
+                metadata: { originalName: filename },
+            });
+            return existing;
+        }
+
+        const id = randomUUID();
+        await this.storage.put(id, content, {
+            contentType,
+            acl: "public",
+            metadata: { originalName: filename },
+        });
+        return this.fileRepository.save({ id, filename, tenantId });
     }
 
     /**

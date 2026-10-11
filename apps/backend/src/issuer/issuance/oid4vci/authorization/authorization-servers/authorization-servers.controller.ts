@@ -11,6 +11,7 @@ import {
     Res,
 } from "@nestjs/common";
 import {
+    ApiBody,
     ApiConsumes,
     ApiHeader,
     ApiOperation,
@@ -19,17 +20,18 @@ import {
     ApiTags,
 } from "@nestjs/swagger";
 import type { Response } from "express";
-import { Public } from "../../../../../auth/public.decorator";
+import { Public } from "../../../../../auth/public.decorator.js";
 import {
     ChainedAsAuthorizeQueryDto,
     ChainedAsErrorResponseDto,
+    ChainedAsParRequestDto,
     ChainedAsParResponseDto,
     ChainedAsTokenRequestDto,
     ChainedAsTokenResponseDto,
-    extractDpopJkt,
-} from "../shared";
-import { AuthorizationServersService } from "./authorization-servers.service";
-import { walletInvocationPage } from "../wallet-invocation";
+    renderWalletInvocationPage,
+} from "../shared/index.js";
+import { walletInvocationPage } from "../wallet-invocation.js";
+import { AuthorizationServersService } from "./authorization-servers.service.js";
 
 @ApiTags("Authorization Servers")
 @Controller("issuers/:tenantId/authorization-servers/:authorizationServerId")
@@ -59,6 +61,7 @@ export class AuthorizationServersController {
         required: false,
         description: "Wallet attestation proof-of-possession JWT",
     })
+    @ApiBody({ type: ChainedAsParRequestDto })
     @ApiResponse({ status: 201, type: ChainedAsParResponseDto })
     @ApiResponse({ status: 400, type: ChainedAsErrorResponseDto })
     async par(
@@ -70,7 +73,6 @@ export class AuthorizationServersController {
         @Headers("oauth-client-attestation-pop")
         clientAttestationPopJwt?: string,
     ): Promise<ChainedAsParResponseDto> {
-        const dpopJkt = dpopJwt ? extractDpopJkt(dpopJwt) : undefined;
         const clientAttestation =
             clientAttestationJwt && clientAttestationPopJwt
                 ? { clientAttestationJwt, clientAttestationPopJwt }
@@ -80,7 +82,7 @@ export class AuthorizationServersController {
             tenantId,
             authorizationServerId,
             body,
-            dpopJkt,
+            dpopJwt,
             clientAttestation,
         );
     }
@@ -94,8 +96,10 @@ export class AuthorizationServersController {
         description: "Authorization server identifier",
     })
     @ApiResponse({
-        status: 302,
-        description: "Redirect to OID4VP wallet invocation",
+        status: 200,
+        description:
+            "HTML page with a link that opens the OID4VP wallet invocation",
+        content: { "text/html": { schema: { type: "string" } } },
     })
     async authorize(
         @Param("tenantId") tenantId: string,
@@ -112,14 +116,18 @@ export class AuthorizationServersController {
                 query.request_uri,
                 origin,
             );
-        // A redirect straight into the wallet is refused by Android browsers
-        // when they were opened by another app -- which is always, here. See
-        // walletInvocationPage.
-        if (invocation.immediate) {
-            res.redirect(invocation.uri);
-            return;
-        }
-        res.type("html").send(walletInvocationPage(invocation.uri));
+        // espuni fork (PATCHES.md §1.14): upstream #1098 always serves a page
+        // with a link the user taps. With `immediateWalletRedirect: false`
+        // the page navigates to the wallet by itself instead; both carry this
+        // deployment's origin, which is what Android needs (see
+        // walletInvocationPage).
+        res.set("Cache-Control", "no-store")
+            .type("html")
+            .send(
+                invocation.immediate
+                    ? renderWalletInvocationPage(invocation.uri)
+                    : walletInvocationPage(invocation.uri),
+            );
     }
 
     @Public()
@@ -165,6 +173,16 @@ export class AuthorizationServersController {
         description: "Authorization server identifier",
     })
     @ApiHeader({ name: "DPoP", required: false, description: "DPoP proof JWT" })
+    @ApiHeader({
+        name: "OAuth-Client-Attestation",
+        required: false,
+        description: "Wallet attestation JWT",
+    })
+    @ApiHeader({
+        name: "OAuth-Client-Attestation-PoP",
+        required: false,
+        description: "Wallet attestation proof-of-possession JWT",
+    })
     @ApiResponse({ status: 200, type: ChainedAsTokenResponseDto })
     @ApiResponse({ status: 400, type: ChainedAsErrorResponseDto })
     async token(
@@ -172,12 +190,21 @@ export class AuthorizationServersController {
         @Param("authorizationServerId") authorizationServerId: string,
         @Body() body: ChainedAsTokenRequestDto,
         @Headers("dpop") dpopJwt?: string,
+        @Headers("oauth-client-attestation") clientAttestationJwt?: string,
+        @Headers("oauth-client-attestation-pop")
+        clientAttestationPopJwt?: string,
     ): Promise<ChainedAsTokenResponseDto> {
+        const clientAttestation =
+            clientAttestationJwt && clientAttestationPopJwt
+                ? { clientAttestationJwt, clientAttestationPopJwt }
+                : undefined;
+
         return this.authorizationServersService.handleToken(
             tenantId,
             authorizationServerId,
             body,
             dpopJwt,
+            clientAttestation,
         );
     }
 }

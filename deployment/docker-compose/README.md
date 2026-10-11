@@ -2,36 +2,30 @@
 
 This directory contains Docker Compose configurations for EUDIPLO with profile-based deployment options.
 
-## Demo Image (Embedded Config)
+## Demo
 
-This is the Docker-only path. The recommended onboarding path is
-`npx @eudiplo/cli demo`.
+The recommended demo path is the EUDIPLO CLI. It starts EUDIPLO with the demo
+tenant and keeps the tenant files editable in `config/demo/`:
 
-The demo backend image contains embedded demo config and bootstraps it
-automatically when `/app/config` is empty.
+```bash
+npx @eudiplo/cli demo
+```
 
-Pull from GHCR (recommended):
+To run the demo tenant with the Compose files in this directory instead, mount
+the repository's `assets/` folder, which contains the demo tenant in
+`config/demo/`, and enable the startup import:
 
 ```bash
 cp .env.minimal.example .env
-echo 'EUDIPLO_IMAGE=ghcr.io/openwallet-foundation/eudiplo-demo:latest' >> .env
+cat >> .env <<'EOF'
+EUDIPLO_CONFIG_MOUNT=../../assets:/app/config
+CONFIG_IMPORT_MODE=create
+EOF
 docker compose up -d
 ```
 
-Or build locally:
-
-```bash
-docker build --target eudiplo-demo -t eudiplo-demo:local ../..
-cp .env.minimal.example .env
-echo 'EUDIPLO_IMAGE=eudiplo-demo:local' >> .env
-docker compose up -d
-```
-
-Notes:
-
-- Keep `EUDIPLO_CONFIG_MOUNT` unset to use the default named volume.
-- On first startup, the demo image seeds config once (when config folder is empty).
-- If you already have data/config in the volume, bootstrap is skipped.
+The `ghcr.io/eudiplo/eudiplo-demo` image with embedded demo config is published
+only up to 9.0.
 
 ## Quick Start
 
@@ -39,7 +33,7 @@ Notes:
 # Copy the appropriate environment file
 cp .env.minimal.example .env   # For minimal setup
 # OR
-cp .env.standard.example .env  # For standard setup with Postgres + MinIO
+cp .env.standard.example .env  # For standard setup with Postgres + RustFS
 # OR
 cp .env.full.example .env      # For full setup with Vault
 
@@ -50,7 +44,7 @@ nano .env
 # Start services
 docker compose up -d                      # Minimal (default)
 docker compose --profile standard up -d   # Standard
-docker compose --profile full up -d       # Full
+docker compose --profile full up -d       # Full: create the Vault key first, see below
 
 # Components can also be enabled independently
 docker compose --profile postgres --profile s3 up -d
@@ -66,7 +60,11 @@ By default, EUDIPLO mounts `/app/config` from a named Docker volume.
 - Use repository config files (useful for load tests and config import):
   - Set `EUDIPLO_CONFIG_MOUNT=../../assets:/app/config`
 
-When using the demo image (`EUDIPLO_IMAGE=ghcr.io/openwallet-foundation/eudiplo-demo:latest` or `EUDIPLO_IMAGE=eudiplo-demo:local`), you typically do not need a bind mount for config import.
+The image reads tenant folders and `kms.json` from `CONFIG_FOLDER`, which
+defaults to `/app/config/config` (the `config/` folder inside the mount, next to
+the SQLite database). If you mount a folder that directly contains the tenant
+folders (for example `../../assets/config:/app/config`), also set
+`CONFIG_FOLDER=/app/config`.
 
 Example:
 
@@ -106,8 +104,8 @@ You can override this behavior with:
 | Profile      | Command                                | Components                 | Use Case                  |
 | ------------ | -------------------------------------- | -------------------------- | ------------------------- |
 | **Minimal**  | `docker compose up`                    | EUDIPLO only               | Local dev, quick testing  |
-| **Standard** | `docker compose --profile standard up` | + PostgreSQL, MinIO        | Staging, small production |
-| **Full**     | `docker compose --profile full up`     | + PostgreSQL, MinIO, Vault | Enterprise production     |
+| **Standard** | `docker compose --profile standard up` | + PostgreSQL, RustFS        | Staging, small production |
+| **Full**     | `docker compose --profile full up`     | + PostgreSQL, RustFS, Vault | Evaluation (dev-mode Vault) |
 
 The component profiles `postgres`, `s3`, and `vault` can be combined directly.
 The EUDIPLO CLI uses these component profiles for custom `eudiplo init`
@@ -118,8 +116,8 @@ selections.
 | Component          | Minimal          | Standard   | Full            |
 | ------------------ | ---------------- | ---------- | --------------- |
 | **Database**       | SQLite           | PostgreSQL | PostgreSQL      |
-| **File Storage**   | Local filesystem | MinIO (S3) | MinIO (S3)      |
-| **Key Management** | DB-backed        | DB-backed  | HashiCorp Vault |
+| **File Storage**   | Local filesystem | RustFS (S3) | RustFS (S3)      |
+| **Encryption key** | From `MASTER_SECRET` | From `MASTER_SECRET` | HashiCorp Vault (dev mode, in memory) |
 
 ## Environment Files
 
@@ -135,9 +133,13 @@ After deployment, access the services at:
 | --------------------- | --------------------------------------- |
 | **Backend API**       | <http://localhost:3000>                 |
 | **Client Web UI**     | <http://localhost:4200>                 |
-| **API Documentation** | <http://localhost:3000/api-docs>        |
-| **MinIO Console**     | <http://localhost:9001> (standard/full) |
+| **API Documentation** | <http://localhost:3000/api/docs>        |
+| **RustFS Console**     | <http://localhost:9001/rustfs/console/> (standard/full) |
 | **Vault UI**          | <http://localhost:8200> (full)          |
+
+All published ports bind to `EUDIPLO_BIND_ADDRESS` (default `0.0.0.0`). Set
+`EUDIPLO_BIND_ADDRESS=127.0.0.1` when a reverse proxy on the same host serves
+the backend and client; RustFS and Vault are then reachable only from the host.
 
 ## Upgrading Between Profiles
 
@@ -151,16 +153,22 @@ After deployment, access the services at:
 
 ### Standard → Full
 
-1. Stop services: `docker compose --profile standard down`
-2. Update `.env` with Vault configuration:
+The `full` profile adds a Vault in development mode, which keeps everything in
+memory and loses the encryption key on every restart. Use it for evaluation
+only. `.env.full.example` sets `ENCRYPTION_KEY_SOURCE=vault`, and nothing
+creates the key; the backend does not start until it exists. Creating the key
+and the restart behavior are described in
+[Compose without the CLI](https://docs.eudiplo.dev/operate/docker-compose#create-the-encryption-key-for-full).
 
-   ```
-   KM_TYPE=vault
-   VAULT_ADDR=http://vault:8200
-   VAULT_TOKEN=your-token
-   ```
+Data that the standard profile encrypted with the key derived from
+`MASTER_SECRET` stays readable only if Vault holds that same key; a new random
+key makes it unreadable. See
+[Switch to an external key source](https://docs.eudiplo.dev/operate/encryption-keys#switch-to-an-external-key-source).
 
-3. Start with `docker compose --profile full up -d`
+To keep signing keys in Vault as well, add a `kms.json` with a provider of type
+`vault` (`"vaultUrl": "${VAULT_ADDR}"`, `"vaultToken": "${VAULT_TOKEN}"`) to
+`CONFIG_FOLDER`. The KMS provider is not selected via environment variables;
+see the [KMS documentation](https://docs.eudiplo.dev/operate/kms).
 
 ## Production Considerations
 
@@ -168,8 +176,21 @@ After deployment, access the services at:
 
 1. **Change all default credentials** in `.env`
 2. **Use strong secrets**: `openssl rand -base64 32`
-3. **Configure proper Vault setup** (not dev mode)
+3. **Configure proper Vault setup** (not the bundled dev-mode Vault, which loses
+   its data on restart)
 4. **Set up TLS/HTTPS** via reverse proxy
-5. **Configure backup strategies** for PostgreSQL and MinIO
+5. **Configure backup strategies** for PostgreSQL and RustFS
 
-For more details, see the [full documentation](https://openwallet-foundation.github.io/eudiplo/docs/latest/deployment/docker-compose/).
+For more details, see the [full documentation](https://docs.eudiplo.dev/operate/docker-compose/).
+
+## Migrating existing MinIO storage
+
+This Compose file deploys RustFS 1.0.0 with a separate `rustfs-data` volume.
+Existing MinIO data is not migrated automatically; do not mount a MinIO data
+directory into RustFS. The steps are in the
+[upgrade guide](https://docs.eudiplo.dev/upgrade/8.x-to-9.0#bundled-object-storage-minio-replaced-by-rustfs).
+Existing CLI projects keep their Compose file and env file; updating the CLI
+does not rewrite them.
+
+The bucket initialization job uses AWS CLI 2.37.4 and retains the previous
+public-download policy (`s3:GetObject`). Review that policy for private buckets.

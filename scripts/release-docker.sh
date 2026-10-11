@@ -7,7 +7,7 @@ set -euo pipefail
 DOCKER_SOURCE_SHA="${DOCKER_SOURCE_SHA:-${GITHUB_SHA:-}}"
 : "${DOCKER_SOURCE_SHA:?DOCKER_SOURCE_SHA (or GITHUB_SHA) is required}"
 
-REGISTRY="ghcr.io/openwallet-foundation"
+REGISTRY="ghcr.io/eudiplo"
 DOCKERFILE="Dockerfile.release"
 SOURCE_TAG="sha-${DOCKER_SOURCE_SHA}"
 
@@ -25,10 +25,19 @@ promote_image() {
   local image="$1"
   local image_base="${REGISTRY}/${image}"
   local source_image="${image_base}:${SOURCE_TAG}"
+  local source_digest
 
   log "Promoting ${source_image} to release ${DOCKER_RELEASE_VERSION}"
 
-  docker buildx imagetools inspect "${source_image}" >/dev/null
+  # A commit-specific tag can still be moved. Resolve the multi-platform manifest
+  # once and use its digest for the build so the source cannot change mid-release.
+  source_digest=$(docker buildx imagetools inspect "${source_image}" --format '{{json .Manifest}}' | jq -er '.digest')
+  if [[ ! "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    log "Invalid source digest for ${source_image}: ${source_digest}"
+    return 1
+  fi
+  source_image="${image_base}@${source_digest}"
+  log "Using immutable source ${source_image}"
 
   docker buildx build \
     --file "${DOCKERFILE}" \
@@ -47,7 +56,6 @@ main() {
   login
   promote_image "eudiplo"
   promote_image "eudiplo-client"
-  promote_image "eudiplo-demo"
   log "Done."
 }
 

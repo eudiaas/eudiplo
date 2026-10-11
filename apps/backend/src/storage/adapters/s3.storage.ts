@@ -1,4 +1,6 @@
 // src/storage/adapters/s3.storage.ts
+
+import { Readable } from "node:stream";
 import {
     DeleteObjectCommand,
     GetObjectCommand,
@@ -8,8 +10,7 @@ import {
     PutObjectCommand,
     S3Client,
 } from "@aws-sdk/client-s3";
-import { Readable } from "node:stream";
-import { FileStorage, PutOptions } from "../storage.types";
+import { FileStorage, PutOptions } from "../storage.types.js";
 
 /**
  * S3 file storage implementation using AWS SDK v3.

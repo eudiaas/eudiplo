@@ -1,6 +1,6 @@
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
-import { CryptoService } from "./crypto.service";
+import { CryptoService } from "./crypto.service.js";
 
 /**
  * The `custom` signer: a `jwt` credential request proof whose key lives in the

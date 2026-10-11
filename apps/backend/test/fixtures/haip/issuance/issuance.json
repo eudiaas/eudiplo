@@ -1,22 +1,33 @@
 {
+  "$schema": "https://eudiplo.dev/schemas/v1/IssuanceConfigFile.schema.json",
+  "metadata": {
+    "generation": 1
+  },
+  "spec": {
     "authorizationServers": [
-        {
-            "id": "issuer-built-in",
-            "type": "built-in"
-        }
+      {
+        "id": "issuer-built-in",
+        "type": "built-in",
+        "walletAttestationRequired": true
+      }
     ],
     "batchSize": 10,
     "dPopRequired": true,
     "credentialResponseEncryption": true,
     "credentialRequestEncryption": true,
-    "walletAttestationRequired": true,
     "display": [
-        {
-            "locale": "en-US",
-            "name": "HAIP Test Issuer",
-            "logo": {
-                "uri": "company.png"
-            }
+      {
+        "locale": "en-US",
+        "name": "HAIP Test Issuer",
+        "logo": {
+          "uri": "company.png"
         }
+      }
+    ],
+    "walletProviderTrustLists": [
+      {
+        "trustListId": "oidf-wallet-providers"
+      }
     ]
+  }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AuthorizationServersService } from "./authorization-servers.service";
+import { AuthorizationServersService } from "./authorization-servers.service.js";
 
 /**
  * espuni fork: what the holder presented has to reach the issuer.

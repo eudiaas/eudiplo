@@ -13,15 +13,18 @@
         "README.md"
     ],
     "scripts": {
-        "assets:sync": "node ../../scripts/sync-cli-assets.js",
-        "assets:check": "node ../../scripts/check-cli-assets.js",
+        "assets:sync": "node scripts/sync-cli-assets.cjs",
+        "assets:check": "node scripts/check-cli-assets.cjs",
         "build": "pnpm assets:sync && pnpm assets:check && tsc -p tsconfig.json",
-        "build:sea:bundle": "pnpm assets:sync && pnpm assets:check && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22.12 --outfile=dist-sea/index.js",
-        "build:sea": "node ../../scripts/build-cli-sea.mjs",
+        "build:publish": "pnpm build && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22.12 --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --outfile=dist/index.js",
+        "build:sea:bundle": "pnpm assets:sync && pnpm assets:check && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22.12 --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --outfile=dist-sea/index.js",
+        "build:sea": "node scripts/build-cli-sea.mjs",
         "dev": "tsx src/index.ts",
-        "test": "vitest run",
+        "test": "vitest run --root ../.. --project cli",
         "lint": "biome lint .",
-        "prepublishOnly": "pnpm build"
+        "format": "biome format --write .",
+        "format:check": "biome format .",
+        "prepublishOnly": "pnpm build:publish"
     },
     "keywords": [
         "eudiplo",
@@ -33,14 +36,14 @@
     ],
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/openwallet-foundation/eudiplo.git",
+        "url": "git+https://github.com/EUDIPLO/eudiplo.git",
         "directory": "apps/cli"
     },
-    "homepage": "https://github.com/openwallet-foundation/eudiplo/tree/main/apps/cli#readme",
+    "homepage": "https://github.com/EUDIPLO/eudiplo/tree/main/apps/cli#readme",
     "bugs": {
-        "url": "https://github.com/openwallet-foundation/eudiplo/issues"
+        "url": "https://github.com/EUDIPLO/eudiplo/issues"
     },
-    "author": "OpenWallet Foundation",
+    "author": "LF Decentralized Trust",
     "license": "Apache-2.0",
     "engines": {
         "node": ">=22.12.0"
@@ -49,16 +52,19 @@
         "access": "public"
     },
     "dependencies": {
+        "@eudiplo/config-format": "workspace:*",
         "ajv": "^8.20.0",
         "ajv-formats": "^3.0.1",
-        "commander": "^15.0.0"
+        "commander": "^15.0.0",
+        "fflate": "^0.8.3",
+        "jsonc-parser": "^3.3.1"
     },
     "devDependencies": {
-        "@biomejs/biome": "2.5.8",
-        "@types/node": "^26.2.0",
+        "@biomejs/biome": "2.5.15",
+        "@types/node": "^26.6.4",
         "esbuild": "^0.28.2",
-        "tsx": "^4.23.11",
+        "tsx": "^4.23.15",
         "typescript": "^7.0.2",
-        "vitest": "4.1.10"
+        "vitest": "5.0.3"
     }
 }

@@ -5,7 +5,7 @@ in this fork, with enough detail to file upstream issues or PRs.
 
 ## Structure
 
-```
+```text
 findings/
 ├── bug-reports/   — bugs found during integration work, with root-cause analysis
 │                    and reproduction steps suitable for upstream GitHub Issues
@@ -18,6 +18,6 @@ findings/
 Files are prefixed with the date of discovery/implementation (`YYYY-MM-DD`) so the
 folder stays chronologically browsable without needing subdirectories.
 
-```
+```text
 YYYY-MM-DD-<short-slug>.md
 ```

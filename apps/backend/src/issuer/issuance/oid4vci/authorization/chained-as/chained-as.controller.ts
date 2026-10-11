@@ -19,16 +19,15 @@ import {
     ApiTags,
 } from "@nestjs/swagger";
 import type { Response } from "express";
-import { Public } from "../../../../../auth/public.decorator";
-import { ChainedAsService } from "./chained-as.service";
+import { Public } from "../../../../../auth/public.decorator.js";
 import {
     ChainedAsAuthorizeQueryDto,
     ChainedAsErrorResponseDto,
     ChainedAsParResponseDto,
     ChainedAsTokenRequestDto,
     ChainedAsTokenResponseDto,
-    extractDpopJkt,
-} from "../shared";
+} from "../shared/index.js";
+import { ChainedAsService } from "./chained-as.service.js";
 
 /**
  * Controller for Chained Authorization Server endpoints.
@@ -78,6 +77,16 @@ export class ChainedAsController {
         required: false,
         description: "Wallet attestation proof-of-possession JWT",
     })
+    @ApiHeader({
+        name: "OAuth-Client-Attestation",
+        required: false,
+        description: "Wallet attestation JWT",
+    })
+    @ApiHeader({
+        name: "OAuth-Client-Attestation-PoP",
+        required: false,
+        description: "Wallet attestation proof-of-possession JWT",
+    })
     @ApiResponse({
         status: 201,
         description: "PAR request accepted",
@@ -96,9 +105,6 @@ export class ChainedAsController {
         @Headers("oauth-client-attestation-pop")
         clientAttestationPopJwt?: string,
     ): Promise<ChainedAsParResponseDto> {
-        // DPoP JWK thumbprint extraction will be handled in service layer when DPoP is fully implemented
-        const dpopJkt = dpopJwt ? extractDpopJkt(dpopJwt) : undefined;
-
         // Build client attestation object if both headers are provided
         const clientAttestation =
             clientAttestationJwt && clientAttestationPopJwt
@@ -108,7 +114,7 @@ export class ChainedAsController {
         return this.chainedAsService.handlePar(
             tenantId,
             body,
-            dpopJkt,
+            dpopJwt,
             clientAttestation,
         );
     }
@@ -235,7 +241,20 @@ export class ChainedAsController {
         @Param("tenantId") tenantId: string,
         @Body() body: ChainedAsTokenRequestDto,
         @Headers("dpop") dpopJwt?: string,
+        @Headers("oauth-client-attestation") clientAttestationJwt?: string,
+        @Headers("oauth-client-attestation-pop")
+        clientAttestationPopJwt?: string,
     ): Promise<ChainedAsTokenResponseDto> {
-        return this.chainedAsService.handleToken(tenantId, body, dpopJwt);
+        const clientAttestation =
+            clientAttestationJwt && clientAttestationPopJwt
+                ? { clientAttestationJwt, clientAttestationPopJwt }
+                : undefined;
+
+        return this.chainedAsService.handleToken(
+            tenantId,
+            body,
+            dpopJwt,
+            clientAttestation,
+        );
     }
 }

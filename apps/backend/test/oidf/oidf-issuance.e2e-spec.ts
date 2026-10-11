@@ -5,26 +5,26 @@ import { INestApplication, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestExpressApplication } from "@nestjs/platform-express";
 import { Test, TestingModule } from "@nestjs/testing";
+import * as x509 from "@peculiar/x509";
 import * as axios from "axios";
 import { Logger } from "nestjs-pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { AppModule } from "../../src/app.module";
+import { AppModule } from "../../src/app.module.js";
 import {
     FlowType,
     OfferRequestDto,
     OfferResponse,
-} from "../../src/issuer/issuance/oid4vci/dto/offer-request.dto";
-import { ResponseType } from "../../src/verifier/oid4vp/dto/presentation-request.dto";
-import { getDefaultSecret } from "../utils";
+} from "../../src/issuer/issuance/oid4vci/dto/offer-request.dto.js";
+import { ResponseType } from "../../src/verifier/oid4vp/dto/presentation-request.dto.js";
+import { getDefaultSecret, readConfig } from "../utils.js";
 import {
     BACKEND_TEST_CA_PATH,
     OIDF_HTTPD_CA_PATH,
     shouldExportOidfLogs,
     useOidfContainers,
-} from "./oidf-setup";
-import { OIDFSuite, TestInstance } from "./oidf-suite";
-import * as x509 from "@peculiar/x509";
-import { generateCaSignedJwk } from "./utils";
+} from "./oidf-setup.js";
+import { OIDFSuite, TestInstance } from "./oidf-suite.js";
+import { generateCaSignedJwk } from "./utils.js";
 
 // Set up the x509 crypto provider
 x509.cryptoProvider.set(globalThis.crypto);
@@ -51,19 +51,30 @@ const ISSUER_HAIP_MODULES: readonly string[] = (() => {
 })();
 
 const FAPI2_SECURITY_PROFILE_FINAL_PREFIX = "fapi2-security-profile-final";
-const EXPLICITLY_SKIPPED_ISSUER_MODULES = new Set<string>([
-    "oid4vci-1_0-issuer-happy-flow-additional-requests",
-    "oid4vci-1_0-issuer-happy-flow-multiple-clients",
-    // Temporary: tracked by #893, re-enable once batch issuance is fixed.
-    "oid4vci-1_0-issuer-batch-issuance",
+// Module -> reason. Keep reasons specific so skipped coverage stays visible in reports.
+const EXPLICITLY_SKIPPED_ISSUER_MODULES = new Map<string, string>([
+    // The built-in AS has no end-user login/consent step.
+    [
+        "fapi2-security-profile-final-user-rejects-authentication",
+        "requires interactive user rejection",
+    ],
+    [
+        "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+        "requires an interactive login page",
+    ],
+    // Passing requires redirecting errors to an unregistered redirect_uri (open redirect).
+    [
+        "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "error page needs manual screenshot upload",
+    ],
 ]);
-const SKIPPED_ISSUER_MODULES = new Set(
-    ISSUER_HAIP_MODULES.filter(
-        (moduleName) =>
-            moduleName.startsWith(FAPI2_SECURITY_PROFILE_FINAL_PREFIX) ||
-            EXPLICITLY_SKIPPED_ISSUER_MODULES.has(moduleName),
-    ),
-);
+// The suite redeems the same issuer_state with a second client; offers are single-use by design.
+const ISSUER_INITIATED_SKIPPED_MODULES = new Map<string, string>([
+    [
+        "oid4vci-1_0-issuer-happy-flow-multiple-clients",
+        "second client reuses a single-use credential offer",
+    ],
+]);
 
 const normalizeCertEntryToPem = (certEntry: string): string => {
     const trimmed = certEntry.trim();
@@ -251,21 +262,14 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
             cn: "OIDF Test Client",
         });
 
-        // Generate CA-signed certificate for client attester
-        const attesterJwk = await generateCaSignedJwk({
-            use: "sig",
-            alg: "ES256",
-            cn: "OIDF Client Attester",
-        });
-        // Override kid to "key1" for attester
-        attesterJwk.kid = "key1";
-
-        // Generate CA-signed certificate for key attestation
-        const keyAttestationJwk = await generateCaSignedJwk({
-            use: "sig",
-            alg: "ES256",
-            cn: "OIDF Key Attestation",
-        });
+        // Test-only attester keys match the CA certificates in the HAIP
+        // wallet-providers trust-list fixture. Keep the two fixtures in sync.
+        const { wallet: attesterJwk, key: keyAttestationJwk } = JSON.parse(
+            readFileSync(
+                resolve(__dirname, "fixtures/wallet-attesters.json"),
+                "utf8",
+            ),
+        );
 
         // Generate encryption key material for encrypted credential delivery
         const encryptionJwk = await generateCaSignedJwk({
@@ -277,17 +281,11 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
         // Generate trust anchor PEMs from the issuer's key chains
         // These are the CA certificates that signed the issuer's credential and status list
         const configFolder = resolve(__dirname + "/../fixtures");
-        const attestationKeyChain = JSON.parse(
-            readFileSync(
-                join(configFolder, "haip/key-chains/attestation.json"),
-                "utf-8",
-            ),
+        const attestationKeyChain = readConfig<{ crt?: string[] }>(
+            join(configFolder, "haip/key-chains/attestation.json"),
         );
-        const statusListKeyChain = JSON.parse(
-            readFileSync(
-                join(configFolder, "haip/key-chains/status-list.json"),
-                "utf-8",
-            ),
+        const statusListKeyChain = readConfig<{ crt?: string[] }>(
+            join(configFolder, "haip/key-chains/status-list.json"),
         );
 
         // Use configured root certificates as trust anchors (do not mint synthetic CAs).
@@ -435,6 +433,16 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
             cert: readFileSync(resolve(__dirname, "../cert.pem")),
             minVersion: "TLSv1.2" as const,
             maxVersion: "TLSv1.3" as const,
+            // FAPI2 SP 5.2.2 permitted TLS 1.2 suites, plus TLS 1.3 defaults.
+            ciphers: [
+                "TLS_AES_128_GCM_SHA256",
+                "TLS_AES_256_GCM_SHA384",
+                "TLS_CHACHA20_POLY1305_SHA256",
+                "ECDHE-ECDSA-AES128-GCM-SHA256",
+                "ECDHE-ECDSA-AES256-GCM-SHA384",
+                "ECDHE-RSA-AES128-GCM-SHA256",
+                "ECDHE-RSA-AES256-GCM-SHA384",
+            ].join(":"),
             honorCipherOrder: true,
         };
 
@@ -450,16 +458,17 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
         const tmpFolder = resolve(__dirname, "../../../../tmp");
         configService.set("FOLDER", tmpFolder);
         configService.set("CONFIG_FOLDER", configFolder);
-        configService.set("PUBLIC_URL", `https://${PUBLIC_DOMAIN}`);
-        configService.set("CONFIG_IMPORT", true);
+        // PUBLIC_URL and INTERNAL_URL are provided via vitest.oidf.config.ts:
+        // typed settings read them at compile time, before this point.
+        configService.set("CONFIG_IMPORT_MODE", "create");
         configService.set("LOG_LEVEL", "debug");
 
         await app.init();
         await app.listen(3000, "0.0.0.0");
 
         // Get client credentials
-        const client = JSON.parse(
-            readFileSync(join(configFolder, "haip/clients/test.json"), "utf-8"),
+        const client = readConfig<{ clientId: string; secret: string }>(
+            join(configFolder, "haip/clients/test.json"),
         );
         const clientId = client.clientId;
         const clientSecret = getDefaultSecret(client.secret);
@@ -533,11 +542,25 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
         credentialConfigurationIdForVariant?: (
             variant: IssuerVariant,
         ) => string;
+        waitOptions?: NonNullable<Parameters<OIDFSuite["waitForFinished"]>[1]>;
+        // Runs beside the variant's sequential chain instead of inside it.
+        runConcurrently?: boolean;
     };
 
     const DEFAULT_ISSUER_MODULE_CASE: Omit<IssuerModuleCase, "moduleName"> = {
         expectedResults: ["PASSED"],
         triggerOffer: true,
+    };
+
+    // Modules that sleep until the code / request_uri lifetime (60s) elapsed.
+    // They run concurrently so the sleep does not add to the variant's chain.
+    const EXPIRY_MODULE_CASE: Partial<IssuerModuleCase> = {
+        waitOptions: {
+            maxAttempts: 1000,
+            noProgressAttempts: 600,
+            waitingNoProgressAttempts: 600,
+        },
+        runConcurrently: true,
     };
 
     const ISSUER_MODULE_CASE_OVERRIDES: Record<
@@ -550,6 +573,10 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
         "oid4vci-1_0-issuer-metadata-test-signed": {
             triggerOffer: false,
         },
+        "fapi2-security-profile-final-ensure-token-endpoint-fails-with-expired-auth-code":
+            EXPIRY_MODULE_CASE,
+        "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri":
+            EXPIRY_MODULE_CASE,
     };
 
     const buildIssuerModuleCase = (moduleName: string): IssuerModuleCase => {
@@ -560,11 +587,13 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
             ...DEFAULT_ISSUER_MODULE_CASE,
         };
 
-        if (normalizedName.includes("metadata")) {
+        // FAPI2 WARNINGs cover optional checks (e.g. DPoP jti replay, token revocation on code reuse).
+        if (
+            normalizedName.includes("metadata") ||
+            normalizedName.startsWith(FAPI2_SECURITY_PROFILE_FINAL_PREFIX)
+        ) {
             baseCase.triggerOffer = false;
             baseCase.expectedResults = ["PASSED", "WARNING"];
-        } else if (normalizedName.startsWith("fapi2-security-profile")) {
-            baseCase.triggerOffer = false;
         }
         return {
             ...baseCase,
@@ -581,9 +610,21 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
         | { kind: "ok"; result: string; status: string; durationMs: number }
         | { kind: "error"; error: Error; durationMs: number };
 
-    const buildSkipReason = (moduleName: string): string | undefined => {
-        if (SKIPPED_ISSUER_MODULES.has(moduleName)) {
-            return "fapi2 security profile test";
+    const buildSkipReason = (
+        moduleName: string,
+        variant: IssuerVariant,
+    ): string | undefined => {
+        const explicitReason =
+            EXPLICITLY_SKIPPED_ISSUER_MODULES.get(moduleName);
+        if (explicitReason) {
+            return explicitReason;
+        }
+        if (
+            variant.vci_authorization_code_flow_variant ===
+                "issuer_initiated" &&
+            ISSUER_INITIATED_SKIPPED_MODULES.has(moduleName)
+        ) {
+            return ISSUER_INITIATED_SKIPPED_MODULES.get(moduleName);
         }
         if (
             MODULE_FILTERS.length > 0 &&
@@ -627,7 +668,10 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
                 );
             }
 
-            const logResult = await oidfSuite.waitForFinished(testInstance.id);
+            const logResult = await oidfSuite.waitForFinished(
+                testInstance.id,
+                moduleCase.waitOptions,
+            );
             const durationMs = Date.now() - startedAt;
             console.log(
                 `Module finished (${variantLabel}/${moduleName}) in ${durationMs}ms → result=${logResult.result} status=${logResult.status}`,
@@ -674,7 +718,8 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
     // Per-variant describes register one `it()` per module so vitest reports
     // a separate pass/fail line for every (variant, module) combination.
     // Each variant's `beforeAll` runs its modules sequentially against its
-    // dedicated plan; the four variant chains run in parallel via
+    // dedicated plan, except `runConcurrently` modules which start beside
+    // that chain; the four variant chains run in parallel via
     // `describe.concurrent`.
     for (const variant of ISSUER_VARIANT_MATRIX) {
         const variantLabel = `${variant.credential_format} / ${variant.vci_authorization_code_flow_variant}`;
@@ -694,26 +739,43 @@ describe("OIDF - oid4vci-1_0-issuer-haip-test-plan", () => {
                     return;
                 }
 
-                for (const moduleName of ISSUER_HAIP_MODULES) {
-                    const moduleCase = buildIssuerModuleCase(moduleName);
-                    if (buildSkipReason(moduleName)) {
-                        continue;
-                    }
+                const runModule = async (moduleName: string) => {
                     outcomes.set(
                         moduleName,
                         await runModuleForVariant(
                             planEntry.planId,
                             variant,
                             moduleName,
-                            moduleCase,
+                            buildIssuerModuleCase(moduleName),
                         ),
                     );
-                }
-            }, 600_000);
+                };
+                const modules = ISSUER_HAIP_MODULES.filter(
+                    (moduleName) => !buildSkipReason(moduleName, variant),
+                );
+                const concurrentModules = modules.filter(
+                    (moduleName) =>
+                        buildIssuerModuleCase(moduleName).runConcurrently,
+                );
+                const sequentialModules = modules.filter(
+                    (moduleName) => !concurrentModules.includes(moduleName),
+                );
+
+                // runModuleForVariant records failures instead of throwing,
+                // so one module cannot abort the others.
+                await Promise.all([
+                    ...concurrentModules.map(runModule),
+                    (async () => {
+                        for (const moduleName of sequentialModules) {
+                            await runModule(moduleName);
+                        }
+                    })(),
+                ]);
+            }, 3_600_000);
 
             for (const moduleName of ISSUER_HAIP_MODULES) {
                 const moduleCase = buildIssuerModuleCase(moduleName);
-                const skipReason = buildSkipReason(moduleName);
+                const skipReason = buildSkipReason(moduleName, variant);
                 if (skipReason) {
                     test.skip(`${moduleName} (${skipReason})`, () => {});
                     continue;

@@ -17,7 +17,7 @@ import { ArrayTypeComponent } from './types/array.type';
 import { provideMonacoEditor } from 'ngx-monaco-editor-v2';
 import schemas from './utils/schemas.json';
 import transactionDataSchemaObj from '../../../../schemas/TransactionData.schema.json';
-import { authInterceptor } from './core';
+import { ApiService, authInterceptor } from './core';
 import { OidcService } from './core/oidc.service';
 
 declare let monaco: any;
@@ -25,16 +25,20 @@ declare let monaco: any;
 const runtimeEnv = globalThis as { env?: { baseHref?: string } };
 const baseHref = runtimeEnv.env?.baseHref ?? '/';
 const monacoBaseUrl = new URL(
-  'assets/monaco/min/vs',
+  'assets/monaco/vs',
   new URL(baseHref, document.location.origin)
 ).toString();
 
+function normalizeLocalSchemaUri(uri: string): string {
+  return uri.startsWith('./') ? `a://b/${uri.slice(2)}` : uri;
+}
+
 const transactionDataArraySchema = {
-  uri: 'https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/TransactionDataArray.schema.json',
+  uri: 'https://raw.githubusercontent.com/EUDIPLO/eudiplo/refs/heads/main/schemas/TransactionDataArray.schema.json',
   fileMatch: ['a://b/TransactionDataArray*.schema.json'],
   schema: {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
-    $id: 'https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/TransactionDataArray.schema.json',
+    $id: 'https://raw.githubusercontent.com/EUDIPLO/eudiplo/refs/heads/main/schemas/TransactionDataArray.schema.json',
     title: 'TransactionDataArray',
     type: 'array',
     items: transactionDataSchemaObj,
@@ -52,7 +56,11 @@ function toEditorFriendlySchema(node: any): any {
 
   const out: Record<string, any> = {};
   for (const [key, value] of Object.entries(node)) {
-    out[key] = toEditorFriendlySchema(value);
+    if ((key === '$id' || key === '$ref') && typeof value === 'string') {
+      out[key] = normalizeLocalSchemaUri(value);
+    } else {
+      out[key] = toEditorFriendlySchema(value);
+    }
   }
 
   // Monaco JSON suggestions are more stable with anyOf than oneOf for
@@ -153,6 +161,13 @@ function onMonacoLoad() {
 
   const editorSchemas = schemas.map((entry) => ({
     ...entry,
+    uri: normalizeLocalSchemaUri(entry.uri),
+    fileMatch:
+      entry.uri === './TransactionData.schema.json'
+        ? ['a://b/TransactionData-*.schema.json']
+        : entry.uri === './CredentialConfig.schema.json'
+          ? ['a://b/CredentialConfig-*.schema.json']
+          : entry.fileMatch,
     schema: toEditorFriendlySchema(entry.schema),
   }));
 
@@ -167,9 +182,13 @@ function onMonacoLoad() {
 
 export const appConfig: ApplicationConfig = {
   providers: [
-    provideAppInitializer(() => {
+    provideAppInitializer(async () => {
       const oidcService = inject(OidcService);
-      return oidcService.initialize();
+      const apiService = inject(ApiService);
+      await oidcService.initialize();
+      // The page reload after the Keycloak redirect resets the API base URL,
+      // so re-apply the one the OIDC session was started with.
+      apiService.syncWithOidcSession();
     }),
     provideZoneChangeDetection({ eventCoalescing: true }),
     provideRouter(routes),

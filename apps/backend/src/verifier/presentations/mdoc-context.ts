@@ -3,13 +3,13 @@ import { p256 } from "@noble/curves/nist.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { coseKeyToJwkClaim } from "@owf/cose";
+import { hex } from "@owf/identity-common";
 import { CoseKey, type MdocContext } from "@owf/mdoc";
 import { hkdf } from "@panva/hkdf";
 import * as x509 from "@peculiar/x509";
 import { X509Certificate } from "@peculiar/x509";
 import { exportJWK, importX509 } from "jose";
-import { toBuffer } from "../../shared/utils/buffer.util";
-import { hex } from "@owf/identity-common";
+import { toBuffer } from "../../shared/utils/buffer.util.js";
 
 // Use global Web Crypto API (available in Node.js 19+)
 const webCrypto = globalThis.crypto;
@@ -188,8 +188,15 @@ const verifyChainSignatures = async (
     }
 };
 
-export const mdocContext: MdocContext = {
-    fetch,
+/**
+ * Everything @owf/mdoc needs except `fetch`, for signing, session transcripts
+ * and issuance. Verifying a presented mDOC fetches the status list or
+ * identifier list named in its MSO, and has to use {@link withFetch} with a
+ * fetch under the outbound URL policy. Without `fetch` here, passing this
+ * context to a verification is a type error; at runtime @owf/mdoc would
+ * fall back to the global `fetch`.
+ */
+export const mdocContext: Omit<MdocContext, "fetch"> = {
     crypto: {
         digest: async ({ digestAlgorithm, bytes }) => {
             const digest = await webCrypto.subtle.digest(
@@ -257,14 +264,14 @@ export const mdocContext: MdocContext = {
     },
 
     x509: {
-        getIssuerNameField: (input: {
+        getSubjectNameField: (input: {
             certificate: Uint8Array;
             field: string;
         }) => {
             const certificate = new X509Certificate(
                 toBuffer(input.certificate),
             );
-            return certificate.issuerName.getField(input.field);
+            return certificate.subjectName.getField(input.field);
         },
         getPublicKey: async (input: {
             certificate: Uint8Array;
@@ -375,3 +382,9 @@ export const mdocContext: MdocContext = {
         },
     },
 };
+
+/** {@link mdocContext} with the `fetch` that verifying an mDOC needs. */
+export const withFetch = (fetch: MdocContext["fetch"]): MdocContext => ({
+    ...mdocContext,
+    fetch,
+});

@@ -1,6 +1,15 @@
 import { createParamDecorator, ExecutionContext } from "@nestjs/common";
-import type { Request } from "express";
-import { MediaType } from "./media-type.enum";
+import { MediaType } from "./media-type.enum.js";
+
+/**
+ * The part of an HTTP request the negotiation reads. Express's `Request`
+ * satisfies it; spelled out so `shared/` takes no dependency on Express
+ * (module-boundaries ratchet).
+ */
+interface NegotiableRequest {
+    headers: { accept?: string };
+    accepts(types: string[]): string | false;
+}
 
 /**
  * Resolves which of the media types this service can produce the client asked
@@ -26,7 +35,9 @@ import { MediaType } from "./media-type.enum";
  * @param request
  * @returns the negotiated media type, defaulting to `application/json`
  */
-export function resolveAcceptedMediaType(request: Request): MediaType {
+export function resolveAcceptedMediaType(
+    request: NegotiableRequest,
+): MediaType {
     const namesJwt = (request.headers.accept ?? "")
         .split(",")
         .some(
@@ -55,5 +66,7 @@ export function resolveAcceptedMediaType(request: Request): MediaType {
  */
 export const ContentType = createParamDecorator(
     (data: unknown, ctx: ExecutionContext) =>
-        resolveAcceptedMediaType(ctx.switchToHttp().getRequest<Request>()),
+        resolveAcceptedMediaType(
+            ctx.switchToHttp().getRequest<NegotiableRequest>(),
+        ),
 );

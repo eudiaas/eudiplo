@@ -4,10 +4,7 @@
     "-lintignore"
   ],
   "ignoreBinaries": [
-    "mike",
-    "mkdocs",
     "openssl",
-    "compodoc",
     "openapi-ts"
   ],
   "ignoreUnresolved": [
@@ -26,8 +23,10 @@
         "@semantic-release/github",
         "@semantic-release/npm",
         "@codedependant/semantic-release-docker",
+        "@noble/hashes",
         "@types/k6",
-        "k6"
+        "k6",
+        "rxjs"
       ]
     },
     "apps/backend": {
@@ -36,6 +35,7 @@
         "src/tracing.ts",
         "src/database/data-source.ts",
         "src/database/migrations/*.ts",
+        "src/**/*.spec.ts",
         "test/**/*.e2e-spec.ts"
       ],
       "ignore": [
@@ -43,18 +43,25 @@
         "src/registrar/generated/**"
       ],
       "ignoreDependencies": [
-        "ts-loader",
         "tsconfig-paths",
         "source-map-support",
-        "@compodoc/compodoc",
         "pino-pretty",
         "pino-opentelemetry-transport"
+      ]
+    },
+    "apps/docs": {
+      "entry": [
+        "src/theme/**"
+      ],
+      "ignore": [
+        "src/components/**"
       ]
     },
     "apps/client": {
       "entry": [
         "src/**/*.spec.ts",
-        "e2e/**/*.ts"
+        "src/test-setup.ts",
+        "e2e/**/*.{ts,mjs}"
       ],
       "ignoreDependencies": [
         "@fontsource/roboto",
@@ -69,6 +76,11 @@
       ]
     },
     "apps/webhook": {},
+    "packages/eudiplo-config-format": {
+      "entry": [
+        "src/**/*.spec.ts"
+      ]
+    },
     "packages/eudiplo-sdk-core": {}
   }
 }

@@ -1,39 +1,61 @@
 import { randomBytes } from "node:crypto";
 import {
     BadRequestException,
+    Inject,
     Injectable,
     Logger,
     NotFoundException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
 import { TraceService } from "nestjs-otel";
-import { Repository } from "typeorm";
 import { v4 } from "uuid";
-import { KeyChainService } from "../../../../../crypto/key/key-chain.service";
-import { SessionStatus } from "../../../../../session/entities/session.entity";
-import { SessionService } from "../../../../../session/session.service";
-import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service";
-import { ManagedAuthorizationServerConfig } from "../../../../configuration/issuance/dto/authorization-server-config.dto";
-import { ChainedAsTokenConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto";
-import { IssuanceService } from "../../../../configuration/issuance/issuance.service";
-import { Oid4vpService } from "../../../../../verifier/oid4vp/oid4vp.service";
+import { CryptoService } from "../../../../../crypto/crypto.service.js";
+import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
+import { CreateSession } from "../../../../../session/application/create-session.js";
+import { SessionStore } from "../../../../../session/application/session-store.js";
+import { SessionStatus } from "../../../../../session/domain/session-state.js";
+import { assertSessionUsable } from "../../../../../session/domain/session-usability.js";
+import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service.js";
+import { Oid4vpService } from "../../../../../verifier/oid4vp/oid4vp.service.js";
+import type { TrustListRef } from "../../../../../verifier/presentations/entities/presentation-config.entity.js";
+import { ManagedAuthorizationServerConfig } from "../../../../configuration/issuance/dto/authorization-server-config.dto.js";
+import { ChainedAsTokenConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto.js";
+import { IssuanceService } from "../../../../configuration/issuance/issuance.service.js";
 import {
+    OID4VCI_SETTINGS,
+    type Oid4vciSettings,
+} from "../../oid4vci-settings.js";
+import {
+    DPOP_PROOF_REPLAY_REGISTRY,
+    type DpopProofReplayRegistry,
+} from "../../ports/dpop-proof-replay-registry.js";
+import { refreshTokenPolicy } from "../domain/token-grant-rules.js";
+import {
+    CHAINED_AS_SESSION_REPOSITORY,
+    type ChainedAsSessionRepository,
+} from "../ports/chained-as-session.repository.js";
+import {
+    assertPkceCodeChallenge,
     assertTokenRequestSessionValid,
+    buildAccessTokenPayload,
+    buildAuthorizationCodeRedirect,
+    buildAuthorizationErrorRedirect,
     buildAuthorizationServerMetadata,
-    buildWalletAttestationMetadata,
     buildJwksResponse,
+    buildWalletAttestationMetadata,
+    type ChainedAsDpopVerification,
     ChainedAsParRequestDto,
     ChainedAsParResponseDto,
-    ChainedAsSessionEntity,
     ChainedAsSessionStatus,
     ChainedAsTokenRequestDto,
     ChainedAsTokenResponseDto,
+    DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
     issueRefreshTokenIfEnabled,
     resolveSessionForTokenRequest,
     resolveTokenBinding,
-    DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
-} from "../shared";
+    resolveWalletAttestationPolicy,
+    retainSessionForIssuedTokens,
+    verifyChainedAsDpopProof,
+} from "../shared/index.js";
 
 type Oid4VpManagedAuthorizationServerConfig =
     ManagedAuthorizationServerConfig & {
@@ -45,6 +67,8 @@ type Oid4VpManagedAuthorizationServerConfig =
         immediateWalletRedirect?: boolean;
         token?: ChainedAsTokenConfig;
         requireDPoP?: boolean;
+        walletAttestationRequired?: boolean;
+        walletProviderTrustLists?: TrustListRef[];
     };
 
 type ExternalManagedAuthorizationServerConfig =
@@ -67,23 +91,42 @@ export class AuthorizationServersService {
     private readonly authCodeLifetimeSeconds = 300;
 
     constructor(
-        private readonly configService: ConfigService,
+        @Inject(OID4VCI_SETTINGS) private readonly settings: Oid4vciSettings,
         private readonly keyChainService: KeyChainService,
-        private readonly sessionService: SessionService,
+        private readonly createSession: CreateSession,
+        private readonly sessionStore: SessionStore,
         private readonly issuanceService: IssuanceService,
         private readonly walletAttestationService: WalletAttestationService,
         private readonly traceService: TraceService,
         private readonly oid4vpService: Oid4vpService,
-        @InjectRepository(ChainedAsSessionEntity)
-        private readonly sessionRepository: Repository<ChainedAsSessionEntity>,
+        @Inject(CHAINED_AS_SESSION_REPOSITORY)
+        private readonly sessionRepository: ChainedAsSessionRepository,
+        private readonly cryptoService: CryptoService,
+        @Inject(DPOP_PROOF_REPLAY_REGISTRY)
+        private readonly dpopProofs: DpopProofReplayRegistry,
     ) {}
 
     getAuthorizationServerBaseUrl(
         tenantId: string,
         authorizationServerId: string,
     ): string {
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         return `${publicUrl}/issuers/${tenantId}/authorization-servers/${authorizationServerId}`;
+    }
+
+    /** Verification of DPoP proofs sent to an authorization server of the tenant. */
+    private dpopVerification(
+        tenantId: string,
+        authorizationServerId: string,
+    ): ChainedAsDpopVerification {
+        return {
+            issuer: this.getAuthorizationServerBaseUrl(
+                tenantId,
+                authorizationServerId,
+            ),
+            callbacks: this.cryptoService.getCallbackContext(tenantId),
+            replayRegistry: this.dpopProofs,
+        };
     }
 
     async getEnabledAuthorizationServers(
@@ -206,7 +249,7 @@ export class AuthorizationServersService {
         tenantId: string,
         authorizationServerId: string,
         request: ChainedAsParRequestDto,
-        dpopJkt?: string,
+        dpopJwt?: string,
         clientAttestation?: {
             clientAttestationJwt: string;
             clientAttestationPopJwt: string;
@@ -225,22 +268,41 @@ export class AuthorizationServersService {
             );
         }
 
+        assertPkceCodeChallenge(
+            request.code_challenge,
+            request.code_challenge_method,
+        );
+
+        // RFC 9449 Section 10: a valid DPoP proof binds the code to its key.
+        const dpopJkt = await verifyChainedAsDpopProof(
+            this.dpopVerification(tenantId, authorizationServerId),
+            "par",
+            dpopJwt,
+        );
         if (config.requireDPoP && !dpopJkt) {
             throw new BadRequestException("DPoP is required");
         }
+
+        const walletAttestationPolicy = resolveWalletAttestationPolicy(
+            issuanceConfig,
+            config,
+        );
 
         await this.walletAttestationService.verifyWalletAttestation(
             tenantId,
             clientAttestation,
             this.getAuthorizationServerBaseUrl(tenantId, authorizationServerId),
-            issuanceConfig.walletAttestationRequired ?? false,
-            issuanceConfig.walletProviderTrustLists ?? [],
+            walletAttestationPolicy.walletAttestationRequired,
+            walletAttestationPolicy.walletProviderTrustLists,
         );
 
         let issuerState = request.issuer_state;
         if (issuerState) {
             try {
-                await this.sessionService.get(issuerState);
+                assertSessionUsable(
+                    await this.sessionStore.getForTenant(tenantId, issuerState),
+                    new Date(),
+                );
             } catch {
                 throw new BadRequestException("Invalid issuer_state");
             }
@@ -303,13 +365,11 @@ export class AuthorizationServersService {
         }
 
         const sessionId = requestUri.slice(this.requestUriPrefix.length);
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: sessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_AUTHORIZE,
-            },
-        });
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            sessionId,
+            ChainedAsSessionStatus.PENDING_AUTHORIZE,
+        );
 
         if (!session) {
             throw new BadRequestException("Invalid or expired request_uri");
@@ -338,14 +398,14 @@ export class AuthorizationServersService {
 
         const callbackUrl = `${this.getAuthorizationServerBaseUrl(tenantId, authorizationServerId)}/vp-callback?cas=${encodeURIComponent(session.id)}`;
 
-        await this.sessionService.create({
+        await this.createSession.execute({
             id: session.id,
             tenantId,
             requestId: config.presentationConfigId,
             redirectUri: callbackUrl,
         });
 
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         const offer = await this.oid4vpService.createRequest(
             config.presentationConfigId,
             {
@@ -367,105 +427,6 @@ export class AuthorizationServersService {
             // redirect every deployment has today.
             immediate: config.immediateWalletRedirect !== false,
         };
-    }
-
-    private buildErrorRedirect(
-        redirectUri: string,
-        error: string,
-        errorDescription?: string,
-        walletState?: string,
-    ): string {
-        const redirectUrl = new URL(redirectUri);
-        redirectUrl.searchParams.set("error", error);
-        if (errorDescription) {
-            redirectUrl.searchParams.set("error_description", errorDescription);
-        }
-        if (walletState) {
-            redirectUrl.searchParams.set("state", walletState);
-        }
-        return redirectUrl.toString();
-    }
-
-    async handleVerifierCallback(
-        tenantId: string,
-        authorizationServerId: string,
-        chainedAsSessionId: string,
-        responseCode?: string,
-        error?: string,
-        errorDescription?: string,
-    ): Promise<string> {
-        await this.getAuthorizationServerConfig(
-            tenantId,
-            authorizationServerId,
-        );
-
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: chainedAsSessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_VP_CALLBACK,
-            },
-        });
-
-        if (!session) {
-            throw new BadRequestException(
-                "Invalid or expired callback session",
-            );
-        }
-
-        if (error) {
-            session.status = ChainedAsSessionStatus.EXPIRED;
-            await this.sessionRepository.save(session);
-            return this.buildErrorRedirect(
-                session.redirectUri,
-                error,
-                errorDescription,
-                session.walletState,
-            );
-        }
-
-        const verifierSession = await this.sessionService.get(session.id);
-        if (
-            verifierSession.status !== SessionStatus.Completed ||
-            !responseCode ||
-            verifierSession.responseCode !== responseCode
-        ) {
-            session.status = ChainedAsSessionStatus.EXPIRED;
-            await this.sessionRepository.save(session);
-            return this.buildErrorRedirect(
-                session.redirectUri,
-                "invalid_request",
-                "OID4VP verification did not complete successfully",
-                session.walletState,
-            );
-        }
-
-        if (session.issuerState && verifierSession.credentials) {
-            await this.sessionService.add(session.issuerState, {
-                credentials: verifierSession.credentials as any,
-            });
-        }
-
-        const authorizationCode = randomBytes(32).toString("base64url");
-        session.status = ChainedAsSessionStatus.AUTHORIZED;
-        session.authorizationCode = authorizationCode;
-        session.authorizationCodeExpiresAt = new Date(
-            Date.now() + this.authCodeLifetimeSeconds * 1000,
-        );
-        session.vpResponseCode = responseCode;
-        await this.sessionRepository.save(session);
-
-        const redirectUrl = new URL(session.redirectUri);
-        redirectUrl.searchParams.set("code", authorizationCode);
-        redirectUrl.searchParams.set(
-            "iss",
-            this.getAuthorizationServerBaseUrl(tenantId, authorizationServerId),
-        );
-        if (session.walletState) {
-            redirectUrl.searchParams.set("state", session.walletState);
-        }
-
-        return redirectUrl.toString();
     }
 
     /**
@@ -524,46 +485,86 @@ export class AuthorizationServersService {
         return Object.keys(out).length > 0 ? out : undefined;
     }
 
-    private buildTokenPayload(
+    async handleVerifierCallback(
         tenantId: string,
         authorizationServerId: string,
-        session: ChainedAsSessionEntity,
-        tokenLifetime: number,
-        jti: string,
-        dpopJkt?: string,
-        presented?: Record<string, unknown>,
-    ): Record<string, unknown> {
-        const now = Math.floor(Date.now() / 1000);
-        const payload: Record<string, unknown> = {
-            iss: this.getAuthorizationServerBaseUrl(
-                tenantId,
-                authorizationServerId,
-            ),
-            sub: session.clientId,
-            aud: `${this.configService.getOrThrow<string>("PUBLIC_URL")}/issuers/${tenantId}`,
-            iat: now,
-            exp: now + tokenLifetime,
-            jti,
-            issuer_state: session.issuerState,
-            client_id: session.clientId,
-        };
+        chainedAsSessionId: string,
+        responseCode?: string,
+        error?: string,
+        errorDescription?: string,
+    ): Promise<string> {
+        await this.getAuthorizationServerConfig(
+            tenantId,
+            authorizationServerId,
+        );
 
-        if (dpopJkt) {
-            payload.cnf = { jkt: dpopJkt };
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            chainedAsSessionId,
+            ChainedAsSessionStatus.PENDING_VP_CALLBACK,
+        );
+
+        if (!session) {
+            throw new BadRequestException(
+                "Invalid or expired callback session",
+            );
         }
 
+        if (error) {
+            session.status = ChainedAsSessionStatus.EXPIRED;
+            await this.sessionRepository.save(session);
+            return buildAuthorizationErrorRedirect(
+                session.redirectUri,
+                error,
+                errorDescription,
+                session.walletState,
+            );
+        }
+
+        const verifierSession = await this.sessionStore.getForTenant(
+            session.tenantId,
+            session.id,
+        );
         if (
-            Array.isArray(session.authorizationDetails) &&
-            session.authorizationDetails.length > 0
+            verifierSession.status !== SessionStatus.Completed ||
+            !responseCode ||
+            verifierSession.responseCode !== responseCode
         ) {
-            payload.authorization_details = session.authorizationDetails;
+            session.status = ChainedAsSessionStatus.EXPIRED;
+            await this.sessionRepository.save(session);
+            return buildAuthorizationErrorRedirect(
+                session.redirectUri,
+                "invalid_request",
+                "OID4VP verification did not complete successfully",
+                session.walletState,
+            );
         }
 
-        if (presented) {
-            payload.presented_claims = presented;
+        if (session.issuerState && verifierSession.credentials) {
+            await this.sessionStore.updateForTenant(
+                session.tenantId,
+                session.issuerState,
+                {
+                    credentials: verifierSession.credentials as any,
+                },
+            );
         }
 
-        return payload;
+        const authorizationCode = randomBytes(32).toString("base64url");
+        session.status = ChainedAsSessionStatus.AUTHORIZED;
+        session.authorizationCode = authorizationCode;
+        session.authorizationCodeExpiresAt = new Date(
+            Date.now() + this.authCodeLifetimeSeconds * 1000,
+        );
+        session.vpResponseCode = responseCode;
+        await this.sessionRepository.save(session);
+
+        return buildAuthorizationCodeRedirect(
+            session.redirectUri,
+            authorizationCode,
+            session.walletState,
+            this.getAuthorizationServerBaseUrl(tenantId, authorizationServerId),
+        );
     }
 
     async handleToken(
@@ -571,11 +572,17 @@ export class AuthorizationServersService {
         authorizationServerId: string,
         request: ChainedAsTokenRequestDto,
         dpopJwt?: string,
+        clientAttestation?: {
+            clientAttestationJwt: string;
+            clientAttestationPopJwt: string;
+        },
     ): Promise<ChainedAsTokenResponseDto> {
         const config = await this.getAuthorizationServerConfig(
             tenantId,
             authorizationServerId,
         );
+        const issuanceConfig =
+            await this.issuanceService.getIssuanceConfiguration(tenantId);
 
         if (
             request.grant_type !== "authorization_code" &&
@@ -586,10 +593,23 @@ export class AuthorizationServersService {
             );
         }
 
+        const walletAttestationPolicy = resolveWalletAttestationPolicy(
+            issuanceConfig,
+            config,
+        );
+        await this.walletAttestationService.verifyWalletAttestation(
+            tenantId,
+            clientAttestation,
+            this.getAuthorizationServerBaseUrl(tenantId, authorizationServerId),
+            walletAttestationPolicy.walletAttestationRequired,
+            walletAttestationPolicy.walletProviderTrustLists,
+        );
+
         const session = await resolveSessionForTokenRequest(
             this.sessionRepository,
             tenantId,
             request,
+            refreshTokenPolicy(config.token),
         );
         await assertTokenRequestSessionValid(
             this.sessionRepository,
@@ -597,7 +617,8 @@ export class AuthorizationServersService {
             request,
         );
 
-        const { tokenType, dpopJkt } = resolveTokenBinding(
+        const { tokenType, dpopJkt } = await resolveTokenBinding(
+            this.dpopVerification(tenantId, authorizationServerId),
             config.requireDPoP,
             session,
             dpopJwt,
@@ -605,32 +626,41 @@ export class AuthorizationServersService {
 
         const tokenLifetime = config.token?.lifetimeSeconds || 3600;
         const jti = v4();
-        // Lo presentado vive en la sesion de EMISION: es donde
-        // `handleVerifierCallback` lo dejo. Se lee aqui, al acunar el token, en
-        // vez de guardarlo tambien en la sesion del AS: una copia mas seria una
-        // copia mas que mantener en sincronia.
-        let presented: Record<string, unknown> | undefined;
-        if (session.issuerState) {
-            try {
-                const issuanceSession = await this.sessionService.get(
-                    session.issuerState,
-                );
-                presented = this.presentedClaims(issuanceSession?.credentials);
-            } catch {
-                // Sin sesion de emision no hay nada que llevar. No es motivo
-                // para negar el token: el flujo puede no tener presentacion.
-            }
-        }
-
-        const tokenPayload = this.buildTokenPayload(
-            tenantId,
-            authorizationServerId,
+        const tokenPayload = buildAccessTokenPayload({
+            issuer: this.getAuthorizationServerBaseUrl(
+                tenantId,
+                authorizationServerId,
+            ),
+            audience: `${this.settings.publicUrl}/issuers/${tenantId}`,
             session,
             tokenLifetime,
             jti,
             dpopJkt,
-            presented,
-        );
+        });
+
+        // espuni fork (§1.12): what the holder presented lives on the ISSUANCE
+        // session, where `handleVerifierCallback` left it. It is read here, when
+        // the token is minted, instead of being copied onto the AS session too:
+        // one more copy would be one more copy to keep in sync. Added after
+        // upstream's shared `buildAccessTokenPayload`, which the chained AS also
+        // uses, so that helper stays untouched.
+        if (session.issuerState) {
+            try {
+                const issuanceSession = await this.sessionStore.getForTenant(
+                    tenantId,
+                    session.issuerState,
+                );
+                const presented = this.presentedClaims(
+                    issuanceSession?.credentials,
+                );
+                if (presented) {
+                    tokenPayload.presented_claims = presented;
+                }
+            } catch {
+                // No issuance session, nothing to carry. Not a reason to refuse
+                // the token: the flow may have had no presentation.
+            }
+        }
 
         const signingKeyId =
             config.token?.signingKeyId ||
@@ -653,7 +683,12 @@ export class AuthorizationServersService {
         session.accessTokenJti = jti;
         const refreshToken = issueRefreshTokenIfEnabled(
             session,
-            config.token ?? {},
+            config.token,
+            request.grant_type,
+        );
+        retainSessionForIssuedTokens(
+            session,
+            new Date(Date.now() + tokenLifetime * 1000),
         );
 
         await this.sessionRepository.save(session);
@@ -683,12 +718,14 @@ export class AuthorizationServersService {
             tenantId,
             authorizationServerId,
         );
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         const issuanceConfig =
             await this.issuanceService.getIssuanceConfiguration(tenantId);
-        const walletAttestationRequired =
-            issuanceConfig.walletAttestationRequired ?? false;
-        const refreshTokensEnabled = config.token?.refreshTokenEnabled ?? true;
+        const walletAttestationPolicy = resolveWalletAttestationPolicy(
+            issuanceConfig,
+            config,
+        );
+        const refreshTokensEnabled = refreshTokenPolicy(config.token).enabled;
 
         return buildAuthorizationServerMetadata({
             issuer: baseUrl,
@@ -701,7 +738,9 @@ export class AuthorizationServersService {
                 : ["authorization_code"],
             dpopSigningAlgValuesSupported:
                 DEFAULT_DPOP_SIGNING_ALG_VALUES_SUPPORTED,
-            ...buildWalletAttestationMetadata(walletAttestationRequired),
+            ...buildWalletAttestationMetadata(
+                walletAttestationPolicy.walletAttestationRequired,
+            ),
         });
     }
 

@@ -17,6 +17,8 @@ import { CredentialConfig, deriveRuntimeArtifacts } from '@eudiplo/sdk-core';
 import { CredentialConfigService } from '../credential-config.service';
 import { StatusListManagementService } from '../../../status-list-management/status-list-management.service';
 import { downloadJsonFile } from '../../../common/download-json.util';
+import { ConfigOwnershipDirective } from '../../../config-portability/config-ownership.directive';
+import { ConfigOwnershipNoticeComponent } from '../../../config-portability/config-ownership-notice.component';
 
 interface ClaimFieldRow {
   key: string;
@@ -50,6 +52,8 @@ interface SchemaPathInfo {
     FlexLayoutModule,
     RouterModule,
     ClipboardModule,
+    ConfigOwnershipDirective,
+    ConfigOwnershipNoticeComponent,
   ],
   templateUrl: './credential-config-show.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
@@ -239,11 +243,7 @@ export class CredentialConfigShowComponent implements OnInit {
       return;
     }
 
-    if (
-      !confirm(
-        `Unlink schema metadata '${this.schemaMetadataId}' from this credential configuration?`
-      )
-    ) {
+    if (!confirm(`Unlink schema '${this.schemaMetadataId}' from this credential configuration?`)) {
       return;
     }
 
@@ -257,15 +257,15 @@ export class CredentialConfigShowComponent implements OnInit {
           };
         }
 
-        this.snackBar.open('Schema metadata link removed', 'Close', {
+        this.snackBar.open('Schema link removed', 'Close', {
           duration: 3000,
         });
       })
       .catch((error) => {
-        this.snackBar.open('Failed to remove schema metadata link', 'Close', {
+        this.snackBar.open('Failed to remove schema link', 'Close', {
           duration: 3000,
         });
-        console.error('Unlink schema metadata error:', error);
+        console.error('Unlink schema error:', error);
       });
   }
 

@@ -3,8 +3,8 @@ import { Logger, Module, OnModuleInit } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule, TypeOrmModuleOptions } from "@nestjs/typeorm";
 import { DataSource, DataSourceOptions } from "typeorm";
-import * as migrations from "./migrations";
-import { buildPostgresSslOptions } from "./postgres-ssl-options";
+import * as migrations from "./migrations/index.js";
+import { buildPostgresSslOptions } from "./postgres-ssl-options.js";
 
 @Module({
     imports: [
@@ -19,7 +19,7 @@ import { buildPostgresSslOptions } from "./postgres-ssl-options";
                 );
 
                 // Default synchronize to false for production safety
-                // Use DB_SYNCHRONIZE=true only for development or fresh installs
+                // Use DB_SYNCHRONIZE=true only for local development
                 const synchronize =
                     configService.getOrThrow<boolean>("DB_SYNCHRONIZE");
 

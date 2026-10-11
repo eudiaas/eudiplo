@@ -1,24 +1,33 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { SchemaURIMeta } from "@owf/eudi-attestation-schema";
-import { KeyChainService } from "../../crypto/key/key-chain.service";
-import { SchemaMetadataService } from "./schema-metadata.service";
-import { type UpdateSchemaMetadataDto } from "./dto/schema-metadata.dto";
-import { CredentialConfigService } from "../../issuer/configuration/credentials/credential-config/credential-config.service";
+import { KeyChainService } from "../../crypto/key/key-chain.service.js";
+import { CredentialConfigService } from "../../issuer/configuration/credentials/credential-config/credential-config.service.js";
 import {
     SchemaMetadataPinMode,
     SignSchemaMetaConfigDto,
     SignVersionSchemaMetaConfigDto,
-} from "../../issuer/configuration/credentials/dto/schema-meta-config.dto";
-import { buildJsonSchema } from "../../issuer/configuration/credentials/utils";
-import { TrustListService } from "../../issuer/trust-list/trustlist.service";
-import { type CreateSchemaMetadataMultipartDto } from "../generated";
+} from "../../issuer/configuration/credentials/dto/schema-meta-config.dto.js";
+import { buildJsonSchema } from "../../issuer/configuration/credentials/utils/index.js";
+import { TrustListService } from "../../issuer/trust-list/trustlist.service.js";
+import {
+    type OutboundFinalResponse,
+    OutboundUrlPolicyService,
+} from "../../webhook/outbound-url-policy.service.js";
+import { type CreateSchemaMetadataMultipartDto } from "../generated/index.js";
+import { type UpdateSchemaMetadataDto } from "./dto/schema-metadata.dto.js";
+import { SchemaMetadataService } from "./schema-metadata.service.js";
 
 type TrustedAuthorityInput = NonNullable<
     SignSchemaMetaConfigDto["config"]["trustedAuthorities"]
 >[number];
 
 type RegistrarMetadataPayload = CreateSchemaMetadataMultipartDto;
+
+/** Limits for fetching rulebooks and schemas referenced by URL. */
+const REMOTE_FILE_TIMEOUT_MS = 10_000;
+const REMOTE_FILE_MAX_BYTES = 5 * 1024 * 1024;
+const REMOTE_FILE_MAX_REDIRECTS = 3;
 
 @Injectable()
 export class SchemaMetadataSubmissionService {
@@ -28,6 +37,7 @@ export class SchemaMetadataSubmissionService {
         private readonly trustListService: TrustListService,
         private readonly keyChainService: KeyChainService,
         private readonly configService: ConfigService,
+        private readonly outboundUrlPolicy: OutboundUrlPolicyService,
     ) {}
 
     private extractConfiguredVct(credentialConfig: {
@@ -87,27 +97,6 @@ export class SchemaMetadataSubmissionService {
         );
     }
 
-    private toPublicJwk(
-        jwk?: Record<string, unknown>,
-    ): Record<string, unknown> | undefined {
-        if (!jwk || typeof jwk !== "object") {
-            return undefined;
-        }
-        const { d, p, q, dp, dq, qi, oth, k, ...publicJwk } = jwk as Record<
-            string,
-            unknown
-        >;
-        void d;
-        void p;
-        void q;
-        void dp;
-        void dq;
-        void qi;
-        void oth;
-        void k;
-        return publicJwk;
-    }
-
     private parseInternalTrustListRef(
         value: string,
     ): { tenantId: string; trustListId: string } | undefined {
@@ -143,20 +132,77 @@ export class SchemaMetadataSubmissionService {
                 ref.tenantId,
                 trustList.keyChainId,
             );
-            const publicKeyJwk = this.toPublicJwk(
-                keyChain.activeJwk as Record<string, unknown> | undefined,
+            const x509Certificate = this.toBase64Der(
+                keyChain.activeCertificate,
             );
-            if (!publicKeyJwk) {
+            if (!x509Certificate) {
                 return undefined;
             }
 
             return {
-                type: "JsonWebKey2020",
-                publicKeyJwk,
+                type: "X509Certificate",
+                x509Certificate,
             };
         } catch {
             return undefined;
         }
+    }
+
+    private toBase64Der(certificate: string): string | undefined {
+        const base64 = certificate
+            .replaceAll("-----BEGIN CERTIFICATE-----", "")
+            .replaceAll("-----END CERTIFICATE-----", "")
+            .replace(/\s/g, "");
+
+        if (
+            !base64 ||
+            !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) ||
+            base64.length % 4 !== 0
+        ) {
+            return undefined;
+        }
+
+        return base64;
+    }
+
+    private toPemCertificate(base64Der: string): string {
+        const lines = base64Der.match(/.{1,64}/g) ?? [];
+        return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----\n`;
+    }
+
+    private trustListCertificateFile(
+        trustedAuthorities: Array<Record<string, unknown>>,
+    ): Blob | File {
+        for (const authority of trustedAuthorities) {
+            const certificate =
+                authority.frameworkType === "x509"
+                    ? authority.value
+                    : (
+                          authority.verificationMethod as
+                              | Record<string, unknown>
+                              | undefined
+                      )?.x509Certificate;
+
+            if (typeof certificate !== "string") {
+                continue;
+            }
+
+            const base64Der = this.toBase64Der(certificate);
+            if (!base64Der) {
+                continue;
+            }
+
+            const pem = this.toPemCertificate(base64Der);
+            return typeof File === "function"
+                ? new File([pem], "trust-list-certificate.pem", {
+                      type: "application/x-pem-file",
+                  })
+                : new Blob([pem], { type: "application/x-pem-file" });
+        }
+
+        throw new BadRequestException(
+            "At least one trusted authority must provide an X.509 certificate for the registrar.",
+        );
     }
 
     private parseVerificationMethod(
@@ -207,6 +253,24 @@ export class SchemaMetadataSubmissionService {
         entry: TrustedAuthorityInput,
         index: number,
     ): Promise<Record<string, unknown>> {
+        if (entry.frameworkType === "x509") {
+            if (!entry.value || !this.toBase64Der(entry.value)) {
+                throw new BadRequestException(
+                    `trustedAuthorities[${index}].value must be a base64-encoded DER X.509 certificate for x509 authorities.`,
+                );
+            }
+            if (entry.verificationMethod) {
+                throw new BadRequestException(
+                    `trustedAuthorities[${index}].verificationMethod must be omitted for x509 authorities.`,
+                );
+            }
+
+            return {
+                frameworkType: "x509",
+                value: this.toBase64Der(entry.value),
+            };
+        }
+
         if (entry.trustListId) {
             const trustList = await this.trustListService.findOne(
                 tenantId,
@@ -222,12 +286,12 @@ export class SchemaMetadataSubmissionService {
                 tenantId,
                 trustList.keyChainId,
             );
-            const publicKeyJwk = this.toPublicJwk(
-                keyChain.activeJwk as Record<string, unknown> | undefined,
+            const x509Certificate = this.toBase64Der(
+                keyChain.activeCertificate,
             );
-            if (!publicKeyJwk) {
+            if (!x509Certificate) {
                 throw new BadRequestException(
-                    `Trust list ${entry.trustListId} key chain has no active key.`,
+                    `Trust list ${entry.trustListId} key chain has no active certificate.`,
                 );
             }
 
@@ -239,8 +303,8 @@ export class SchemaMetadataSubmissionService {
                 frameworkType: "etsi_tl",
                 value: `${publicUrl}/issuers/${tenantId}/trust-list/${trustList.id}`,
                 verificationMethod: {
-                    type: "JsonWebKey2020",
-                    publicKeyJwk,
+                    type: "X509Certificate",
+                    x509Certificate,
                 },
             };
         }
@@ -285,9 +349,18 @@ export class SchemaMetadataSubmissionService {
         fallbackFileName: string,
         label: string,
     ): Promise<Blob | File> {
-        let response: Response;
+        // Tenant-supplied URL: fetched under the shared outbound URL policy
+        // (no private targets, every redirect hop checked, bounded size/time).
+        let response: OutboundFinalResponse;
         try {
-            response = await fetch(sourceUrl);
+            response = await this.outboundUrlPolicy.getFollowingRedirects(
+                sourceUrl,
+                {
+                    timeoutMs: REMOTE_FILE_TIMEOUT_MS,
+                    maxBytes: REMOTE_FILE_MAX_BYTES,
+                    maxRedirects: REMOTE_FILE_MAX_REDIRECTS,
+                },
+            );
         } catch (error) {
             throw new BadRequestException(
                 `Failed to fetch ${label} (${sourceUrl}): ${
@@ -296,15 +369,14 @@ export class SchemaMetadataSubmissionService {
             );
         }
 
-        if (!response.ok) {
+        if (response.status < 200 || response.status >= 300) {
             throw new BadRequestException(
                 `Failed to fetch ${label} (${sourceUrl}): HTTP ${response.status}`,
             );
         }
 
-        const contentType =
-            response.headers.get("content-type") || "application/octet-stream";
-        const bytes = await response.arrayBuffer();
+        const contentType = response.contentType || "application/octet-stream";
+        const bytes = new Uint8Array(response.bytes);
 
         const parsedName = (() => {
             try {
@@ -670,6 +742,8 @@ export class SchemaMetadataSubmissionService {
                     trustedAuthorities,
                 ),
                 rulebookFile,
+                trustListCertificateFile:
+                    this.trustListCertificateFile(trustedAuthorities),
                 schemaFiles: schemaEntries.map((entry) => entry.file),
             },
         );
@@ -755,6 +829,8 @@ export class SchemaMetadataSubmissionService {
                     trustedAuthorities,
                 ),
                 rulebookFile,
+                trustListCertificateFile:
+                    this.trustListCertificateFile(trustedAuthorities),
                 schemaFiles: schemaEntries.map((entry) => entry.file),
             },
         );

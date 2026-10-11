@@ -1,5 +1,4 @@
 [
-  "attribute-providers/claims-provider.json",
   "clients/presentation-test.json",
   "clients/test.json",
   "images/company.png",
@@ -18,6 +17,6 @@
   "key-chains/status-list.json",
   "key-chains/trust-list.json",
   "presentation/age-over-18.json",
-  "trust-lists/trustlist-580831bc-ef11-43f4-a3be-a2b6bf1b29a3-config.json",
-  "webhook-endpoints/notification.json"
+  "presentation/pid.json",
+  "trust-lists/trustlist-580831bc-ef11-43f4-a3be-a2b6bf1b29a3-config.json"
 ]

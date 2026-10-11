@@ -1,33 +1,34 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Request } from "express";
-import { Repository } from "typeorm";
-import { AuditLogService } from "../../../audit-log/audit-log.service";
-import { TokenPayload } from "../../../auth/token.decorator";
+import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import type { AuditLogRequestMeta } from "../../../audit-log/audit-log.service.js";
+import { AuditLogService } from "../../../audit-log/audit-log.service.js";
 import {
-    extractRequestMeta,
     getChangedFields,
     resolveAuditActor,
-} from "../../../audit-log/audit-log-context.util";
-import { loadConfigDto } from "../../../shared/utils/config-file-loader.util";
-import { ConfigImportService } from "../../../platform/config-import/config-import.service";
+} from "../../../audit-log/audit-log-context.util.js";
+import { TokenPayload } from "../../../auth/token.decorator.js";
+import { ConfigImportService } from "../../../platform/config-import/config-import.service.js";
 import {
     ConfigImportOrchestratorService,
     ImportPhase,
-} from "../../../platform/config-import/config-import-orchestrator.service";
-import { OutboundUrlPolicyService } from "../../../webhook/outbound-url-policy.service";
-import { CreateWebhookEndpointDto } from "./dto/create-webhook-endpoint.dto";
-import { WebhookEndpointEntity } from "./entities/webhook-endpoint.entity";
+} from "../../../platform/config-import/config-import-orchestrator.service.js";
+import { loadConfigDto } from "../../../shared/utils/config-file-loader.util.js";
+import { OutboundUrlPolicyService } from "../../../webhook/outbound-url-policy.service.js";
+import type { WebhookEndpointData } from "./domain/webhook-endpoint-data.js";
+import { CreateWebhookEndpointDto } from "./dto/create-webhook-endpoint.dto.js";
+import {
+    WEBHOOK_ENDPOINT_REPOSITORY,
+    type WebhookEndpointRepository,
+} from "./ports/webhook-endpoint.repository.js";
 import type {
     CreateWebhookEndpoint,
     UpdateWebhookEndpoint,
-} from "./schemas/webhook-endpoint.schema";
+} from "./schemas/webhook-endpoint.schema.js";
 
 @Injectable()
 export class WebhookEndpointService {
     constructor(
-        @InjectRepository(WebhookEndpointEntity)
-        private readonly repo: Repository<WebhookEndpointEntity>,
+        @Inject(WEBHOOK_ENDPOINT_REPOSITORY)
+        private readonly repo: WebhookEndpointRepository,
         private readonly configImportService: ConfigImportService,
         private readonly configImportOrchestrator: ConfigImportOrchestratorService,
         private readonly tenantActionLogService: AuditLogService,
@@ -46,7 +47,7 @@ export class WebhookEndpointService {
             {
                 subfolder: "webhook-endpoints",
                 fileExtension: ".json",
-                validationClass: CreateWebhookEndpointDto,
+                validationSchema: CreateWebhookEndpointDto,
                 resourceType: "webhook endpoint",
                 checkExists: (tid, data) =>
                     this.getById(tid, data.id)
@@ -54,7 +55,7 @@ export class WebhookEndpointService {
                         .catch(() => false),
                 deleteExisting: (tid, data) =>
                     this.repo
-                        .delete({ id: data.id, tenantId: tid })
+                        .deleteForTenant(tid, data.id)
                         .then(() => undefined),
                 loadData: (filePath) =>
                     loadConfigDto(filePath, CreateWebhookEndpointDto),
@@ -66,11 +67,11 @@ export class WebhookEndpointService {
     }
 
     getAll(tenantId: string) {
-        return this.repo.find({ where: { tenantId } });
+        return this.repo.listForTenant(tenantId);
     }
 
     async getById(tenantId: string, id: string) {
-        const entity = await this.repo.findOneBy({ id, tenantId });
+        const entity = await this.repo.findForTenant(tenantId, id);
         if (!entity) {
             throw new NotFoundException(`Webhook endpoint '${id}' not found`);
         }
@@ -81,14 +82,14 @@ export class WebhookEndpointService {
         tenantId: string,
         dto: CreateWebhookEndpoint,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         await this.outboundUrlPolicyService.assertSafeUrl(dto.url);
 
-        const saved = (await this.repo.save({
+        const saved = await this.repo.save({
             ...dto,
             tenantId,
-        } as any)) as WebhookEndpointEntity;
+        });
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -100,7 +101,7 @@ export class WebhookEndpointService {
                     this.sanitizeWebhookEndpointForLog(saved),
                 ),
                 after: this.sanitizeWebhookEndpointForLog(saved),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -112,7 +113,7 @@ export class WebhookEndpointService {
         id: string,
         dto: UpdateWebhookEndpoint,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         const existing = await this.getById(tenantId, id);
 
@@ -120,12 +121,12 @@ export class WebhookEndpointService {
             await this.outboundUrlPolicyService.assertSafeUrl(dto.url);
         }
 
-        const saved = (await this.repo.save({
+        const saved = await this.repo.save({
             ...existing,
             ...dto,
             id,
             tenantId,
-        } as any)) as WebhookEndpointEntity;
+        });
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -138,7 +139,7 @@ export class WebhookEndpointService {
                 ),
                 before: this.sanitizeWebhookEndpointForLog(existing),
                 after: this.sanitizeWebhookEndpointForLog(saved),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -149,10 +150,10 @@ export class WebhookEndpointService {
         tenantId: string,
         id: string,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         const existing = await this.getById(tenantId, id);
-        const result = await this.repo.delete({ id, tenantId });
+        const result = await this.repo.deleteForTenant(tenantId, id);
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -160,7 +161,7 @@ export class WebhookEndpointService {
                 actionType: "webhook_endpoint_deleted",
                 actor: resolveAuditActor(actorToken),
                 before: this.sanitizeWebhookEndpointForLog(existing),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -168,7 +169,7 @@ export class WebhookEndpointService {
     }
 
     private sanitizeWebhookEndpointForLog(
-        endpoint: WebhookEndpointEntity,
+        endpoint: WebhookEndpointData,
     ): Record<string, unknown> {
         return {
             id: endpoint.id,

@@ -24,20 +24,20 @@ or stale. `validateChain` is the shared trust gate, so this affects **both mDOC
    (a dead host, a blocked endpoint, or simply a trust list whose `NextUpdate`
    has already passed):
 
-   ```
+   ```text
    POST /verifier/config
    ```
 
 2. Create a presentation offer for that config and have a wallet present a
    credential **from an issuer that is not in the trust list**:
 
-   ```
+   ```text
    POST /verifier/offer   → returns an openid4vp:// request
    ```
 
 3. Submit the wallet response to the response endpoint:
 
-   ```
+   ```text
    POST /presentations/{sessionId}/oid4vp
    ```
 

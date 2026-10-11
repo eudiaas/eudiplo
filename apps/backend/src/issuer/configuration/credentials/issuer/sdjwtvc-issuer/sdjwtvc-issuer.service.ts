@@ -1,27 +1,30 @@
-import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
+import { Inject, Injectable } from "@nestjs/common";
 import type { Jwk } from "@openid4vc/oauth2";
-import { JWTwithStatusListPayload } from "@owf/token-status-list";
 import { digest, generateSalt } from "@owf/crypto";
+import { JWTwithStatusListPayload } from "@owf/token-status-list";
 import { SDJwtVcInstance } from "@sd-jwt/sd-jwt-vc";
-import { CertService } from "../../../../../crypto/key/cert/cert.service";
-import { CryptoImplementationService } from "../../../../../crypto/key/crypto-implementation/crypto-implementation.service";
-import { KeyUsageType } from "../../../../../crypto/key/types/key-usage-type";
-import { KeyChainService } from "../../../../../crypto/key/key-chain.service";
-import { Session } from "../../../../../session/entities/session.entity";
-import { StatusListService } from "../../../../status-list/status-list.service";
+import { CertService } from "../../../../../crypto/key/cert/cert.service.js";
+import { CryptoImplementationService } from "../../../../../crypto/key/crypto-implementation/crypto-implementation.service.js";
+import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
+import { KeyUsageType } from "../../../../../crypto/key/types/key-usage-type.js";
+import type { SessionData as Session } from "../../../../../session/domain/session-data.js";
+import { StatusListService } from "../../../../status-list/status-list.service.js";
 import {
-    CredentialConfig,
-    SdJwtTrustFormat,
-} from "../../entities/credential.entity";
-import { buildDisclosureFrame } from "../../utils";
+    CREDENTIAL_SETTINGS,
+    type CredentialSettings,
+} from "../../credential-settings.js";
+import type { CredentialConfiguration } from "../../domain/credential-configuration.js";
+import { SdJwtTrustFormat } from "../../entities/credential.entity.js";
+import { buildDisclosureFrame } from "../../utils/index.js";
+import { roundedCredentialValidity } from "../credential-time.util.js";
 
 export interface SdJwtVcIssueOptions {
-    credentialConfiguration: CredentialConfig;
+    credentialConfiguration: CredentialConfiguration;
     holderCnf: Jwk;
     session: Session;
     claims: Record<string, any>;
     federationEntityId?: string;
+    issuanceSetId?: string;
 }
 
 /**
@@ -31,7 +34,8 @@ export interface SdJwtVcIssueOptions {
 export class SdjwtvcIssuerService {
     constructor(
         private readonly certService: CertService,
-        private readonly configService: ConfigService,
+        @Inject(CREDENTIAL_SETTINGS)
+        private readonly settings: CredentialSettings,
         private readonly statusListService: StatusListService,
         private readonly cryptoImplementationService: CryptoImplementationService,
         private readonly keyChainService: KeyChainService,
@@ -49,6 +53,7 @@ export class SdjwtvcIssuerService {
             session,
             claims,
             federationEntityId,
+            issuanceSetId,
         } = options;
 
         const certificate = await this.certService.find({
@@ -75,15 +80,16 @@ export class SdjwtvcIssuerService {
             status = await this.statusListService.createEntry(
                 session,
                 credentialConfiguration.id,
+                credentialConfiguration,
+                issuanceSetId,
             );
         }
 
-        const iat = Math.round(Date.now() / 1000);
+        const { issuedAt: iat, expiresAt } = roundedCredentialValidity(
+            credentialConfiguration.lifeTime ?? 0,
+        );
         // Set expiration time if lifeTime is defined
-        let exp: number | undefined;
-        if (credentialConfiguration.lifeTime) {
-            exp = iat + credentialConfiguration.lifeTime;
-        }
+        const exp = credentialConfiguration.lifeTime ? expiresAt : undefined;
 
         // If key binding is enabled, include the JWK in the cnf
         let cnf: { jwk: Jwk } | undefined;
@@ -93,7 +99,7 @@ export class SdjwtvcIssuerService {
             };
         }
 
-        const host = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const host = this.settings.publicUrl;
         const disclosureFrame =
             buildDisclosureFrame(credentialConfiguration.fields as any) ?? {};
 

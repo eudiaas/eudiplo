@@ -9,20 +9,25 @@ import {
 } from "@owf/mdoc";
 import { X509Certificate } from "@peculiar/x509";
 import { exportJWK, importX509 } from "jose";
-import { CertService } from "../../../../../crypto/key/cert/cert.service";
-import { KeyUsageType } from "../../../../../crypto/key/types/key-usage-type";
-import { KeyChainService } from "../../../../../crypto/key/key-chain.service";
-import { StatusListService } from "../../../../status-list/status-list.service";
-import { Session } from "../../../../../session/entities/session.entity";
-import { mdocContext } from "../../../../../verifier/presentations/mdoc-context";
-import { CredentialConfig } from "../../entities/credential.entity";
-import { buildClaimsByNamespace } from "../../utils";
+import { CertService } from "../../../../../crypto/key/cert/cert.service.js";
+import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
+import { KeyUsageType } from "../../../../../crypto/key/types/key-usage-type.js";
+import type { SessionData as Session } from "../../../../../session/domain/session-data.js";
+import { mdocContext } from "../../../../../verifier/presentations/mdoc-context.js";
+import { StatusListService } from "../../../../status-list/status-list.service.js";
+import type { CredentialConfiguration } from "../../domain/credential-configuration.js";
+import { buildClaimsByNamespace } from "../../utils/index.js";
+import {
+    clampCredentialValidityToCertificate,
+    roundedCredentialValidity,
+} from "../credential-time.util.js";
 
 export interface MdocIssueOptions {
-    credentialConfiguration: CredentialConfig;
+    credentialConfiguration: CredentialConfiguration;
     deviceKey: Jwk;
     session: Session;
     claims: Record<string, any>;
+    issuanceSetId?: string;
 }
 
 /**
@@ -44,7 +49,13 @@ export class MdocIssuerService {
      * @returns The issued mDOC credential as base64url encoded string for OID4VCI
      */
     async issue(options: MdocIssueOptions): Promise<string> {
-        const { credentialConfiguration, deviceKey, session, claims } = options;
+        const {
+            credentialConfiguration,
+            deviceKey,
+            session,
+            claims,
+            issuanceSetId,
+        } = options;
 
         // Get the docType from the credential configuration
         // Support both docType (camelCase) and doctype (lowercase per OID4VCI spec)
@@ -117,18 +128,26 @@ export class MdocIssuerService {
         );
 
         // Set validity dates
-        const signed = new Date();
-        const validFrom = new Date(signed);
-        const validUntil = new Date(signed);
-
-        // Use lifeTime from config or default to 1 year
-        if (credentialConfiguration.lifeTime) {
-            validUntil.setSeconds(
-                validUntil.getSeconds() + credentialConfiguration.lifeTime,
+        // Use lifeTime from config or default to 1 year, kept within the leaf
+        // certificate's validity (ISO 18013-5 checks the signed date against it)
+        const leafCertificate = new X509Certificate(certificate.crt[0]);
+        let issuedAt: number;
+        let expiresAt: number;
+        try {
+            ({ issuedAt, expiresAt } = clampCredentialValidityToCertificate(
+                roundedCredentialValidity(
+                    credentialConfiguration.lifeTime ?? 365 * 24 * 60 * 60,
+                ),
+                leafCertificate,
+            ));
+        } catch (error) {
+            throw new Error(
+                `mDOC issuance failed for key chain ${certificate.keyId}: ${(error as Error).message}`,
             );
-        } else {
-            validUntil.setFullYear(validUntil.getFullYear() + 1);
         }
+        const signed = new Date(issuedAt * 1000);
+        const validFrom = new Date(signed);
+        const validUntil = new Date(expiresAt * 1000);
 
         // If status management is enabled, create an entry and map it to mDOC status format.
         let status: StatusOptions | undefined;
@@ -136,6 +155,8 @@ export class MdocIssuerService {
             const statusPayload = await this.statusListService.createEntry(
                 session,
                 credentialConfiguration.id,
+                credentialConfiguration,
+                issuanceSetId,
             );
             const statusList = statusPayload.status?.status_list;
             if (statusList) {

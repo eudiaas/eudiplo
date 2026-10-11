@@ -1,4 +1,7 @@
-export interface ImportOptions<T extends object> {
+interface ImportOptions<T extends object> {
+    /** Explicit portable resource kind. Inferred from resourceType when omitted. */
+    resourceKind?: import("../config-portability/config-resource.types.js").ConfigResourceKind;
+
     /**
      * Subfolder within each tenant directory (e.g., "issuance", "keys", "images")
      */
@@ -13,12 +16,6 @@ export interface ImportOptions<T extends object> {
      * Zod schema or Zod DTO class used to validate imported payloads.
      */
     validationSchema?: unknown;
-
-    /**
-     * Backward-compatible alias for validationSchema.
-     * @deprecated Use validationSchema.
-     */
-    validationClass?: unknown;
 
     /**
      * Check if item already exists
