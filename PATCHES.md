@@ -23,7 +23,7 @@ rots.
 | Última imagen publicada | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`, también etiquetada `sha-e5377d0`. Nada se ha publicado desde `rebase/v8.1.0` ni desde `rebase/v9.1.0` |
 | Construida desde | `e5377d02` (2026-09-21), el merge de [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10) sobre `db525564` con [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) y [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base comprobada antes de etiquetar: el merge-base con `upstream/main` era exactamente `v7.2.0` |
 | Desplegada en | staging (`eudiplo-staging.espuni.com`) lleva **`.7`**, comprobado el 2026-09-21 en `GET /api/docs-json` → `info.version`. Producción (`eudiplo.espuni.com`) va por detrás, a propósito. La etiqueta de cada droplet vive en su `EUDIPLO_IMAGE_TAG`; el registro es `docs/architecture/environments.md` de cp-platform, no este fichero |
-| Próxima publicación | Cuando se fusione `rebase/v9.1.0`: **`v9.1.0-espuni.1`**, etiquetada según la base **real** (`git merge-base main upstream/main` tiene que ser el commit de `v9.1.0`, `927ac2cf`), nunca de memoria. Antes, leer [los avisos previos al despliegue](#avisos-previos-al-despliegue-v910) y [lo que cp-platform tiene que cambiar](#lo-que-cp-platform-tiene-que-cambiar-antes-de-desplegar-v91). La publicación es **manual**: el workflow `Publicar imagen espuni (GHCR)` corre con `workflow_dispatch` o con un tag `espuni-v*`, nunca al fusionar en `main` |
+| Próxima publicación | Cuando se fusione `rebase/v9.1.0`: **`v9.1.0-espuni.1`**, etiquetada según la base **real** (`git merge-base main upstream/main` tiene que ser el commit de `v9.1.0`, `927ac2cf`), nunca de memoria. Antes, leer [los avisos previos al despliegue](#avisos-previos-al-despliegue-v910) y [lo que cp-platform tiene que cambiar](#lo-que-cp-platform-tiene-que-cambiar-antes-de-desplegar-v91). La publicación es **manual**: el workflow `Publicar imagen espuni (GHCR)` corre con `workflow_dispatch` o con un tag `espuni-v*`, nunca al fusionar en `main`. Sale **multi-arch** (amd64 + arm64, §1.4); las anteriores (`v7.2.0-espuni.*`) son solo amd64 |
 
 ### Qué cambió el rebase (2026-10-11, v9.1.0)
 
@@ -526,6 +526,7 @@ Two fixes came out of the rebase itself and are **candidates for upstream**:
 | Commits | What |
 |---|---|
 | `5463f117` `a37a181f` | GHCR publish workflow under `ghcr.io/eudiaas` |
+| `ci/imagen-multiarch` | El mismo workflow, **multi-arch** (`linux/amd64` + `linux/arm64`) desde `v9.1.0-espuni.1`: un runner nativo por arquitectura (`ubuntu-24.04-arm`, sin qemu), push por digest y un manifest list con el tag, como `docker-backend-manifest` de upstream. El job falla si el tag no sale con las dos. arm64 es para el entorno de test local de cp-platform (WSL sobre ARM) |
 | `CLAUDE.md` | Fork context: AV profile sources, protocol facts, fork deltas. Fork-authored, not upstream |
 | `34c572ae` `0acc54d5` | `docs/findings/` notes (trust-list config surface, mdoc-ts ReaderAuth signing gap) |
 
