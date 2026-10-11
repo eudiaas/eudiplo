@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { OnEvent } from "@nestjs/event-emitter";
 import {
     catchError,
+    concatMap,
     defer,
     EMPTY,
     exhaustMap,
@@ -37,11 +38,23 @@ interface SessionEventMessage {
     id: string;
     status: SessionStatus;
     updatedAt: string;
+    /**
+     * espuni fork (PATCHES.md §1.7): machine-readable failure code
+     * (`failureCode`), present when the session failed.
+     */
+    error?: string;
+    /**
+     * espuni fork (PATCHES.md §1.7): short, safe failure message
+     * (`errorReason`), present when the session failed.
+     */
+    message?: string;
 }
 
 interface StatusSnapshot {
     status: SessionStatus;
     updatedAt: Date;
+    /** espuni fork (§1.7): why a failed session failed, once read. */
+    failure?: { error?: string; message?: string };
 }
 
 /**
@@ -121,11 +134,19 @@ export class SessionEventsService {
                     return true;
                 }),
                 takeWhile((snapshot) => !isTerminal(snapshot.status), true),
+                // espuni fork (PATCHES.md §1.7): a failed session carries its
+                // reason, so the client learns why without another request.
+                concatMap((snapshot) =>
+                    this.withFailureReason(tenantId, sessionId, snapshot),
+                ),
                 map((snapshot) => {
                     const data: SessionEventMessage = {
                         id: sessionId,
                         status: snapshot.status,
                         updatedAt: snapshot.updatedAt.toISOString(),
+                        ...(snapshot.status === SessionStatus.Failed
+                            ? snapshot.failure
+                            : {}),
                     };
 
                     return new MessageEvent("message", {
@@ -148,6 +169,8 @@ export class SessionEventsService {
             map((session): StatusSnapshot | null => ({
                 status: session.status,
                 updatedAt: session.updatedAt,
+                // espuni fork (§1.7)
+                failure: failureOf(session),
             })),
             catchError((error: unknown) => {
                 if (error instanceof SessionNotFound) {
@@ -158,6 +181,25 @@ export class SessionEventsService {
                 );
                 return EMPTY;
             }),
+        );
+    }
+
+    /**
+     * espuni fork (PATCHES.md §1.7): the failure reason of a failed status.
+     * Live events carry only the status, so a failed one is completed with a
+     * read of the session; when that read fails the status still goes out.
+     */
+    private withFailureReason(
+        tenantId: string,
+        sessionId: string,
+        snapshot: StatusSnapshot,
+    ): Observable<StatusSnapshot> {
+        if (snapshot.status !== SessionStatus.Failed || snapshot.failure) {
+            return of(snapshot);
+        }
+        return from(this.sessionStore.getForTenant(tenantId, sessionId)).pipe(
+            map((session) => ({ ...snapshot, failure: failureOf(session) })),
+            catchError(() => of(snapshot)),
         );
     }
 
@@ -173,4 +215,17 @@ export class SessionEventsService {
         // Forward to Subject for SSE subscribers
         this.eventSubject.next(event);
     }
+}
+
+/** espuni fork (PATCHES.md §1.7): `error` / `message` of a failed session. */
+function failureOf(session: {
+    status: SessionStatus;
+    failureCode?: string | null;
+    errorReason?: string | null;
+}): StatusSnapshot["failure"] {
+    if (session.status !== SessionStatus.Failed) return undefined;
+    return {
+        error: session.failureCode ?? undefined,
+        message: session.errorReason ?? undefined,
+    };
 }

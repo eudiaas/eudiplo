@@ -97,4 +97,17 @@ export class WebhookConfig
             "List of credential IDs to include raw tokens for (e.g., ['sca_credential'])",
     })
     includeRawTokensFor?: string[];
+
+    /**
+     * espuni fork (PATCHES.md §1.7) — deprecated, accepted and ignored.
+     * Presentation webhooks are always sent, also on failure (upstream #1133).
+     */
+    @ApiProperty({
+        required: false,
+        type: Boolean,
+        deprecated: true,
+        description:
+            "Deprecated and ignored: presentation webhooks are always sent, also on failure (read `status`). Accepted only for backwards compatibility.",
+    })
+    notifyOnFailure?: boolean;
 }
