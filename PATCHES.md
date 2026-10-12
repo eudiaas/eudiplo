@@ -18,12 +18,12 @@ rots.
 
 | | |
 |---|---|
-| Base upstream de `main` | **v7.2.0** (rebase del 2026-08-22, PR #19). La rama `rebase/v9.1.0` lleva el mismo conjunto de parches sobre **v9.1.0** (rebase del 2026-10-11, PR en borrador [#46](https://github.com/eudiaas/eudiplo/pull/46), que sustituye al #45 de `rebase/v8.1.0`); este fichero describe esa rama. Hasta que se fusione, `main` sigue en v7.2.0 |
+| Base upstream de `main` | **v9.1.0** (`927ac2cf`): rebase del 2026-10-11, fusionado en [#46](https://github.com/eudiaas/eudiplo/pull/46) (sustituye al #45 de `rebase/v8.1.0`). Comprobado con `git merge-base origin/main upstream/main` |
 | Parches solo del fork | **12** vivos (§1.1–§1.3, §1.5, §1.7 reducido al SSE, §1.8–§1.14) + infraestructura (§1.4). §1.6 y el núcleo de §1.7 están upstream desde v7.5.0 (#970, #974); el webhook de fallo de §1.7 (`notifyOnFailure`) lo sustituye #1133 en v9.0. Todo en §2 |
-| Última imagen publicada | `ghcr.io/eudiaas/eudiplo:v7.2.0-espuni.7` (2026-09-21, [run](https://github.com/eudiaas/eudiplo/actions/runs/35592886916)), digest `sha256:0b23af2a…1adc0d`, también etiquetada `sha-e5377d0`. Nada se ha publicado desde `rebase/v8.1.0` ni desde `rebase/v9.1.0` |
-| Construida desde | `e5377d02` (2026-09-21), el merge de [#33](https://github.com/eudiaas/eudiplo/pull/33) (§1.10) sobre `db525564` con [#28](https://github.com/eudiaas/eudiplo/pull/28) (§1.8) y [#30](https://github.com/eudiaas/eudiplo/pull/30) (§1.9). Base comprobada antes de etiquetar: el merge-base con `upstream/main` era exactamente `v7.2.0` |
-| Desplegada en | staging (`eudiplo-staging.espuni.com`) lleva **`.7`**, comprobado el 2026-09-21 en `GET /api/docs-json` → `info.version`. Producción (`eudiplo.espuni.com`) va por detrás, a propósito. La etiqueta de cada droplet vive en su `EUDIPLO_IMAGE_TAG`; el registro es `docs/architecture/environments.md` de cp-platform, no este fichero |
-| Próxima publicación | Cuando se fusione `rebase/v9.1.0`: **`v9.1.0-espuni.1`**, etiquetada según la base **real** (`git merge-base main upstream/main` tiene que ser el commit de `v9.1.0`, `927ac2cf`), nunca de memoria. Antes, leer [los avisos previos al despliegue](#avisos-previos-al-despliegue-v910) y [lo que cp-platform tiene que cambiar](#lo-que-cp-platform-tiene-que-cambiar-antes-de-desplegar-v91). La publicación es **manual**: el workflow `Publicar imagen espuni (GHCR)` corre con `workflow_dispatch` o con un tag `espuni-v*`, nunca al fusionar en `main`. Sale **multi-arch** (amd64 + arm64, §1.4); las anteriores (`v7.2.0-espuni.*`) son solo amd64 |
+| Última imagen publicada | `ghcr.io/eudiaas/eudiplo:v9.1.0-espuni.1` y `eudiplo-client` (2026-10-11, [run](https://github.com/eudiaas/eudiplo/actions/runs/38128656397)), índice multi-arch `sha256:01f0f629…66e0605`, también etiquetada `sha-521e95c`. La última de la línea v7.2 fue `v7.2.0-espuni.12` (GHCR tiene `.8` a `.12`; este fichero se quedó en `.7`) |
+| Construida desde | `521e95c5`, el merge de [#47](https://github.com/eudiaas/eudiplo/pull/47) (§1.4 multi-arch) sobre el rebase a v9.1.0 |
+| Desplegada en | staging (`eudiplo-staging.espuni.com`) lleva **`v9.1.0-espuni.1`** desde el 2026-10-11, comprobado en `GET /api/docs-json` → `info.version`, con cp-platform en `EUDIPLO_CONTRACT=v9` y los tenants resincronizados. Producción (`eudiplo.espuni.com`) sigue en `v7.2.0-espuni.5`, a propósito. La etiqueta de cada droplet vive en su `EUDIPLO_IMAGE_TAG`; el registro es `docs/architecture/environments.md` de cp-platform, no este fichero |
+| Próxima publicación | **`v9.1.0-espuni.2`**, cuando haga falta, etiquetada según la base **real** (`git merge-base main upstream/main`), nunca de memoria. La publicación es **manual**: el workflow `Publicar imagen espuni (GHCR)` corre con `workflow_dispatch` o con un tag `espuni-v*`, nunca al fusionar en `main`. Sale **multi-arch** (amd64 + arm64, §1.4); las `v7.2.0-espuni.*` son solo amd64 |
 
 ### Qué cambió el rebase (2026-10-11, v9.1.0)
 
@@ -143,6 +143,22 @@ Comprobado leyendo cp-platform (`/home/boli/espuni`), sin tocarlo:
   privadas, redirecciones, tamaño). Las listas que usa hoy cp-platform son
   HTTPS públicas, así que no les afecta; una URL interna o `http://` dejaría
   de funcionar. Las listas XML de §1.2 pasan por la misma política.
+- **(h) Un solo escritor de configuración por tenant (upstream #1018, v8).**
+  Cada escritura de configuración abre una fila de diario con `activeTenant`
+  único; una segunda escritura concurrente en el mismo tenant recibe **409
+  `CONFIG_WRITER_ACTIVE`**, no espera. `provisionTenant()` subía las cuatro
+  configs AV con `Promise.all`, así que contra v9.1 todo alta fallaba y se
+  deshacía (`rollbackProvision`). No estaba en esta lista porque no sale en
+  el changelog de v9: se encontró ensayando en el entorno local de
+  cp-platform. Resuelto en eudiaas/espuni#412 (subidas secuenciales, con un
+  test que falla si hay dos en vuelo). **Cualquier otro cliente que escriba
+  configs de un tenant en paralelo tiene el mismo problema.**
+
+**Estado (2026-10-12):** (a)–(g) resueltos en eudiaas/espuni#410 (conmutados
+por `EUDIPLO_CONTRACT`), (h) en eudiaas/espuni#412. Desplegado en staging el
+2026-10-11 y probado allí: demo por los tres caminos con `values: [true]`, y
+una cancelación real que llega a CP como `FAILED` / `session_cancelled` sin
+facturar.
 
 #### Contrato de configuración portable (decisión tomada)
 
